@@ -205,3 +205,44 @@ describe('authentication bounds reject invalid values at boot', () => {
     expect(cfg.AUTH_SWEEP_INTERVAL_MS).toBeLessThan(cfg.AUTH_ATTEMPT_RETENTION_MS);
   });
 });
+
+describe('boolean settings are strict, not truthy', () => {
+  // Both gate a security property, so a typo must stop the process rather than
+  // being read as one value or the other. 'yes', '1' and 'TRUE' are the
+  // spellings an operator actually reaches for.
+  const booleans = ['SSRF_GUARD_ENABLED', 'COOKIE_SECURE', 'TRUST_PROXY'];
+
+  it.each(booleans)('%s accepts only the two documented spellings', (key) => {
+    expect(loadConfig({ ...valid, [key]: 'true' })).toBeDefined();
+    expect(loadConfig({ ...valid, [key]: 'false' })).toBeDefined();
+  });
+
+  it.each(
+    booleans.flatMap((key) =>
+      ['yes', 'no', '1', '0', 'TRUE', 'False', ''].map((v) => [key, v] as const),
+    ),
+  )('rejects %s=%s', (key, value) => {
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(key));
+  });
+
+  it('parses to a real boolean, not the string', () => {
+    // A truthy string would make "false" enable the setting.
+    const off = loadConfig({ ...valid, TRUST_PROXY: 'false', COOKIE_SECURE: 'false' });
+    expect(off.TRUST_PROXY).toBe(false);
+    expect(off.COOKIE_SECURE).toBe(false);
+
+    const on = loadConfig({ ...valid, TRUST_PROXY: 'true', COOKIE_SECURE: 'true' });
+    expect(on.TRUST_PROXY).toBe(true);
+    expect(on.COOKIE_SECURE).toBe(true);
+  });
+
+  it('defaults to the safe value for each', () => {
+    const cfg = loadConfig(valid);
+    // Trusting a client-settable header by default would make the per-IP rate
+    // limit bypassable; a non-Secure cookie by default would send the session
+    // over plain HTTP.
+    expect(cfg.TRUST_PROXY).toBe(false);
+    expect(cfg.COOKIE_SECURE).toBe(true);
+    expect(cfg.SSRF_GUARD_ENABLED).toBe(true);
+  });
+});
