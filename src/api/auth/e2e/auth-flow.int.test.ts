@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { APP_CONFIG, ConfigModule } from '../../../core/config/config.module.js';
 import { DbModule } from '../../../core/db/db.module.js';
 import { DbService } from '../../../core/db/db.service.js';
-import { UserRepository } from '../../../core/users/user.repository.js';
+import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AuthModule } from '../auth.module.js';
 import { PasswordService } from '../services/password.service.js';

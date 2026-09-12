@@ -3,8 +3,8 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import type { Pool } from 'pg';
 import { APP_CONFIG } from '../config/config.module.js';
 import type { AppConfig } from '../config/schema.js';
-import { createDb, type Db } from './kysely.js';
-import { createPool } from './pool.js';
+import { createDb, type Db } from './utils/kysely.js';
+import { createPool } from './utils/pool.js';
 
 @Injectable()
 export class DbService implements OnModuleDestroy {

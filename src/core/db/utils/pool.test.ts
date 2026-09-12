@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../config/index.js';
+import { loadConfig } from '../../config/index.js';
 import { createDb } from './kysely.js';
 import { createPool } from './pool.js';
 

@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { Kysely } from 'kysely';
-import { DbService } from '../db/db.service.js';
-import type { Database } from '../db/types.js';
-import type { User } from '../db/types.js';
-import { normalizeEmail } from './email.js';
+import { DbService } from '../../db/db.service.js';
+import type { Database } from '../../db/types.js';
+import type { User } from '../../db/types.js';
+import { normalizeEmail } from '../utils/email.js';
 
 /**
  * Data access for accounts.

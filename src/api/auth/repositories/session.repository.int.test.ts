@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbService } from '../../../core/db/db.service.js';
-import { UserRepository } from '../../../core/users/user.repository.js';
+import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
 import { generateToken, hashToken } from '../utils/session-token.js';
 import { SessionRepository } from '../repositories/session.repository.js';

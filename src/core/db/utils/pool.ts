@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
-import type { AppConfig } from '../config/index.js';
-import { describeError } from '../errors/describe.js';
+import type { AppConfig } from '../../config/index.js';
+import { describeError } from '../../errors/describe.js';
 
 /** Reported when an idle pooled connection dies. */
 export type PoolErrorHandler = (message: string, fields: { cause: string }) => void;

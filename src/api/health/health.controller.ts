@@ -5,7 +5,7 @@ import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
 import { describeError } from '../../core/errors/describe.js';
-import { LIVENESS_PATH, READINESS_PATH } from './paths.js';
+import { LIVENESS_PATH, READINESS_PATH } from './constants.js';
 
 @Controller()
 export class HealthController {

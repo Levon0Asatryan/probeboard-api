@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { ConfigModule } from '../../../core/config/config.module.js';
 import { DbModule } from '../../../core/db/db.module.js';
 import { DbService } from '../../../core/db/db.service.js';
-import { UserRepository } from '../../../core/users/user.repository.js';
+import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AuthModule } from '../auth.module.js';
 import { AuthService } from '../auth.service.js';
