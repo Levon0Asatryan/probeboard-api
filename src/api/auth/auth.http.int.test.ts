@@ -275,6 +275,32 @@ describe('A-5: changing the password', () => {
   });
 });
 
+describe('registration cannot be used against an account', () => {
+  it('duplicate registrations do not lock the owner out', async () => {
+    // Otherwise an unauthenticated attacker submits N duplicate registrations
+    // for a victim's address, exhausts the credential-failure counter, and the
+    // victim's correct password returns 429 for the whole window.
+    await register('victim3@example.com', 'correct horse battery');
+
+    for (let i = 0; i < 8; i++) await register('victim3@example.com', 'whatever it takes');
+
+    const res = await login('victim3@example.com', 'correct horse battery');
+    expect(res.status).toBe(200);
+  });
+
+  it('registration is still limited, by address rather than by account', async () => {
+    // Mass registration from one host is throttled; it just does not touch the
+    // credential-failure counter belonging to any account.
+    const results: number[] = [];
+    for (let i = 0; i < 600; i++) {
+      results.push(
+        (await register(`flood${String(i)}@example.com`, 'correct horse battery')).status,
+      );
+    }
+    expect(results).toContain(429);
+  });
+});
+
 describe('A-6: rate limiting through HTTP', () => {
   it('locks an account after repeated failures and says so', async () => {
     await register('victim@example.com', 'correct horse battery');

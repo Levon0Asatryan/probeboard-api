@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
+import { DbService } from '../../core/db/db.service.js';
 import { AppError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/user.repository.js';
 import { PasswordService } from './password.service.js';
@@ -35,6 +36,7 @@ export class RateLimitedError extends AppError {
 export class AuthService {
   constructor(
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    private readonly db: DbService,
     private readonly users: UserRepository,
     private readonly passwords: PasswordService,
     private readonly sessions: SessionRepository,
@@ -55,15 +57,19 @@ export class AuthService {
   async register(email: string, password: string, ip: string): Promise<void> {
     this.requirePasswordPolicy(password, 'password');
 
-    const verdict = await this.limiter.admit(ip, email);
+    // Limited by address only, never by account.
+    //
+    // Counting registrations against the credential-failure counter would let
+    // an unauthenticated attacker lock anyone out: submit a handful of
+    // duplicate registrations for a victim's address, exhaust the limit, and
+    // the victim's correct password is refused for the whole window. It would
+    // also make repeated registration behave differently for an address that
+    // exists, which is the distinction A-1 exists to remove.
+    const verdict = await this.limiter.admit(ip, undefined);
     if (!verdict.allowed) throw new RateLimitedError(verdict.retryAfterSeconds);
 
     const hash = await this.passwords.hash(password);
-    const user = await this.users.create(email, hash);
-
-    // Only a real registration clears the address's failures; a duplicate must
-    // not become a way to reset another account's lockout.
-    if (user) await this.limiter.succeeded(ip, email);
+    await this.users.create(email, hash);
   }
 
   /** Verifies credentials and issues a session, or throws. */
@@ -106,8 +112,17 @@ export class AuthService {
 
     this.requirePasswordPolicy(newPassword, 'newPassword');
 
-    await this.users.updatePasswordHash(userId, await this.passwords.hash(newPassword));
-    await this.sessions.revokeAllForUser(userId, currentSessionId);
+    const hash = await this.passwords.hash(newPassword);
+
+    // One transaction, because the two writes are one decision. If the
+    // password changed and the revocation failed, the caller would get a 500
+    // while every session they were trying to invalidate stayed live — and
+    // changing a password is precisely what someone does when they believe a
+    // session is compromised.
+    await this.db.kysely.transaction().execute(async (trx) => {
+      await this.users.updatePasswordHash(userId, hash, trx);
+      await this.sessions.revokeAllForUser(userId, currentSessionId, new Date(), trx);
+    });
   }
 
   /**
