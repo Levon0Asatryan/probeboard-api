@@ -38,7 +38,15 @@ beforeAll(async () => {
   app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
   configureApp(app, loadConfig());
   await registerNotFoundFallback(app);
-  await app.listen(0);
+  // Bound to 127.0.0.1 explicitly, not 0.0.0.0.
+  //
+  // listen(0) on all interfaces succeeds even when another process already
+  // holds 127.0.0.1 on the port the OS picks, and that more specific bind wins
+  // for loopback traffic -- so the test's own requests can reach a different
+  // server entirely. This suite saw exactly that once, as unexplained 403 and
+  // 429 responses from routes that cannot produce them. Binding the loopback
+  // address makes the port genuinely ours or the bind fails loudly.
+  await app.listen(0, '127.0.0.1');
 
   const addr = app.getHttpServer().address() as { port: number };
   base = `http://127.0.0.1:${addr.port}/v1`;
