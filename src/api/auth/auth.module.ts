@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
 import { UsersModule } from '../../core/users/users.module.js';
+import { AuthController } from './auth.controller.js';
+import { AuthService } from './auth.service.js';
 import { AuthMaintenanceService } from './auth-maintenance.service.js';
 import { PasswordService } from './password.service.js';
 import { AuthAttemptRepository } from './rate-limit.repository.js';
 import { AuthRateLimitService } from './rate-limit.service.js';
+import { SessionGuard } from './session.guard.js';
 import { SessionRepository } from './session.repository.js';
 
 /**
@@ -13,13 +16,16 @@ import { SessionRepository } from './session.repository.js';
  */
 @Module({
   imports: [UsersModule],
+  controllers: [AuthController],
   providers: [
+    AuthService,
+    SessionGuard,
     PasswordService,
     SessionRepository,
     AuthAttemptRepository,
     AuthRateLimitService,
     AuthMaintenanceService,
   ],
-  exports: [PasswordService, SessionRepository, AuthRateLimitService],
+  exports: [AuthService, SessionGuard, PasswordService, SessionRepository, AuthRateLimitService],
 })
 export class AuthModule {}
