@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { AppConfig } from '../core/config/index.js';
 import { NotFoundError } from '../core/errors/app-error.js';
@@ -36,6 +37,16 @@ export function configureApp(app: NestExpressApplication, cfg: AppConfig): INest
   // A request body has no legitimate reason to be large here. Rejecting early
   // keeps a hostile payload from reaching a parser.
   app.useBodyParser('json', { limit: cfg.API_BODY_LIMIT });
+
+  // The session arrives in a cookie, so it has to be parsed before any guard
+  // can read it.
+  app.use(cookieParser());
+
+  // Whether X-Forwarded-For may be believed. Off unless a deployment opts in:
+  // the per-IP rate limit keys on the client address, and trusting a header
+  // any client can set would let an attacker present a fresh address per
+  // request and bypass the limit entirely.
+  app.set('trust proxy', cfg.TRUST_PROXY);
 
   // Closes the module tree on SIGTERM, which releases the database pool.
   app.enableShutdownHooks();

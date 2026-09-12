@@ -73,6 +73,25 @@ const auth = {
   // which, at a 24-hour default, is every ordinary deploy.
   AUTH_SWEEP_INTERVAL_MS: z.coerce.number().int().min(60_000).default(3600_000),
 
+  // Sent on the session cookie. Off only for plain-HTTP local
+  // development, where a Secure cookie would never be stored at all.
+  COOKIE_SECURE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+
+  // Whether X-Forwarded-For may be believed.
+  //
+  // This is a security setting, not a convenience one: the per-IP rate
+  // limit keys on the client address, and trusting a header any client can
+  // set lets an attacker present a new address per request and bypass it
+  // entirely. Default off; enable it only when a proxy you control
+  // overwrites the header.
+  TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   SESSION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
 };
 

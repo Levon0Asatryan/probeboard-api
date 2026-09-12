@@ -13,6 +13,8 @@ function fakeApp() {
     setGlobalPrefix: vi.fn(),
     useGlobalFilters: vi.fn(),
     useBodyParser: vi.fn(),
+    use: vi.fn(),
+    set: vi.fn(),
     enableShutdownHooks: vi.fn(),
     get: vi.fn().mockReturnValue({ catch: vi.fn() }),
   };
@@ -52,6 +54,26 @@ describe('configureApp', () => {
     const app = fakeApp();
     configureApp(app, cfg);
     expect(app.useBodyParser).toHaveBeenCalledWith('json', { limit: '32kb' });
+  });
+
+  it('parses cookies, since the session arrives in one', () => {
+    const app = fakeApp();
+    configureApp(app, cfg);
+    expect(app.use).toHaveBeenCalledOnce();
+  });
+
+  it('does not trust X-Forwarded-For unless configured to', () => {
+    // The per-IP rate limit keys on the client address. Trusting a header any
+    // client can set would let an attacker present a fresh address per request.
+    const app = fakeApp();
+    configureApp(app, cfg);
+    expect(app.set).toHaveBeenCalledWith('trust proxy', false);
+  });
+
+  it('trusts the proxy when a deployment opts in', () => {
+    const app = fakeApp();
+    configureApp(app, { ...cfg, TRUST_PROXY: true });
+    expect(app.set).toHaveBeenCalledWith('trust proxy', true);
   });
 
   it('enables shutdown hooks so the database pool is released', () => {

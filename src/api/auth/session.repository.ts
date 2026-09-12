@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { sql } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { DbService } from '../../core/db/db.service.js';
-import type { Session } from '../../core/db/types.js';
+import type { Database, Session } from '../../core/db/types.js';
 
 /** A session joined to the user it authenticates. */
 export interface ActiveSession {
@@ -73,8 +73,13 @@ export class SessionRepository {
    * `except` is how changing a password logs out everywhere else without
    * logging out the person doing it (A-5).
    */
-  async revokeAllForUser(userId: string, except?: string, now: Date = new Date()): Promise<number> {
-    let query = this.db.kysely
+  async revokeAllForUser(
+    userId: string,
+    except?: string,
+    now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<number> {
+    let query = executor
       .updateTable('sessions')
       .set({ revoked_at: now })
       .where('user_id', '=', userId)

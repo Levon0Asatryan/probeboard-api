@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import type { Kysely } from 'kysely';
 import { DbService } from '../db/db.service.js';
+import type { Database } from '../db/types.js';
 import type { User } from '../db/types.js';
 import { normalizeEmail } from './email.js';
 
@@ -44,9 +46,19 @@ export class UserRepository {
     return this.db.kysely.selectFrom('users').selectAll().where('id', '=', id).executeTakeFirst();
   }
 
-  /** Returns the updated row, or undefined if no such user exists. */
-  async updatePasswordHash(id: string, passwordHash: string): Promise<User | undefined> {
-    return this.db.kysely
+  /**
+   * Returns the updated row, or undefined if no such user exists.
+   *
+   * Takes an optional executor so a caller can commit this together with
+   * another write — changing a password and revoking sessions must not be
+   * separable.
+   */
+  async updatePasswordHash(
+    id: string,
+    passwordHash: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<User | undefined> {
+    return executor
       .updateTable('users')
       .set({ password_hash: passwordHash, updated_at: new Date() })
       .where('id', '=', id)

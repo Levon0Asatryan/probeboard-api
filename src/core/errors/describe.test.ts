@@ -84,10 +84,20 @@ describe('describeError never throws', () => {
   });
 
   it('handles values JSON cannot represent at all', () => {
-    expect(() => describeError(Symbol('s'))).not.toThrow();
-    expect(() => describeError(() => undefined)).not.toThrow();
+    expect(describeError(Symbol('s'))).toBe('Symbol(s)');
+    expect(describeError(() => undefined)).toContain('function');
     expect(describeError(null)).toBe('null');
     expect(describeError(undefined)).toBe('undefined');
+  });
+
+  it('renders primitives that are not errors', () => {
+    expect(describeError(42)).toBe('42');
+    expect(describeError(false)).toBe('false');
+  });
+
+  it('falls back when JSON.stringify represents nothing at the top level', () => {
+    // An object whose own toJSON returns undefined serialises to nothing.
+    expect(describeError({ toJSON: () => undefined })).toBe('[object Object]');
   });
 
   it('handles a value whose very type cannot be read', () => {
