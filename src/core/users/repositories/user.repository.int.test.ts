@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { connectTestDb, truncateAll, type TestDb } from '../../testing/database.js';
-import type { DbService } from '../db/db.service.js';
+import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
+import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from './user.repository.js';
 
 /**

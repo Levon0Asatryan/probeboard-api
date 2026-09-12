@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { createDb, type Db } from '../core/db/kysely.js';
+import { createDb, type Db } from '../core/db/utils/kysely.js';
 
 /**
  * A real PostgreSQL connection for integration tests.

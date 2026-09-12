@@ -5,7 +5,7 @@ import type { AppConfig } from '../core/config/index.js';
 import { NotFoundError } from '../core/errors/app-error.js';
 import { toErrorResponse } from '../core/errors/http-mapping.js';
 import { ErrorFilter } from './common/filters/error.filter.js';
-import { HEALTH_PATHS } from './health/paths.js';
+import { HEALTH_PATHS } from './health/constants.js';
 
 export const API_VERSION_PREFIX = 'v1';
 
