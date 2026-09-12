@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type Kysely, sql } from 'kysely';
-import { DbService } from '../../core/db/db.service.js';
-import type { Database, Session } from '../../core/db/types.js';
+import { DbService } from '../../../core/db/db.service.js';
+import type { Database, Session } from '../../../core/db/types.js';
 
 /** A session joined to the user it authenticates. */
 export interface ActiveSession {

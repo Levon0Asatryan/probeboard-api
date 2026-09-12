@@ -1,16 +1,16 @@
 import { Test } from '@nestjs/testing';
 import { LoggerModule } from 'nestjs-pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { APP_CONFIG, ConfigModule } from '../../core/config/config.module.js';
-import { DbModule } from '../../core/db/db.module.js';
-import { DbService } from '../../core/db/db.service.js';
-import { UserRepository } from '../../core/users/user.repository.js';
-import { truncateAll } from '../../testing/database.js';
-import { AuthModule } from './auth.module.js';
-import { PasswordService } from './password.service.js';
-import { AuthRateLimitService } from './rate-limit.service.js';
-import { SessionRepository } from './session.repository.js';
-import { generateToken, hashToken } from './session-token.js';
+import { APP_CONFIG, ConfigModule } from '../../../core/config/config.module.js';
+import { DbModule } from '../../../core/db/db.module.js';
+import { DbService } from '../../../core/db/db.service.js';
+import { UserRepository } from '../../../core/users/user.repository.js';
+import { truncateAll } from '../../../testing/database.js';
+import { AuthModule } from '../auth.module.js';
+import { PasswordService } from '../passwords/password.service.js';
+import { AuthRateLimitService } from '../rate-limiting/rate-limit.service.js';
+import { SessionRepository } from '../sessions/session.repository.js';
+import { generateToken, hashToken } from '../sessions/session-token.js';
 
 /**
  * The whole of M1's logic, resolved through the real Nest container against a

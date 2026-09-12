@@ -41,15 +41,15 @@ export default defineConfig({
         // as a repository. Covered by rate-limit.service.int.test.ts, which
         // exercises both limits, the interaction between them, and that the
         // counters survive a restart. Unit tests here would mock the counting.
-        'src/api/auth/rate-limit.service.ts',
+        'src/api/auth/rate-limiting/rate-limit.service.ts',
         // HTTP wiring and the flow it drives: cookies, status codes,
         // middleware order, the guard's interaction with cookie-parser. All
         // covered by auth.http.int.test.ts against a real server and a real
         // database, which CI runs as its own job. Unit tests here would assert
         // against a fake request object and prove nothing about the wiring.
-        'src/api/auth/auth.controller.ts',
+        'src/api/auth/http/auth.controller.ts',
         'src/api/auth/auth.service.ts',
-        'src/api/auth/session.guard.ts',
+        'src/api/auth/sessions/session.guard.ts',
       ],
       // Deliberately low for M0, when most of the tree is wiring. The
       // thresholds rise as the milestones that carry real logic land; docs

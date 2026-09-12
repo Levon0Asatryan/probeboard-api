@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../../core/config/index.js';
+import { loadConfig } from '../../../core/config/index.js';
 import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from './session-cookie.js';
+} from '../sessions/session-cookie.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
   loadConfig({ DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard', ...env });

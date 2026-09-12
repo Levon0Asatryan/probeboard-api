@@ -1,7 +1,7 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import { CurrentUser } from './current-user.decorator.js';
-import type { RequestUser } from './session.guard.js';
+import { CurrentUser } from '../sessions/current-user.decorator.js';
+import type { RequestUser } from '../sessions/session.guard.js';
 
 /**
  * Nest wraps a param decorator, so the factory is reached through the

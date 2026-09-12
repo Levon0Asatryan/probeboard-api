@@ -167,6 +167,10 @@ decays, and splitting this repository later must stay a directory move rather
 than an untangling exercise
 ([ADR-0006](https://github.com/Levon0Asatryan/probeboard-docs/blob/main/en/adr/0006-one-repo-split-ready.md)).
 
+A module is split into subfolders by cohesion once it passes roughly ten
+files. A flat directory of twenty hides which pieces belong together, and makes
+every later addition worse than the last.
+
 Planned modules, in milestone order: `worker/probing/` (M3),
 `worker/scheduler/` (M4), `worker/rollup/` (M5), `worker/incidents/` (M6),
 `worker/notifications/` (M7), `core/stats/` (M8, shared — the worker writes

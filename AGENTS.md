@@ -90,6 +90,11 @@ is a bug.
 
 ### Structure
 
+- Flag a directory that has grown into a flat list of unrelated files. A module
+  is split into subfolders by cohesion once it passes roughly ten files --
+  `sessions/`, `passwords/`, `rate-limiting/`, `http/` -- rather than
+  accumulating everything at one level. A flat folder of twenty files hides
+  which pieces belong together and makes every later addition worse.
 - Flag an import from `src/core/` into `src/api/` or `src/worker/`, or between
   those two. `core` depends on nothing; the other two never depend on each
   other (ADR-0006). `src/architecture.test.ts` enforces this.

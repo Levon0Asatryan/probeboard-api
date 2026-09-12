@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql, type Transaction } from 'kysely';
-import { DbService } from '../../core/db/db.service.js';
-import type { Database, AuthAttemptScope } from '../../core/db/types.js';
+import { DbService } from '../../../core/db/db.service.js';
+import type { Database, AuthAttemptScope } from '../../../core/db/types.js';
 
 export interface ReserveLimits {
   since: Date;

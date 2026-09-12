@@ -1,9 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { APP_CONFIG } from '../../core/config/config.module.js';
-import type { AppConfig } from '../../core/config/schema.js';
-import type { AuthAttemptScope } from '../../core/db/types.js';
-import { normalizeEmail } from '../../core/users/email.js';
-import { AuthAttemptRepository } from './rate-limit.repository.js';
+import { APP_CONFIG } from '../../../core/config/config.module.js';
+import type { AppConfig } from '../../../core/config/schema.js';
+import type { AuthAttemptScope } from '../../../core/db/types.js';
+import { normalizeEmail } from '../../../core/users/email.js';
+import { AuthAttemptRepository } from '../rate-limiting/rate-limit.repository.js';
 
 export interface RateLimitVerdict {
   allowed: boolean;

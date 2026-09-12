@@ -1,5 +1,5 @@
 import type { CookieOptions } from 'express';
-import type { AppConfig } from '../../core/config/schema.js';
+import type { AppConfig } from '../../../core/config/schema.js';
 
 export const SESSION_COOKIE = 'pb_session';
 

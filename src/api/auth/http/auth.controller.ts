@@ -1,8 +1,8 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { APP_CONFIG } from '../../core/config/config.module.js';
-import type { AppConfig } from '../../core/config/schema.js';
-import { zodBody } from '../common/pipes/zod-validation.pipe.js';
+import { APP_CONFIG } from '../../../core/config/config.module.js';
+import type { AppConfig } from '../../../core/config/schema.js';
+import { zodBody } from '../../common/pipes/zod-validation.pipe.js';
 import {
   changePasswordSchema,
   loginSchema,
@@ -10,17 +10,17 @@ import {
   type ChangePasswordRequest,
   type LoginRequest,
   type RegisterRequest,
-} from './auth.schemas.js';
-import { AuthService } from './auth.service.js';
-import { clientIp } from './client-ip.js';
-import { CurrentUser } from './current-user.decorator.js';
-import { SessionRepository } from './session.repository.js';
-import { SessionGuard, type RequestUser } from './session.guard.js';
+} from '../http/auth.schemas.js';
+import { AuthService } from '../auth.service.js';
+import { clientIp } from '../http/client-ip.js';
+import { CurrentUser } from '../sessions/current-user.decorator.js';
+import { SessionRepository } from '../sessions/session.repository.js';
+import { SessionGuard, type RequestUser } from '../sessions/session.guard.js';
 import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from './session-cookie.js';
+} from '../sessions/session-cookie.js';
 
 @Controller('auth')
 export class AuthController {

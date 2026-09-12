@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changePasswordSchema, loginSchema, registerSchema } from './auth.schemas.js';
+import { changePasswordSchema, loginSchema, registerSchema } from '../http/auth.schemas.js';
 
 const register = registerSchema;
 
