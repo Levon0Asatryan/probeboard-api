@@ -3,9 +3,9 @@ import type { Request } from 'express';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { AppError } from '../../../core/errors/app-error.js';
 import { describeError } from '../../../core/errors/describe.js';
-import { SESSION_COOKIE } from '../http/session-cookie.js';
-import { hashToken, looksLikeToken } from '../sessions/session-token.js';
-import { SessionRepository } from '../sessions/session.repository.js';
+import { SESSION_COOKIE } from '../utils/session-cookie.js';
+import { hashToken, looksLikeToken } from '../utils/session-token.js';
+import { SessionRepository } from '../repositories/session.repository.js';
 
 export class UnauthenticatedError extends AppError {
   constructor() {

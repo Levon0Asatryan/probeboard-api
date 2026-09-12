@@ -7,7 +7,7 @@ import { DbService } from '../../../core/db/db.service.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AppModule } from '../../api.module.js';
 import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
-import { SESSION_COOKIE } from '../http/session-cookie.js';
+import { SESSION_COOKIE } from '../utils/session-cookie.js';
 
 /**
  * The HTTP surface against a real server and a real database: real cookies,

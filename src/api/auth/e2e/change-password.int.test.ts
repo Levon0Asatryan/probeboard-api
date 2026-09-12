@@ -8,8 +8,8 @@ import { UserRepository } from '../../../core/users/user.repository.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AuthModule } from '../auth.module.js';
 import { AuthService } from '../auth.service.js';
-import { SessionRepository } from '../sessions/session.repository.js';
-import { generateToken, hashToken } from '../sessions/session-token.js';
+import { SessionRepository } from '../repositories/session.repository.js';
+import { generateToken, hashToken } from '../utils/session-token.js';
 
 /**
  * Changing a password and revoking the other sessions must commit together.

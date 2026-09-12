@@ -2,8 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
 import type { DbService } from '../../../core/db/db.service.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
-import { AuthAttemptRepository } from '../rate-limiting/rate-limit.repository.js';
-import { AuthRateLimitService } from '../rate-limiting/rate-limit.service.js';
+import { AuthAttemptRepository } from '../repositories/auth-attempt.repository.js';
+import { AuthRateLimitService } from '../services/rate-limit.service.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',

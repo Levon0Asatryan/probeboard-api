@@ -5,73 +5,90 @@ pull request); this holds the conventions to follow while writing.
 
 ## File and folder structure
 
-The pattern is **feature slices, not technical layers** — the consensus for
-NestJS and the point of vertical-slice/"screaming architecture": a folder tree
-should say what the system does, not what framework it uses. A layered tree
-(`controllers/`, `services/`, `repositories/`) scatters one feature across four
-folders, and every change touches all of them.
+Two rules, applied at two different levels. Mixing them up is the mistake this
+section exists to prevent.
 
-### The rules
+### Level 1 — feature modules, not technical layers
 
-1. **Top level is the deployment layer**, and only these:
-   `core/` (shared), `api/`, `worker/`, `testing/`.
-   `core` depends on nothing; `api` and `worker` depend on `core` and never on
-   each other. Enforced by `src/architecture.test.ts`.
+Inside `api/` and `worker/`, group by **feature**: `auth/`, `health/`,
+`monitors/`. Never `controllers/`, `services/`, `repositories/` at this level —
+that scatters one feature across four folders so every change touches all of
+them, and the tree stops saying what the system does.
 
-2. **Inside a layer, group by feature slice** — `auth/`, `health/`, `users/` —
-   never by technical type. Deleting a feature should be deleting a folder.
+Deleting a feature should be deleting one folder.
 
-3. **Inside a slice, subfolder only when two or more files share a purpose.**
-   A single file stays at the slice root. A folder holding one file is noise,
-   and it hides the file rather than organising it.
+### Level 2 — inside a module, a folder per role
 
-4. **Everything that touches an HTTP request or response lives in `http/`** —
-   controller, request schemas, guards, decorators, cookie handling, address
-   extraction. "How is a request handled?" must be answerable from one folder.
-   A guard sitting beside a repository is the mistake this rule exists to stop.
-
-5. **Data access lives with its subject**, named `<subject>.repository.ts`, and
-   stays out of `http/`.
-
-6. **Split a folder when it passes roughly eight source files** (tests not
-   counted). Earlier if clear groupings already exist.
-
-7. **Integration tests that span a whole slice go in `flows/`**, because they
-   belong to no single part of it. Tests of one file sit beside that file.
-
-8. **Naming**: `<subject>.<role>.ts` where the role is a NestJS construct —
-   `module`, `controller`, `service`, `repository`, `guard`, `decorator`,
-   `pipe`, `filter`. Pure helpers with no framework role take a plain
-   descriptive name (`session-token.ts`, `client-ip.ts`). Keep the subject
-   prefix even inside a folder that repeats it: `sessions/session.repository.ts`
-   stays findable by fuzzy search, `sessions/repository.ts` does not.
-
-9. **Tests**: `<file>.test.ts` for unit, `<file>.int.test.ts` for anything
-   needing PostgreSQL. The integration suite has its own config and CI job.
-
-### Worked example
+This is the standard NestJS module layout. `nest g resource` scaffolds
+`<name>.module.ts`, `<name>.controller.ts`, `<name>.service.ts` at the module
+root plus `dto/` and `entities/`; the framework's own `19-auth-jwt` sample adds
+`decorators/`; Novu's production `auth` module uses `dtos/`, `services/` and
+`e2e/`.
 
 ```
 api/auth/
-  auth.module.ts                  entry point
-  auth.service.ts                 register, log in, change password
-  password.service.ts             single file, so no folder
-  auth-maintenance.service.ts     single file, so no folder
-  http/                           everything touching a request
-    auth.controller.ts
-    auth.schemas.ts
+  auth.module.ts            the module's own three files stay at the root
+  auth.controller.ts
+  auth.service.ts
+  dto/                      request shapes, one per file
+    register.dto.ts
+    login.dto.ts
+    change-password.dto.ts
+    fields.ts               pieces shared between them
+  guards/
     session.guard.ts
+  decorators/
     current-user.decorator.ts
+  services/                 every service except the module's own
+    password.service.ts
+    rate-limit.service.ts
+    auth-maintenance.service.ts
+  repositories/
+    session.repository.ts
+    auth-attempt.repository.ts
+  utils/                    pure helpers with no framework role
+    session-token.ts
     session-cookie.ts
     client-ip.ts
-  sessions/                       what a session is, and where it lives
-    session-token.ts
-    session.repository.ts
-  rate-limiting/
-    rate-limit.service.ts
-    rate-limit.repository.ts
-  flows/                          integration tests spanning the slice
+  e2e/                      tests exercising the module end to end
+    auth-http.int.test.ts
+    auth-flow.int.test.ts
+    change-password.int.test.ts
 ```
+
+Use the role folder even when it holds a single file. Consistency is what makes
+the tree readable — a reader looking for a guard should never have to check
+whether this module happened to have only one.
+
+Add `strategies/`, `interfaces/`, `entities/` or `constants.ts` when they
+appear; do not invent new role names when a NestJS one fits.
+
+### Naming
+
+`<subject>.<role>.ts`, where role is a NestJS construct: `module`, `controller`,
+`service`, `repository`, `guard`, `decorator`, `pipe`, `filter`, `interceptor`,
+`middleware`, `strategy`, `dto`.
+
+Pure helpers with no framework role take a plain kebab-case name —
+`session-token.ts`, `client-ip.ts`.
+
+Keep the subject prefix even inside a folder that repeats it:
+`repositories/session.repository.ts` stays findable by fuzzy search,
+`repositories/repository.ts` does not.
+
+### Tests
+
+- `<file>.test.ts` beside the file it tests — unit, no I/O.
+- `<file>.int.test.ts` for anything needing PostgreSQL. Separate vitest config,
+  separate CI job.
+- Tests that span the whole module go in `e2e/`, named
+  `<subject>.int.test.ts`, because they belong to no single file.
+
+### Top level
+
+Only the deployment layers: `core/` (shared by both processes), `api/`,
+`worker/`, `testing/`. `core` depends on nothing; `api` and `worker` depend on
+`core` and never on each other. Enforced by `src/architecture.test.ts`.
 
 ### When files move
 

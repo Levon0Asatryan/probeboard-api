@@ -167,9 +167,11 @@ decays, and splitting this repository later must stay a directory move rather
 than an untangling exercise
 ([ADR-0006](https://github.com/Levon0Asatryan/probeboard-docs/blob/main/en/adr/0006-one-repo-split-ready.md)).
 
-A module is split into subfolders by cohesion once it passes roughly ten
-files. A flat directory of twenty hides which pieces belong together, and makes
-every later addition worse than the last.
+Structure follows two rules, documented with their evidence in
+[CLAUDE.md](CLAUDE.md): **feature modules** at the `api/` level, and **a folder
+per role inside a module** — the layout `nest g resource` scaffolds. Role
+folders are used even when they hold one file, because consistency is what
+makes the tree readable.
 
 Planned modules, in milestone order: `worker/probing/` (M3),
 `worker/scheduler/` (M4), `worker/rollup/` (M5), `worker/incidents/` (M6),

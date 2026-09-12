@@ -6,7 +6,7 @@ import {
   looksLikeToken,
   TOKEN_PREFIX,
   tokenHashesEqual,
-} from '../sessions/session-token.js';
+} from '../utils/session-token.js';
 
 describe('generateToken', () => {
   it('carries a prefix, so a leaked token is recognisable', () => {

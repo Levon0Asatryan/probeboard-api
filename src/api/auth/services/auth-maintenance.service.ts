@@ -1,10 +1,10 @@
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
-import { APP_CONFIG } from '../../core/config/config.module.js';
-import type { AppConfig } from '../../core/config/schema.js';
-import { describeError } from '../../core/errors/describe.js';
-import { AuthAttemptRepository } from './rate-limiting/rate-limit.repository.js';
-import { SessionRepository } from './sessions/session.repository.js';
+import { APP_CONFIG } from '../../../core/config/config.module.js';
+import type { AppConfig } from '../../../core/config/schema.js';
+import { describeError } from '../../../core/errors/describe.js';
+import { AuthAttemptRepository } from '../repositories/auth-attempt.repository.js';
+import { SessionRepository } from '../repositories/session.repository.js';
 
 /**
  * Keeps `sessions` and `auth_attempts` bounded.

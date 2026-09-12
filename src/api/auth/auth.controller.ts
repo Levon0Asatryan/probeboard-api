@@ -1,26 +1,21 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { APP_CONFIG } from '../../../core/config/config.module.js';
-import type { AppConfig } from '../../../core/config/schema.js';
-import { zodBody } from '../../common/pipes/zod-validation.pipe.js';
-import {
-  changePasswordSchema,
-  loginSchema,
-  registerSchema,
-  type ChangePasswordRequest,
-  type LoginRequest,
-  type RegisterRequest,
-} from '../http/auth.schemas.js';
-import { AuthService } from '../auth.service.js';
-import { clientIp } from '../http/client-ip.js';
-import { CurrentUser } from '../http/current-user.decorator.js';
-import { SessionRepository } from '../sessions/session.repository.js';
-import { SessionGuard, type RequestUser } from '../http/session.guard.js';
+import { APP_CONFIG } from '../../core/config/config.module.js';
+import type { AppConfig } from '../../core/config/schema.js';
+import { zodBody } from '../common/pipes/zod-validation.pipe.js';
+import { AuthService } from './auth.service.js';
+import { changePasswordSchema, type ChangePasswordRequest } from './dto/change-password.dto.js';
+import { loginSchema, type LoginRequest } from './dto/login.dto.js';
+import { registerSchema, type RegisterRequest } from './dto/register.dto.js';
+import { clientIp } from './utils/client-ip.js';
+import { CurrentUser } from './decorators/current-user.decorator.js';
+import { SessionRepository } from './repositories/session.repository.js';
+import { SessionGuard, type RequestUser } from './guards/session.guard.js';
 import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from '../http/session-cookie.js';
+} from './utils/session-cookie.js';
 
 @Controller('auth')
 export class AuthController {

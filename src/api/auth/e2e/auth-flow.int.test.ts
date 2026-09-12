@@ -7,10 +7,10 @@ import { DbService } from '../../../core/db/db.service.js';
 import { UserRepository } from '../../../core/users/user.repository.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AuthModule } from '../auth.module.js';
-import { PasswordService } from '../password.service.js';
-import { AuthRateLimitService } from '../rate-limiting/rate-limit.service.js';
-import { SessionRepository } from '../sessions/session.repository.js';
-import { generateToken, hashToken } from '../sessions/session-token.js';
+import { PasswordService } from '../services/password.service.js';
+import { AuthRateLimitService } from '../services/rate-limit.service.js';
+import { SessionRepository } from '../repositories/session.repository.js';
+import { generateToken, hashToken } from '../utils/session-token.js';
 
 /**
  * The whole of M1's logic, resolved through the real Nest container against a

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../../core/config/index.js';
-import { AuthMaintenanceService } from './auth-maintenance.service.js';
-import type { AuthAttemptRepository } from './rate-limiting/rate-limit.repository.js';
-import type { SessionRepository } from './sessions/session.repository.js';
+import { loadConfig } from '../../../core/config/index.js';
+import { AuthMaintenanceService } from '../services/auth-maintenance.service.js';
+import type { AuthAttemptRepository } from '../repositories/auth-attempt.repository.js';
+import type { SessionRepository } from '../repositories/session.repository.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',

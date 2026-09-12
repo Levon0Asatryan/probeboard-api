@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
-import { clientIp } from '../http/client-ip.js';
+import { clientIp } from '../utils/client-ip.js';
 
 const request = (parts: Partial<Request>) =>
   ({ ips: [], socket: {}, ...parts }) as unknown as Request;

@@ -4,7 +4,7 @@ import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from '../http/session-cookie.js';
+} from '../utils/session-cookie.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
   loadConfig({ DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard', ...env });

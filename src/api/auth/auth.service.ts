@@ -4,10 +4,10 @@ import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
 import { AppError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/user.repository.js';
-import { PasswordService } from './password.service.js';
-import { AuthRateLimitService } from './rate-limiting/rate-limit.service.js';
-import { SessionRepository } from './sessions/session.repository.js';
-import { generateToken, hashToken } from './sessions/session-token.js';
+import { PasswordService } from './services/password.service.js';
+import { AuthRateLimitService } from './services/rate-limit.service.js';
+import { SessionRepository } from './repositories/session.repository.js';
+import { generateToken, hashToken } from './utils/session-token.js';
 
 export interface IssuedSession {
   token: string;
