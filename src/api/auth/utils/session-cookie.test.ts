@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
 import {
   clearSessionCookieOptions,
-  SESSION_COOKIE,
+  sessionCookieName,
   sessionCookieOptions,
 } from '../utils/session-cookie.js';
 
@@ -59,8 +59,22 @@ describe('clearSessionCookieOptions', () => {
   });
 });
 
-describe('SESSION_COOKIE', () => {
-  it('has a stable name a client can rely on', () => {
-    expect(SESSION_COOKIE).toBe('pb_session');
+describe('sessionCookieName', () => {
+  it('carries the __Host- prefix when the cookie is Secure', () => {
+    // The browser then refuses the cookie unless it is Secure, Path=/ and has
+    // no Domain -- which stops a sibling subdomain setting a same-named cookie
+    // ours cannot be told apart from.
+    expect(sessionCookieName(cfg())).toBe('__Host-pb_session');
+  });
+
+  it('drops the prefix when Secure is off, since the browser would refuse it', () => {
+    expect(sessionCookieName(cfg({ COOKIE_SECURE: 'false' }))).toBe('pb_session');
+  });
+
+  it('matches the attributes __Host- requires', () => {
+    const opts = sessionCookieOptions(cfg(), expires);
+    expect(opts.secure).toBe(true);
+    expect(opts.path).toBe('/');
+    expect(opts).not.toHaveProperty('domain');
   });
 });

@@ -7,7 +7,7 @@ import { DbService } from '../../../core/db/db.service.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AppModule } from '../../api.module.js';
 import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
-import { SESSION_COOKIE } from '../utils/session-cookie.js';
+import { sessionCookieName } from '../utils/session-cookie.js';
 
 /**
  * The HTTP surface against a real server and a real database: real cookies,
@@ -33,6 +33,7 @@ beforeAll(async () => {
   // the attempts table, so the counter starts fresh per test.
   process.env.AUTH_MAX_PER_IP = '30';
   process.env.AUTH_MAX_FAILURES_PER_EMAIL = '5';
+  process.env.MAX_SESSIONS_PER_USER = '3';
   process.env.LOG_LEVEL = 'fatal';
 
   app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
@@ -146,7 +147,7 @@ describe('login', () => {
     const res = await login('alice@example.com', 'correct horse battery');
 
     expect(res.status).toBe(200);
-    expect(res.cookie).toContain(SESSION_COOKIE);
+    expect(res.cookie).toContain(sessionCookieName(loadConfig()));
 
     const me = await call('/auth/me', { method: 'GET', cookie: res.cookie });
     expect(me.status).toBe(200);
@@ -191,9 +192,9 @@ describe('the session guard', () => {
 
   it('refuses a forged or malformed cookie', async () => {
     for (const cookie of [
-      `${SESSION_COOKIE}=nonsense`,
-      `${SESSION_COOKIE}=pbs_${'a'.repeat(43)}`,
-      `${SESSION_COOKIE}=`,
+      `${sessionCookieName(loadConfig())}=nonsense`,
+      `${sessionCookieName(loadConfig())}=pbs_${'a'.repeat(43)}`,
+      `${sessionCookieName(loadConfig())}=`,
     ]) {
       expect((await call('/auth/me', { method: 'GET', cookie })).status).toBe(401);
     }
@@ -332,6 +333,33 @@ describe('changing a password is rate limited too', () => {
     }
 
     expect(statuses).toContain(429);
+  });
+});
+
+describe('sessions are capped per account', () => {
+  it('logging in more than the cap ends the oldest sessions', async () => {
+    await register('capped@example.com', 'correct horse battery');
+
+    const cookies = [];
+    for (let i = 0; i < 5; i++) {
+      cookies.push((await login('capped@example.com', 'correct horse battery')).cookie);
+    }
+
+    // The three newest still work; the two oldest were revoked.
+    for (const cookie of cookies.slice(-3)) {
+      expect((await call('/auth/me', { method: 'GET', cookie })).status).toBe(200);
+    }
+    for (const cookie of cookies.slice(0, 2)) {
+      expect((await call('/auth/me', { method: 'GET', cookie })).status).toBe(401);
+    }
+  });
+
+  it('the session just issued is never the one revoked', async () => {
+    await register('capped2@example.com', 'correct horse battery');
+    for (let i = 0; i < 4; i++) await login('capped2@example.com', 'correct horse battery');
+
+    const newest = await login('capped2@example.com', 'correct horse battery');
+    expect((await call('/auth/me', { method: 'GET', cookie: newest.cookie })).status).toBe(200);
   });
 });
 

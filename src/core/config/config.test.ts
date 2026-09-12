@@ -246,3 +246,35 @@ describe('boolean settings are strict, not truthy', () => {
     expect(cfg.SSRF_GUARD_ENABLED).toBe(true);
   });
 });
+
+describe('session bounds', () => {
+  it('rejects a cap below one session', () => {
+    expect(() => loadConfig({ ...valid, MAX_SESSIONS_PER_USER: '0' })).toThrow(
+      /MAX_SESSIONS_PER_USER/,
+    );
+  });
+
+  it('rejects an absurd cap, which would defeat the point of having one', () => {
+    expect(() => loadConfig({ ...valid, MAX_SESSIONS_PER_USER: '100000' })).toThrow(
+      /MAX_SESSIONS_PER_USER/,
+    );
+  });
+
+  it('allows disabling the touch interval, writing on every request', () => {
+    expect(loadConfig({ ...valid, SESSION_TOUCH_INTERVAL_MS: '0' }).SESSION_TOUCH_INTERVAL_MS).toBe(
+      0,
+    );
+  });
+
+  it('rejects a negative touch interval', () => {
+    expect(() => loadConfig({ ...valid, SESSION_TOUCH_INTERVAL_MS: '-1' })).toThrow(
+      /SESSION_TOUCH_INTERVAL_MS/,
+    );
+  });
+
+  it('defaults to bounded sessions and a throttled write', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.MAX_SESSIONS_PER_USER).toBe(10);
+    expect(cfg.SESSION_TOUCH_INTERVAL_MS).toBe(300_000);
+  });
+});

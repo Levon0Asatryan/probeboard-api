@@ -130,13 +130,86 @@ describe('revocation', () => {
   });
 });
 
+describe('session cap', () => {
+  it('revokes everything beyond the newest N', async () => {
+    // Without a cap each login leaves a row alive for the whole session
+    // lifetime, so one account accumulates them for as long as it is used.
+    const issued = [];
+    for (let i = 0; i < 5; i++) issued.push(await issue());
+
+    expect(await sessions.revokeBeyondNewest(userId, 3)).toBe(2);
+    expect(await sessions.countActive(userId)).toBe(3);
+  });
+
+  it('keeps the newest, which is the session just issued', async () => {
+    const oldest = await issue();
+    await issue();
+    const newest = await issue();
+
+    await sessions.revokeBeyondNewest(userId, 2);
+
+    expect(await sessions.findActive(hashToken(newest.token))).toBeDefined();
+    expect(await sessions.findActive(hashToken(oldest.token))).toBeUndefined();
+  });
+
+  it('does nothing when the user is under the cap', async () => {
+    await issue();
+    expect(await sessions.revokeBeyondNewest(userId, 10)).toBe(0);
+  });
+
+  it('does not touch another user̕s sessions', async () => {
+    const bob = await users.create('bob@example.com', 'h');
+    const bobToken = generateToken();
+    await sessions.create(bob!.id, hashToken(bobToken), inDays(30));
+    for (let i = 0; i < 4; i++) await issue();
+
+    await sessions.revokeBeyondNewest(userId, 1);
+
+    expect(await sessions.findActive(hashToken(bobToken))).toBeDefined();
+  });
+
+  it('ignores already-revoked and expired rows when counting', async () => {
+    const revoked = await issue();
+    await sessions.revoke(revoked.session.id);
+    await issue(new Date(Date.now() - 1000));
+    const live = [await issue(), await issue()];
+
+    expect(await sessions.revokeBeyondNewest(userId, 2)).toBe(0);
+    for (const s of live) expect(await sessions.findActive(hashToken(s.token))).toBeDefined();
+  });
+});
+
 describe('touch', () => {
+  it('skips the write when the recorded time is recent', async () => {
+    // One write per authenticated read is write amplification for a value
+    // nothing displays to the second.
+    const { session } = await issue();
+
+    await sessions.touch(session.id, 60_000);
+
+    const { rows } = await ctx.pool.query<{ last_seen_at: Date }>(
+      'SELECT last_seen_at FROM sessions',
+    );
+    expect(rows[0].last_seen_at.getTime()).toBe(session.last_seen_at.getTime());
+  });
+
+  it('writes once the recorded time is stale enough', async () => {
+    const { session } = await issue();
+
+    await sessions.touch(session.id, 0);
+
+    const { rows } = await ctx.pool.query<{ last_seen_at: Date }>(
+      'SELECT last_seen_at FROM sessions',
+    );
+    expect(rows[0].last_seen_at.getTime()).toBeGreaterThanOrEqual(session.last_seen_at.getTime());
+  });
+
   it('records activity without extending the session', async () => {
     // A fixed lifetime is what keeps revocation reasoning simple (A-3).
     const expiresAt = inDays(30);
     const { session } = await issue(expiresAt);
 
-    await sessions.touch(session.id);
+    await sessions.touch(session.id, 0);
 
     const { rows } = await ctx.pool.query<{ expires_at: Date; last_seen_at: Date }>(
       'SELECT expires_at, last_seen_at FROM sessions',
