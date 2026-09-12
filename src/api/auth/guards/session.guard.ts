@@ -1,11 +1,11 @@
 import { type CanActivate, type ExecutionContext, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
-import { AppError } from '../../core/errors/app-error.js';
-import { describeError } from '../../core/errors/describe.js';
-import { SESSION_COOKIE } from './session-cookie.js';
-import { hashToken, looksLikeToken } from './session-token.js';
-import { SessionRepository } from './session.repository.js';
+import { AppError } from '../../../core/errors/app-error.js';
+import { describeError } from '../../../core/errors/describe.js';
+import { SESSION_COOKIE } from '../utils/session-cookie.js';
+import { hashToken, looksLikeToken } from '../utils/session-token.js';
+import { SessionRepository } from '../repositories/session.repository.js';
 
 export class UnauthenticatedError extends AppError {
   constructor() {

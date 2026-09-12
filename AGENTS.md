@@ -90,6 +90,11 @@ is a bug.
 
 ### Structure
 
+- Flag a file placed against the structure rules in `CLAUDE.md`: a technical
+  grouping where a feature module belongs, a supporting file left at a module's
+  root instead of its role folder (`dto/`, `guards/`, `decorators/`,
+  `services/`, `repositories/`, `utils/`), or a name without its NestJS role
+  suffix.
 - Flag an import from `src/core/` into `src/api/` or `src/worker/`, or between
   those two. `core` depends on nothing; the other two never depend on each
   other (ADR-0006). `src/architecture.test.ts` enforces this.

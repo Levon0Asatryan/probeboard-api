@@ -1,15 +1,15 @@
 import { Test } from '@nestjs/testing';
 import { LoggerModule } from 'nestjs-pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConfigModule } from '../../core/config/config.module.js';
-import { DbModule } from '../../core/db/db.module.js';
-import { DbService } from '../../core/db/db.service.js';
-import { UserRepository } from '../../core/users/user.repository.js';
-import { truncateAll } from '../../testing/database.js';
-import { AuthModule } from './auth.module.js';
-import { AuthService } from './auth.service.js';
-import { SessionRepository } from './session.repository.js';
-import { generateToken, hashToken } from './session-token.js';
+import { ConfigModule } from '../../../core/config/config.module.js';
+import { DbModule } from '../../../core/db/db.module.js';
+import { DbService } from '../../../core/db/db.service.js';
+import { UserRepository } from '../../../core/users/user.repository.js';
+import { truncateAll } from '../../../testing/database.js';
+import { AuthModule } from '../auth.module.js';
+import { AuthService } from '../auth.service.js';
+import { SessionRepository } from '../repositories/session.repository.js';
+import { generateToken, hashToken } from '../utils/session-token.js';
 
 /**
  * Changing a password and revoking the other sessions must commit together.

@@ -3,24 +3,19 @@ import type { Request, Response } from 'express';
 import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
 import { zodBody } from '../common/pipes/zod-validation.pipe.js';
-import {
-  changePasswordSchema,
-  loginSchema,
-  registerSchema,
-  type ChangePasswordRequest,
-  type LoginRequest,
-  type RegisterRequest,
-} from './auth.schemas.js';
 import { AuthService } from './auth.service.js';
-import { clientIp } from './client-ip.js';
-import { CurrentUser } from './current-user.decorator.js';
-import { SessionRepository } from './session.repository.js';
-import { SessionGuard, type RequestUser } from './session.guard.js';
+import { changePasswordSchema, type ChangePasswordRequest } from './dto/change-password.dto.js';
+import { loginSchema, type LoginRequest } from './dto/login.dto.js';
+import { registerSchema, type RegisterRequest } from './dto/register.dto.js';
+import { clientIp } from './utils/client-ip.js';
+import { CurrentUser } from './decorators/current-user.decorator.js';
+import { SessionRepository } from './repositories/session.repository.js';
+import { SessionGuard, type RequestUser } from './guards/session.guard.js';
 import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from './session-cookie.js';
+} from './utils/session-cookie.js';
 
 @Controller('auth')
 export class AuthController {

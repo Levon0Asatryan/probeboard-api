@@ -2,12 +2,12 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig } from '../../core/config/index.js';
-import { DbService } from '../../core/db/db.service.js';
-import { truncateAll } from '../../testing/database.js';
-import { AppModule } from '../api.module.js';
-import { configureApp, registerNotFoundFallback } from '../bootstrap.js';
-import { SESSION_COOKIE } from './session-cookie.js';
+import { loadConfig } from '../../../core/config/index.js';
+import { DbService } from '../../../core/db/db.service.js';
+import { truncateAll } from '../../../testing/database.js';
+import { AppModule } from '../../api.module.js';
+import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
+import { SESSION_COOKIE } from '../utils/session-cookie.js';
 
 /**
  * The HTTP surface against a real server and a real database: real cookies,
