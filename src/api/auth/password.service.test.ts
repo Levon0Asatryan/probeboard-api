@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../../../core/config/index.js';
-import { PasswordService } from '../passwords/password.service.js';
+import { loadConfig } from '../../core/config/index.js';
+import { PasswordService } from './password.service.js';
 
 // The smallest parameters the schema allows, so the suite stays fast. Cost is
 // configuration precisely so it can differ between a test run and production.

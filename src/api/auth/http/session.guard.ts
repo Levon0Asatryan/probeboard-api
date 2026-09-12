@@ -3,7 +3,7 @@ import type { Request } from 'express';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { AppError } from '../../../core/errors/app-error.js';
 import { describeError } from '../../../core/errors/describe.js';
-import { SESSION_COOKIE } from '../sessions/session-cookie.js';
+import { SESSION_COOKIE } from '../http/session-cookie.js';
 import { hashToken, looksLikeToken } from '../sessions/session-token.js';
 import { SessionRepository } from '../sessions/session.repository.js';
 

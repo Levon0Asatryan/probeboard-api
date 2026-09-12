@@ -1,8 +1,8 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import { SESSION_COOKIE } from '../sessions/session-cookie.js';
+import { SESSION_COOKIE } from '../http/session-cookie.js';
 import { generateToken } from '../sessions/session-token.js';
-import { SessionGuard, UnauthenticatedError } from '../sessions/session.guard.js';
+import { SessionGuard, UnauthenticatedError } from '../http/session.guard.js';
 import type { SessionRepository } from '../sessions/session.repository.js';
 
 const active = {

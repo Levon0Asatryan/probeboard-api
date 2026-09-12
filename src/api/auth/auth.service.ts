@@ -4,7 +4,7 @@ import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
 import { AppError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/user.repository.js';
-import { PasswordService } from './passwords/password.service.js';
+import { PasswordService } from './password.service.js';
 import { AuthRateLimitService } from './rate-limiting/rate-limit.service.js';
 import { SessionRepository } from './sessions/session.repository.js';
 import { generateToken, hashToken } from './sessions/session-token.js';

@@ -1,9 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Algorithm, hash, verify } from '@node-rs/argon2';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
-import { APP_CONFIG } from '../../../core/config/config.module.js';
-import type { AppConfig } from '../../../core/config/schema.js';
-import { describeError } from '../../../core/errors/describe.js';
+import { APP_CONFIG } from '../../core/config/config.module.js';
+import type { AppConfig } from '../../core/config/schema.js';
+import { describeError } from '../../core/errors/describe.js';
 
 /**
  * Password hashing (NFR-10).

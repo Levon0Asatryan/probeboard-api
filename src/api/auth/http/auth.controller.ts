@@ -13,14 +13,14 @@ import {
 } from '../http/auth.schemas.js';
 import { AuthService } from '../auth.service.js';
 import { clientIp } from '../http/client-ip.js';
-import { CurrentUser } from '../sessions/current-user.decorator.js';
+import { CurrentUser } from '../http/current-user.decorator.js';
 import { SessionRepository } from '../sessions/session.repository.js';
-import { SessionGuard, type RequestUser } from '../sessions/session.guard.js';
+import { SessionGuard, type RequestUser } from '../http/session.guard.js';
 import {
   clearSessionCookieOptions,
   SESSION_COOKIE,
   sessionCookieOptions,
-} from '../sessions/session-cookie.js';
+} from '../http/session-cookie.js';
 
 @Controller('auth')
 export class AuthController {

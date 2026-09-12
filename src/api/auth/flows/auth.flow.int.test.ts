@@ -7,7 +7,7 @@ import { DbService } from '../../../core/db/db.service.js';
 import { UserRepository } from '../../../core/users/user.repository.js';
 import { truncateAll } from '../../../testing/database.js';
 import { AuthModule } from '../auth.module.js';
-import { PasswordService } from '../passwords/password.service.js';
+import { PasswordService } from '../password.service.js';
 import { AuthRateLimitService } from '../rate-limiting/rate-limit.service.js';
 import { SessionRepository } from '../sessions/session.repository.js';
 import { generateToken, hashToken } from '../sessions/session-token.js';

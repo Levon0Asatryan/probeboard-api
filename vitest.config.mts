@@ -49,7 +49,7 @@ export default defineConfig({
         // against a fake request object and prove nothing about the wiring.
         'src/api/auth/http/auth.controller.ts',
         'src/api/auth/auth.service.ts',
-        'src/api/auth/sessions/session.guard.ts',
+        'src/api/auth/http/session.guard.ts',
       ],
       // Deliberately low for M0, when most of the tree is wiring. The
       // thresholds rise as the milestones that carry real logic land; docs

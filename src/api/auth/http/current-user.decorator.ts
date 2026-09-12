@@ -1,5 +1,5 @@
 import { createParamDecorator, type ExecutionContext } from '@nestjs/common';
-import type { AuthenticatedRequest, RequestUser } from '../sessions/session.guard.js';
+import type { AuthenticatedRequest, RequestUser } from '../http/session.guard.js';
 
 /**
  * The authenticated user, as attached by SessionGuard.
