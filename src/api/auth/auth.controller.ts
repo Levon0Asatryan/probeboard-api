@@ -95,9 +95,16 @@ export class AuthController {
   @HttpCode(204)
   @UseGuards(SessionGuard)
   async changePassword(
+    @Req() req: Request,
     @CurrentUser() user: RequestUser,
     @Body(zodBody(changePasswordSchema)) body: ChangePasswordRequest,
   ): Promise<void> {
-    await this.auth.changePassword(user.id, user.sessionId, body.currentPassword, body.newPassword);
+    await this.auth.changePassword(
+      user.id,
+      user.sessionId,
+      body.currentPassword,
+      body.newPassword,
+      clientIp(req),
+    );
   }
 }

@@ -77,7 +77,13 @@ describe('changePassword', () => {
   it('changes the password and revokes the other sessions', async () => {
     const { user, mine, other } = await setup();
 
-    await auth.changePassword(user.id, mine.id, 'correct horse battery', 'a brand new one');
+    await auth.changePassword(
+      user.id,
+      mine.id,
+      'correct horse battery',
+      'a brand new one',
+      '203.0.113.9',
+    );
 
     expect(await sessions.findActive(hashToken(mine.token))).toBeDefined();
     expect(await sessions.findActive(hashToken(other.token))).toBeUndefined();
@@ -96,7 +102,13 @@ describe('changePassword', () => {
       .mockRejectedValueOnce(new Error('connection terminated'));
 
     await expect(
-      auth.changePassword(user.id, mine.id, 'correct horse battery', 'a brand new one'),
+      auth.changePassword(
+        user.id,
+        mine.id,
+        'correct horse battery',
+        'a brand new one',
+        '203.0.113.9',
+      ),
     ).rejects.toThrow(/connection terminated/);
 
     spy.mockRestore();
@@ -110,7 +122,7 @@ describe('changePassword', () => {
     const { user, mine, other } = await setup();
 
     await expect(
-      auth.changePassword(user.id, mine.id, 'not the password', 'a brand new one'),
+      auth.changePassword(user.id, mine.id, 'not the password', 'a brand new one', '203.0.113.9'),
     ).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
 
     expect((await users.findByEmail('alice@example.com'))!.password_hash).toBe(user.password_hash);

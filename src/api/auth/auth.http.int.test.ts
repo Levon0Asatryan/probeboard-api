@@ -29,7 +29,9 @@ beforeAll(async () => {
   process.env.ARGON2_TIME_COST = '1';
   process.env.COOKIE_SECURE = 'false';
   process.env.PASSWORD_MIN_LENGTH = '10';
-  process.env.AUTH_MAX_PER_IP = '500';
+  // Every request in this file comes from 127.0.0.1, but each test truncates
+  // the attempts table, so the counter starts fresh per test.
+  process.env.AUTH_MAX_PER_IP = '30';
   process.env.AUTH_MAX_FAILURES_PER_EMAIL = '5';
   process.env.LOG_LEVEL = 'fatal';
 
@@ -298,6 +300,30 @@ describe('registration cannot be used against an account', () => {
       );
     }
     expect(results).toContain(429);
+  });
+});
+
+describe('changing a password is rate limited too', () => {
+  it('refuses after repeated wrong current passwords', async () => {
+    // Otherwise anyone holding a session -- including a stolen one -- can
+    // brute-force the current password, and spend one Argon2 verification of
+    // our CPU per guess, without ever meeting the limiter.
+    await register('pw-brute@example.com', 'correct horse battery');
+    const { cookie } = await login('pw-brute@example.com', 'correct horse battery');
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      statuses.push(
+        (
+          await call('/auth/password', {
+            cookie,
+            body: { currentPassword: `guess ${String(i)}`, newPassword: 'a brand new one' },
+          })
+        ).status,
+      );
+    }
+
+    expect(statuses).toContain(429);
   });
 });
 

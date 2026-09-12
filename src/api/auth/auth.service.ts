@@ -102,7 +102,19 @@ export class AuthService {
     currentSessionId: string,
     currentPassword: string,
     newPassword: string,
+    ip: string,
   ): Promise<void> {
+    // Limited before the verification, and by address only.
+    //
+    // Without a limit here, anyone holding a session -- including a stolen one
+    // -- can brute-force the current password and spend one Argon2
+    // verification of our CPU per guess, never meeting the limiter that guards
+    // login. By address rather than by account for the same reason as
+    // registration: keying on the owner's address would let a stolen session
+    // lock them out of the login they need to recover.
+    const verdict = await this.limiter.admit(ip, undefined);
+    if (!verdict.allowed) throw new RateLimitedError(verdict.retryAfterSeconds);
+
     const user = await this.users.findById(userId);
     if (!user) throw new InvalidCredentialsError();
 
