@@ -104,6 +104,28 @@ const auth = {
   SESSION_TOUCH_INTERVAL_MS: z.coerce.number().int().min(0).default(300_000),
 
   SESSION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+
+  // Whether a provider sign-in may attach itself to an existing account
+  // because the addresses match.
+  //
+  // Off, and named to say what it is. Matching an incoming provider identity
+  // to an account by email is a published account-takeover primitive: an
+  // attacker registers with the victim's address, the victim later signs in
+  // with Google, and the two are joined into one account the attacker also
+  // holds a password for. That is Better Auth CVE-2026-53516; Grafana
+  // CVE-2023-3128 and Google Workspace domain re-registration are the same
+  // mistake reached by different routes.
+  //
+  // Turning it on is still not sufficient on its own: the policy additionally
+  // requires that *our* record of the address is verified, not only the
+  // provider's claim about it. Reading only the provider's claim is precisely
+  // what the CVE above was. Since email verification arrives in M7, no local
+  // row is verified yet and this flag currently changes nothing -- which is
+  // the intended state, and is asserted by a test.
+  OAUTH_ALLOW_EMAIL_LINKING: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 };
 
 const database = {
