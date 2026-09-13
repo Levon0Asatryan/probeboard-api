@@ -19,13 +19,24 @@ import {
   classifyProviderFailure,
   isInsecureTransportRefusal,
 } from '../utils/oauth-callback.js';
+import { readBodyWithLimit } from '../utils/bounded-body.js';
 
 export interface GitHubStrategyOptions extends StrategyOptions {
   /** Where authorize and the token endpoint live. Overridable for the test double. */
   webBaseUrl?: string;
   /** Where the REST API lives. Overridable for the test double. */
   apiBaseUrl?: string;
+  /**
+   * Caps every provider response body we buffer: `/user`, `/user/emails`, and
+   * the token endpoint's error body. GitHub's own responses are small; an
+   * unexpectedly large or indefinitely streamed one is refused rather than
+   * buffered without limit.
+   */
+  maxResponseBytes?: number;
 }
+
+/** GitHub's own responses are a few hundred bytes; this is generous, not tight. */
+const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 
 /**
  * Sign-in with GitHub, which is a bare OAuth 2.0 server, not OpenID Connect.
@@ -44,10 +55,12 @@ export class GitHubStrategy implements OAuthProviderStrategy {
 
   private readonly configuration: Configuration;
   private readonly apiBaseUrl: string;
+  private readonly maxResponseBytes: number;
 
   constructor(private readonly options: GitHubStrategyOptions) {
     const web = options.webBaseUrl ?? 'https://github.com';
     this.apiBaseUrl = options.apiBaseUrl ?? 'https://api.github.com';
+    this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 
     // No discovery document exists, so the metadata is written out.
     this.configuration = new Configuration(
@@ -62,7 +75,10 @@ export class GitHubStrategy implements OAuthProviderStrategy {
     this.configuration.timeout = Math.max(1, Math.ceil(options.timeoutMs / 1000));
     if (options.allowInsecureRequests) allowInsecureRequests(this.configuration);
 
-    this.configuration[customFetch] = standardiseTokenErrors(`${web}/login/oauth/access_token`);
+    this.configuration[customFetch] = standardiseTokenErrors(
+      `${web}/login/oauth/access_token`,
+      this.maxResponseBytes,
+    );
   }
 
   authorizationUrl(request: AuthorizationRequest): Promise<URL> {
@@ -164,7 +180,7 @@ export class GitHubStrategy implements OAuthProviderStrategy {
     }
 
     try {
-      return await response.json();
+      return JSON.parse(await readBodyWithLimit(response, this.maxResponseBytes)) as unknown;
     } catch (err) {
       throw new OAuthProviderError('profile_failed', 'github', err);
     }
@@ -183,12 +199,12 @@ export class GitHubStrategy implements OAuthProviderStrategy {
  * Rewritten here, at the one place the quirk enters, so everything downstream
  * sees an ordinary OAuth error response.
  */
-function standardiseTokenErrors(tokenEndpoint: string): CustomFetch {
+function standardiseTokenErrors(tokenEndpoint: string, maxResponseBytes: number): CustomFetch {
   return async (url, options) => {
     const response = await fetch(url, options);
     if (url !== tokenEndpoint || response.status !== 200) return response;
 
-    const text = await response.text();
+    const text = await readBodyWithLimit(response, maxResponseBytes);
     let body: unknown;
     try {
       body = JSON.parse(text);

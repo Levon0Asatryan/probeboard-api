@@ -30,7 +30,13 @@ beforeEach(() => {
   stub.hangTokenEndpoint = false;
 });
 
-function strategy(overrides: { allowInsecureRequests?: boolean; timeoutMs?: number } = {}) {
+function strategy(
+  overrides: {
+    allowInsecureRequests?: boolean;
+    timeoutMs?: number;
+    maxResponseBytes?: number;
+  } = {},
+) {
   return new GitHubStrategy({
     clientId: stub.clientId,
     clientSecret: stub.clientSecret,
@@ -38,6 +44,7 @@ function strategy(overrides: { allowInsecureRequests?: boolean; timeoutMs?: numb
     webBaseUrl: stub.url,
     apiBaseUrl: stub.url,
     allowInsecureRequests: overrides.allowInsecureRequests ?? true,
+    maxResponseBytes: overrides.maxResponseBytes,
   });
 }
 
@@ -254,6 +261,20 @@ describe('a flow that must be refused', () => {
 
   it('when /user/emails fails', async () => {
     const err = await refusal(signIn({ id: 1 }, { emailsStatus: 403 }));
+    expect(err.reason).toBe('profile_failed');
+  });
+
+  it('when /user answers with a body over the configured byte limit', async () => {
+    // A concurrent sign-in reading this unbounded would buffer the whole
+    // thing; capped, it fails as an ordinary provider error instead.
+    const err = await refusal(
+      signIn(
+        { id: 1, user: { bio: 'x'.repeat(10_000) } },
+        {},
+        () => undefined,
+        strategy({ maxResponseBytes: 1000 }),
+      ),
+    );
     expect(err.reason).toBe('profile_failed');
   });
 });
