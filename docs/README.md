@@ -7,6 +7,9 @@ the change that affects it.
 | Document                                     | Covers                                                     |
 | -------------------------------------------- | ---------------------------------------------------------- |
 | [../README.md](../README.md)                 | Running, developing, configuring, the layout and its rules |
+| [tracker.md](tracker.md)                     | Status of every milestone, PR and follow-up — read first   |
+| [handoff-template.md](handoff-template.md)   | How work is handed to a worker chat and reported back      |
+| [../openapi.yaml](../openapi.yaml)           | The API surface, generated from the zod schemas            |
 | [m0-verification.md](m0-verification.md)     | What was executed to accept M0 and what it produced        |
 | [m1-plan.md](m1-plan.md)                     | The investigation and plan M1 was built from               |
 | [m1-verification.md](m1-verification.md)     | What was executed to accept M1 and what it produced        |
