@@ -17,6 +17,18 @@ const api = {
   // ways that turn a typo into a silent misconfiguration: "64kbb" becomes 64
   // bytes and "abc" becomes no limit at all. A bad value must stop the process
   // at boot, not quietly remove the cap.
+  // Whether Swagger UI is served at /docs.
+  //
+  // Off, like every other switch here that widens what is reachable. The page
+  // is a large piece of third-party browser code with its own history of
+  // cross-site scripting advisories, and it exists for people building against
+  // this API rather than people using it. docker-compose turns it on, which is
+  // where it is wanted.
+  API_DOCS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Bounds the readiness check's response, not the query itself.
   HEALTH_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(3000),
   API_BODY_LIMIT: z

@@ -16,6 +16,8 @@
     "dev:worker": "tsx watch --env-file-if-exists=.env src/worker/main.ts",
     "migrate": "tsx --env-file-if-exists=.env src/core/db/migrator/cli.ts up",
     "migrate:down": "tsx --env-file-if-exists=.env src/core/db/migrator/cli.ts down",
+    "openapi": "tsx --env-file-if-exists=.env src/api/openapi/cli.ts",
+    "openapi:check": "tsx --env-file-if-exists=.env src/api/openapi/cli.ts --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -23,7 +25,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run openapi:check && npm test",
     "prepare": "husky",
     "test:coverage": "vitest run --coverage",
     "test:int": "vitest run --config vitest.integration.mts"
@@ -32,6 +34,7 @@
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
     "@nestjs/platform-express": "^12.0.1",
+    "@nestjs/swagger": "^12.0.1",
     "@node-rs/argon2": "^2.2.1",
     "cookie-parser": "^1.4.7",
     "kysely": "^0.29.5",
@@ -60,7 +63,8 @@
     "tsx": "^4.23.13",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "yaml": "2.9.1"
   },
   "overrides": {
     "multer": "^2.3.0"
