@@ -3,6 +3,62 @@
 Read before adding files. `AGENTS.md` holds the review rules (what to flag on a
 pull request); this holds the conventions to follow while writing.
 
+## How work is done
+
+Work is split across chats. One **orchestrator** session tracks the project
+and validates; **worker** chats implement one milestone or one plan step from a
+handoff prompt (`docs/handoff-template.md`). `docs/tracker.md` is the status of
+record — read it first. Levon approves plans and merges; no chat merges.
+
+### Before writing code
+
+- Plan first: `docs/mN-plan.md` (investigation, decisions, data model, HTTP
+  surface, security properties and how each is proved, PR breakdown). The
+  orchestrator validates it, Levon approves it. No implementation before that.
+- Check `git config user.email` is `levonasatryan1098@gmail.com`.
+- Branch from the latest `origin/main`, then `npm ci`. Dependencies differ
+  between branches, and a stale `node_modules` fails the pre-commit typecheck
+  with a missing module that has nothing to do with the change. One chat per
+  working tree at a time — two chats in one checkout corrupt each other's
+  state.
+- New migration: take the next free number on `main`, and update
+  `src/core/db/types.ts` in the same change.
+
+### While writing
+
+- Never push to `main`. One PR per coherent step; split commits by logical
+  change. Commit messages end with
+  `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`; PR bodies end with
+  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- **Prove every guard by removing it** and watching its test fail. A passing
+  test is not evidence until it has been seen failing against the bug. Force
+  races with an explicit barrier (commit the competing write on a second
+  connection) rather than hoping `Promise.all` interleaves; measure timing at
+  production Argon2 cost.
+- Keep in step, same change: `http/<module>.http` for every endpoint,
+  `npm run openapi` for every route or schema change, coverage exclusion paths
+  when files move.
+
+### Before calling it done
+
+1. `npm run verify`, `npm run test:coverage` (≥ 90), and `npm run test:int`
+   against `docker compose up -d postgres` with
+   `TEST_DATABASE_URL=postgres://probeboard:probeboard@127.0.0.1:5432/probeboard`.
+2. A **real run**: `docker compose up -d --build`, then exercise every changed
+   endpoint over HTTP and check stored state with `psql`. Tests alone are not
+   done.
+3. CI green on all five jobs.
+4. Codex reviews every push. Read findings with
+   `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments`. Verify each
+   against the code before acting: fix what is real, push back with evidence on
+   what is not, and **reply on every thread**. Re-check after each push.
+5. At milestone end, `docs/mN-verification.md`: what was executed and what it
+   produced, including defects found by running it.
+6. Report back in the format in `docs/handoff-template.md`. Say plainly what
+   was not verified.
+
+Style: laconic — same facts, fewer words.
+
 ## File and folder structure
 
 Two rules, applied at two different levels. Mixing them up is the mistake this
