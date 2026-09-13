@@ -95,11 +95,25 @@ export class OAuthProviderStub {
     // Listen first, because the issuer URL has to contain the port; attach the
     // handler once the stub that owns it exists.
     const server = createServer();
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve, reject) => {
+      // A bind failure (file descriptors exhausted, say) emits 'error' rather
+      // than calling back. An EventEmitter's 'error' with no listener is a
+      // fatal uncaught exception in Node, not a rejection -- so without this
+      // listener a failed bind kills the process instead of failing start().
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        resolve();
+      });
+    });
     const { port } = server.address() as { port: number };
     const stub = new OAuthProviderStub(shape, server, `http://127.0.0.1:${String(port)}`);
     server.on('request', (req: IncomingMessage, res: ServerResponse) => {
-      void stub.handle(req, res);
+      stub.handle(req, res).catch((err: unknown) => {
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+        console.error('oauth-provider-stub: request handling failed', err);
+      });
     });
     return stub;
   }
