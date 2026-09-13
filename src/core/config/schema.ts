@@ -161,6 +161,41 @@ const database = {
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
 };
 
+/**
+ * Sign in with Google or GitHub (social-login-plan.md §6). Only the api reads
+ * these.
+ *
+ * A provider is usable when its own id and secret are both set -- there is no
+ * separate per-provider switch, because a client id with no secret is not a
+ * partial configuration worth accepting, it is a typo. `OAUTH_ENABLED` is the
+ * master switch: off, the feature does not exist regardless of what is
+ * configured, so a deployment can hold credentials in its environment without
+ * turning the surface on early.
+ */
+const oauth = {
+  OAUTH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+  GITHUB_CLIENT_ID: z.string().min(1).optional(),
+  GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+
+  // Never derived from the request's Host header, which is attacker-supplied.
+  // Absolute, and https:// outside development -- the authorization code and
+  // the session cookie both depend on the redirect actually reaching us.
+  OAUTH_REDIRECT_BASE_URL: z.url().optional(),
+  // Where the callback sends the browser once a session is issued.
+  WEB_BASE_URL: z.url().optional(),
+
+  // Ten minutes, matching GitHub's authorization code expiry.
+  OAUTH_STATE_TTL_MS: z.coerce.number().int().min(60_000).max(3_600_000).default(600_000),
+  // Every outbound call to a provider is bounded by this.
+  OAUTH_HTTP_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
+};
+
 /** Probe execution limits (NFR-13, FR-8). */
 const probing = {
   PROBE_MAX_BODY_BYTES: z.coerce
@@ -198,6 +233,7 @@ const baseSchema = z.object({
   ...api,
   ...auth,
   ...database,
+  ...oauth,
   ...probing,
   ...scheduler,
 });
@@ -205,14 +241,35 @@ const baseSchema = z.object({
 /**
  * Cross-field rules, which a per-field schema cannot express.
  */
-export const configSchema = baseSchema.refine(
-  (c) => c.AUTH_ATTEMPT_RETENTION_MS >= c.AUTH_WINDOW_MS,
-  {
+export const configSchema = baseSchema
+  .refine((c) => c.AUTH_ATTEMPT_RETENTION_MS >= c.AUTH_WINDOW_MS, {
     path: ['AUTH_ATTEMPT_RETENTION_MS'],
     message:
       'must be at least AUTH_WINDOW_MS, or the housekeeping sweep deletes the ' +
       'evidence the rate limiter is still counting and the limit is bypassed',
-  },
-);
+  })
+  .refine((c) => Boolean(c.GOOGLE_CLIENT_ID) === Boolean(c.GOOGLE_CLIENT_SECRET), {
+    path: ['GOOGLE_CLIENT_SECRET'],
+    message:
+      'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together, or neither -- ' +
+      'a client id with no secret is not a partial configuration, it fails at the ' +
+      'first sign-in instead of at boot',
+  })
+  .refine((c) => Boolean(c.GITHUB_CLIENT_ID) === Boolean(c.GITHUB_CLIENT_SECRET), {
+    path: ['GITHUB_CLIENT_SECRET'],
+    message: 'GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set together, or neither',
+  })
+  .refine((c) => !c.OAUTH_ENABLED || Boolean(c.OAUTH_REDIRECT_BASE_URL), {
+    path: ['OAUTH_REDIRECT_BASE_URL'],
+    message: 'required when OAUTH_ENABLED is true',
+  })
+  .refine((c) => !c.OAUTH_ENABLED || Boolean(c.WEB_BASE_URL), {
+    path: ['WEB_BASE_URL'],
+    message: 'required when OAUTH_ENABLED is true',
+  })
+  .refine((c) => !c.OAUTH_ENABLED || Boolean(c.GOOGLE_CLIENT_ID) || Boolean(c.GITHUB_CLIENT_ID), {
+    path: ['OAUTH_ENABLED'],
+    message: 'true with no provider configured turns on a feature with no way to use it',
+  });
 
 export type AppConfig = z.infer<typeof baseSchema>;

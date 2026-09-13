@@ -172,6 +172,100 @@ describe('cross-field rules', () => {
   });
 });
 
+describe('OAuth configuration', () => {
+  it('defaults to disabled with no provider configured', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.OAUTH_ENABLED).toBe(false);
+    expect(cfg.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(cfg.GITHUB_CLIENT_ID).toBeUndefined();
+  });
+
+  it('refuses a client id with no secret, for either provider', () => {
+    expect(() => loadConfig({ ...valid, GOOGLE_CLIENT_ID: 'g-id' })).toThrow(
+      /GOOGLE_CLIENT_SECRET/,
+    );
+    expect(() => loadConfig({ ...valid, GITHUB_CLIENT_ID: 'gh-id' })).toThrow(
+      /GITHUB_CLIENT_SECRET/,
+    );
+  });
+
+  it('refuses a secret with no client id', () => {
+    expect(() => loadConfig({ ...valid, GOOGLE_CLIENT_SECRET: 'g-secret' })).toThrow(
+      /GOOGLE_CLIENT_SECRET/,
+    );
+  });
+
+  it('accepts a fully configured provider', () => {
+    const cfg = loadConfig({
+      ...valid,
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.GOOGLE_CLIENT_ID).toBe('g-id');
+  });
+
+  it('refuses OAUTH_ENABLED with no redirect base url', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        WEB_BASE_URL: 'https://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+
+  it('refuses OAUTH_ENABLED with no web base url', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
+  it('refuses OAUTH_ENABLED with no provider configured at all', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        WEB_BASE_URL: 'https://app.example.com',
+      }),
+    ).toThrow(/OAUTH_ENABLED/);
+  });
+
+  it('accepts a fully configured, enabled provider', () => {
+    const cfg = loadConfig({
+      ...valid,
+      OAUTH_ENABLED: 'true',
+      OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+      WEB_BASE_URL: 'https://app.example.com',
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.OAUTH_ENABLED).toBe(true);
+  });
+
+  it('defaults the state ttl to ten minutes, matching GitHub’s code expiry', () => {
+    expect(loadConfig(valid).OAUTH_STATE_TTL_MS).toBe(600_000);
+  });
+
+  it('rejects a state ttl too short to be a real limit', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_STATE_TTL_MS: '1000' })).toThrow(
+      /OAUTH_STATE_TTL_MS/,
+    );
+  });
+
+  it('defaults the provider http timeout to five seconds', () => {
+    expect(loadConfig(valid).OAUTH_HTTP_TIMEOUT_MS).toBe(5000);
+  });
+});
+
 describe('SESSION_RETENTION_DAYS', () => {
   it('is configurable rather than embedded in the sweep', () => {
     expect(loadConfig({ ...valid, SESSION_RETENTION_DAYS: '90' }).SESSION_RETENTION_DAYS).toBe(90);
