@@ -42,6 +42,14 @@ export default defineConfig({
         // exercises both limits, the interaction between them, and that the
         // counters survive a restart. Unit tests here would mock the counting.
         'src/api/auth/services/rate-limit.service.ts',
+        // The linking policy is inseparable from the constraints that enforce
+        // it: two unique indexes, one transaction, and what happens when two
+        // sign-ins race. Covered by oauth-identity.service.int.test.ts, whose
+        // central case is CVE-2026-53516 reproduced against a real database —
+        // and both halves of the guard were confirmed to fail the suite when
+        // removed. Unit tests here would mock the indexes away and prove
+        // nothing about the vulnerability they exist to close.
+        'src/api/auth/services/oauth-identity.service.ts',
         // HTTP wiring and the flow it drives: cookies, status codes,
         // middleware order. Covered by e2e/auth-http.int.test.ts against a
         // real server and a real database, which CI runs as its own job. Unit

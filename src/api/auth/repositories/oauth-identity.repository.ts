@@ -37,8 +37,12 @@ export class OAuthIdentityRepository {
    * The lookup key is the pair, never the email address. Matching on email is
    * the account-takeover primitive this whole table exists to avoid.
    */
-  async findOwner(provider: OAuthProvider, accountId: string): Promise<IdentityOwner | undefined> {
-    return this.db.kysely
+  async findOwner(
+    provider: OAuthProvider,
+    accountId: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<IdentityOwner | undefined> {
+    return executor
       .selectFrom('oauth_identities')
       .innerJoin('users', 'users.id', 'oauth_identities.user_id')
       .select([
@@ -91,15 +95,24 @@ export class OAuthIdentityRepository {
    * Records a sign-in through an identity that already exists.
    *
    * The provider's email is refreshed because it is display text and people
-   * change addresses; it is still never a lookup key. Written as one UPDATE
-   * rather than read-modify-write.
+   * change addresses; it is still never a lookup key.
+   *
+   * Monotonic, and that is a clause rather than a caller's responsibility.
+   * Each callback captures its timestamp before the lookups that precede this
+   * write, so two overlapping sign-ins can arrive here out of order: the
+   * earlier one, having stalled, would otherwise land last and rewind
+   * `last_login_at` while restoring the address and verification flag the
+   * provider has since changed. Refusing the older write in the WHERE clause
+   * makes that a no-op instead -- the same shape as `SessionRepository.touch`,
+   * and for the same reason.
    */
   async recordLogin(
     identityId: string,
     account: ProviderAccount,
     now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
   ): Promise<void> {
-    await this.db.kysely
+    await executor
       .updateTable('oauth_identities')
       .set({
         provider_email: account.email,
@@ -107,6 +120,7 @@ export class OAuthIdentityRepository {
         last_login_at: now,
       })
       .where('id', '=', identityId)
+      .where('last_login_at', '<=', now)
       .execute();
   }
 
@@ -156,8 +170,11 @@ export class OAuthIdentityRepository {
   }
 
   /** Every identity on an account, for the settings page and for unlink. */
-  async listForUser(userId: string): Promise<OAuthIdentity[]> {
-    return this.db.kysely
+  async listForUser(
+    userId: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<OAuthIdentity[]> {
+    return executor
       .selectFrom('oauth_identities')
       .selectAll()
       .where('user_id', '=', userId)

@@ -10,6 +10,7 @@ import { SessionGuard } from './guards/session.guard.js';
 import { SessionRepository } from './repositories/session.repository.js';
 import { OAuthAuthorizationRepository } from './repositories/oauth-authorization.repository.js';
 import { OAuthIdentityRepository } from './repositories/oauth-identity.repository.js';
+import { OAuthIdentityService } from './services/oauth-identity.service.js';
 
 /**
  * Authentication. Lives in `api` because the worker never authenticates a
@@ -29,6 +30,7 @@ import { OAuthIdentityRepository } from './repositories/oauth-identity.repositor
     AuthMaintenanceService,
     OAuthIdentityRepository,
     OAuthAuthorizationRepository,
+    OAuthIdentityService,
   ],
   exports: [
     AuthService,
@@ -38,6 +40,7 @@ import { OAuthIdentityRepository } from './repositories/oauth-identity.repositor
     AuthRateLimitService,
     OAuthIdentityRepository,
     OAuthAuthorizationRepository,
+    OAuthIdentityService,
   ],
 })
 export class AuthModule {}

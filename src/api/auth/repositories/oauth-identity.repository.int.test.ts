@@ -36,14 +36,17 @@ beforeEach(async () => {
 
 describe('accounts without a password', () => {
   it('can be created, which the schema previously forbade', async () => {
-    const user = await users.createFromProvider('carol@example.com', new Date());
+    const user = await users.createFromProvider('carol@example.com');
 
     expect(user?.password_hash).toBeNull();
-    expect(user?.email_verified_at).toBeInstanceOf(Date);
+    // Null even though the provider vouches for the address: that column means
+    // probeboard verified it, and the linking policy reads it as independent
+    // evidence. See createFromProvider.
+    expect(user?.email_verified_at).toBeNull();
   });
 
   it('still cannot duplicate an address', async () => {
-    const duplicate = await users.createFromProvider('alice@example.com', new Date());
+    const duplicate = await users.createFromProvider('alice@example.com');
 
     // The caller must not read this as "sign them in to the existing account".
     // That fallback is CVE-2026-53516.
@@ -120,6 +123,29 @@ describe('link', () => {
 });
 
 describe('recordLogin', () => {
+  it('refuses a write that would rewind the record', async () => {
+    // Two overlapping sign-ins each capture their timestamp before the lookups
+    // that precede the write, so they can arrive here out of order. The older
+    // one must not land last: it would rewind last_login_at and restore the
+    // address and verification flag the provider has since changed.
+    const identity = await identities.link(aliceId, googleAccount('sub-1', 'new@example.com'));
+
+    const later = new Date(Date.now() + 60_000);
+    const earlier = new Date(Date.now() - 60_000);
+
+    await identities.recordLogin(identity!.id, googleAccount('sub-1', 'new@example.com'), later);
+    await identities.recordLogin(
+      identity!.id,
+      { ...googleAccount('sub-1', 'stale@example.com'), emailVerified: false },
+      earlier,
+    );
+
+    const [row] = await identities.listForUser(aliceId);
+    expect(row.last_login_at.getTime()).toBe(later.getTime());
+    expect(row.provider_email).toBe('new@example.com');
+    expect(row.provider_email_verified).toBe(true);
+  });
+
   it('refreshes the display email without changing which account is reached', async () => {
     const identity = await identities.link(aliceId, googleAccount('sub-1', 'old@example.com'));
 
@@ -141,7 +167,7 @@ describe('countCredentials', () => {
   });
 
   it('counts an account with no password as having only its identities', async () => {
-    const carol = await users.createFromProvider('carol@example.com', new Date());
+    const carol = await users.createFromProvider('carol@example.com');
     await identities.link(carol!.id, { ...googleAccount('sub-9'), email: 'carol@example.com' });
 
     expect(await identities.countCredentials(carol!.id)).toBe(1);
@@ -161,7 +187,7 @@ describe('unlink', () => {
   });
 
   it('refuses to remove the last credential, and removes nothing', async () => {
-    const carol = (await users.createFromProvider('carol@example.com', new Date()))!;
+    const carol = (await users.createFromProvider('carol@example.com'))!;
     await identities.link(carol.id, { ...googleAccount('sub-9'), email: 'carol@example.com' });
 
     expect(await identities.unlink(carol.id, 'google')).toBe('last_credential');
@@ -176,7 +202,7 @@ describe('unlink', () => {
   it('never leaves an account with no way in, even under concurrent unlinks', async () => {
     // The failure this prevents: two unlinks of different providers each read
     // "two credentials", each remove one, and the account is unreachable.
-    const carol = (await users.createFromProvider('carol@example.com', new Date()))!;
+    const carol = (await users.createFromProvider('carol@example.com'))!;
     await identities.link(carol.id, { ...googleAccount('sub-9'), email: 'carol@example.com' });
     await identities.link(carol.id, {
       provider: 'github',

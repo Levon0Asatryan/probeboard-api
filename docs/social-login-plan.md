@@ -147,6 +147,19 @@ unverified**, which is precisely the state Better Auth's fix refuses to link
 into. Implicit linking is therefore not merely risky here, it is the exact
 published bug.
 
+That only holds if the column keeps meaning one thing, and the first
+implementation broke it. An account created through a provider was given an
+`email_verified_at` from the provider's own assertion — so it satisfied a check
+that exists to require evidence _independent_ of the provider, and with the
+flag on, a second provider asserting the same address would attach itself.
+That is the recycled-domain takeover above, reached from inside.
+
+So the rule is narrower than "record what is true": **`users.email_verified_at`
+means probeboard verified this address, and nothing else may write it.** The
+provider's claim is not discarded, it is recorded where it is attributable to
+the provider that made it, as `oauth_identities.provider_email_verified`. Two
+different facts, two different columns; conflating them is the whole failure.
+
 ### 2.5 Provider identifiers are stable — with an asterisk each
 
 **GitHub.** The numeric `id` is permanent. The `login` is not: changing your
