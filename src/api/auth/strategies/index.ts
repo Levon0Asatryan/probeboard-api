@@ -26,6 +26,10 @@ export class OAuthStrategyRegistry {
   private readonly strategies = new Map<OAuthProvider, OAuthProviderStrategy>();
 
   constructor(@Inject(APP_CONFIG) cfg: AppConfig) {
+    // Off unless enabled, whatever else is configured: a deployment may hold
+    // credentials in its environment without the surface actually existing.
+    if (!cfg.OAUTH_ENABLED) return;
+
     if (cfg.GOOGLE_CLIENT_ID && cfg.GOOGLE_CLIENT_SECRET) {
       this.strategies.set(
         'google',
