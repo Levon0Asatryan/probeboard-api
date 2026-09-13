@@ -16,7 +16,7 @@ import type { AppConfig } from '../../core/config/schema.js';
 import { ConflictError, NotFoundError } from '../../core/errors/app-error.js';
 import type { OAuthProvider } from '../../core/db/types.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
-import { OAuthProviderParamPipe } from './dto/oauth-params.dto.js';
+import { OAuthProviderParamPipe } from './pipes/oauth-provider.pipe.js';
 import { SessionGuard, type RequestUser } from './guards/session.guard.js';
 import {
   OAuthIdentityRepository,
@@ -77,14 +77,15 @@ export class OAuthController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    const cookieValue = (req.cookies as Record<string, unknown> | undefined)?.[
-      oauthCookieName(this.cfg)
-    ];
+    const cookies = req.cookies as Record<string, unknown> | undefined;
+    const cookieValue = cookies?.[oauthCookieName(this.cfg)];
+    const sessionToken = cookies?.[sessionCookieName(this.cfg)];
 
     const result = await this.oauth.complete(provider, {
       ip: clientIp(req),
       cookieValue: typeof cookieValue === 'string' ? cookieValue : undefined,
       query: new URLSearchParams(req.url.split('?')[1] ?? ''),
+      sessionToken: typeof sessionToken === 'string' ? sessionToken : undefined,
     });
 
     // Cleared unconditionally: whatever happened, this attempt is over.

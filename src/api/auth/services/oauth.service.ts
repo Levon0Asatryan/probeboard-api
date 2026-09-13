@@ -13,7 +13,9 @@ import { describeError } from '../../../core/errors/describe.js';
 import { AuthService, RateLimitedError, type IssuedSession } from '../auth.service.js';
 import { OAuthProviderError } from '../interfaces/oauth-provider.js';
 import { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
-import { OAuthStrategyRegistry } from '../strategies/index.js';
+import { SessionRepository } from '../repositories/session.repository.js';
+import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
+import { hashToken, looksLikeToken } from '../utils/session-token.js';
 import { AuthRateLimitService } from './rate-limit.service.js';
 import { OAuthIdentityService, type SignInOutcome } from './oauth-identity.service.js';
 import { validateReturnTo } from '../utils/return-to.js';
@@ -24,7 +26,8 @@ export type OAuthErrorCode =
   | 'OAUTH_ACCOUNT_EXISTS'
   | 'OAUTH_NO_VERIFIED_EMAIL'
   | 'OAUTH_PROVIDER_ERROR'
-  | 'OAUTH_IDENTITY_TAKEN';
+  | 'OAUTH_IDENTITY_TAKEN'
+  | 'OAUTH_SESSION_REVOKED';
 
 export interface StartResult {
   /** Opaque id stored in the state cookie. */
@@ -48,6 +51,7 @@ export class OAuthService {
     private readonly authorizations: OAuthAuthorizationRepository,
     private readonly identities: OAuthIdentityService,
     private readonly authService: AuthService,
+    private readonly sessions: SessionRepository,
     private readonly limiter: AuthRateLimitService,
     @InjectPinoLogger(OAuthService.name) private readonly logger: PinoLogger,
   ) {}
@@ -99,7 +103,13 @@ export class OAuthService {
    */
   async complete(
     provider: OAuthProvider,
-    opts: { ip: string; cookieValue: string | undefined; query: URLSearchParams },
+    opts: {
+      ip: string;
+      cookieValue: string | undefined;
+      query: URLSearchParams;
+      /** The session cookie presented alongside the callback, if any. */
+      sessionToken: string | undefined;
+    },
     now: Date = new Date(),
   ): Promise<CallbackResult> {
     await this.admit(opts.ip);
@@ -120,6 +130,32 @@ export class OAuthService {
       return { kind: 'error', code: 'OAUTH_STATE_INVALID' };
     }
 
+    let linkUserId: string | undefined;
+    if (pending.mode === 'link') {
+      // Enforced by a CHECK constraint (mode = 'link') = (user_id IS NOT
+      // NULL): this is a DB invariant violation, not a request to handle.
+      if (!pending.user_id) throw new Error('link authorization with no user_id');
+      linkUserId = pending.user_id;
+
+      // The session that started this flow must still be the one completing
+      // it. Without this, a link started from a compromised session survives
+      // the owner's own logout-all: the pending row only ever recorded a
+      // user id, so revoking every session for that account left nothing for
+      // the callback to notice, and it would attach the attacker's provider
+      // identity and issue a fresh session anyway -- defeating the whole
+      // point of "sign out my other devices" for as long as OAUTH_STATE_TTL_MS
+      // allows. Checked before the provider is even called, so a stale link
+      // costs nothing.
+      const currentUserId = await this.currentSessionUserId(opts.sessionToken);
+      if (currentUserId !== linkUserId) {
+        this.logger.warn(
+          { provider, userId: linkUserId },
+          'oauth link: originating session is no longer active',
+        );
+        return { kind: 'error', code: 'OAUTH_SESSION_REVOKED' };
+      }
+    }
+
     const strategy = this.strategies.get(provider);
 
     try {
@@ -131,15 +167,9 @@ export class OAuthService {
         nonce: pending.nonce ?? undefined,
       });
 
-      let outcome: SignInOutcome;
-      if (pending.mode === 'link') {
-        // Enforced by a CHECK constraint (mode = 'link') = (user_id IS NOT
-        // NULL): this is a DB invariant violation, not a request to handle.
-        if (!pending.user_id) throw new Error('link authorization with no user_id');
-        outcome = await this.identities.link(pending.user_id, account);
-      } else {
-        outcome = await this.identities.signIn(account, now);
-      }
+      const outcome: SignInOutcome = linkUserId
+        ? await this.identities.link(linkUserId, account)
+        : await this.identities.signIn(account, now);
 
       return await this.toResult(outcome, pending.return_to);
     } catch (err) {
@@ -172,6 +202,18 @@ export class OAuthService {
       case 'identity_taken':
         return { kind: 'error', code: 'OAUTH_IDENTITY_TAKEN' };
     }
+  }
+
+  /**
+   * The session cookie's owner, or undefined for anything that is not a
+   * live, active session -- missing, malformed, expired or revoked. Soft by
+   * design: an absent or dead session here is a fact for the caller to act
+   * on, not a reason to throw, since sign-in mode never has one at all.
+   */
+  private async currentSessionUserId(token: string | undefined): Promise<string | undefined> {
+    if (!token || !looksLikeToken(token)) return undefined;
+    const session = await this.sessions.findActive(hashToken(token));
+    return session?.userId;
   }
 
   private redirectUri(provider: OAuthProvider): string {

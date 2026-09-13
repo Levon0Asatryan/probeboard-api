@@ -10,7 +10,7 @@ import { AppModule } from '../../api.module.js';
 import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
 import type { OAuthProviderStrategy } from '../interfaces/oauth-provider.js';
 import { GoogleStrategy } from '../strategies/google.strategy.js';
-import { OAuthStrategyRegistry } from '../strategies/index.js';
+import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
 import { oauthCookieName } from '../utils/oauth-cookie.js';
 import { sessionCookieName } from '../utils/session-cookie.js';
 
@@ -191,7 +191,7 @@ describe('completing a link', () => {
     const query = googleStub.approve(authorizationUrl, { id: 'link-1', email: 'g@example.com' });
 
     const callback = await call(`/auth/oauth/google/callback?${query.toString()}`, {
-      cookie: cookieHeader(start.cookies, OAUTH_COOKIE),
+      cookie: `${cookieHeader(start.cookies, OAUTH_COOKIE)}; ${session}`,
     });
 
     expect(callback.status).toBe(302);
@@ -212,7 +212,7 @@ describe('completing a link', () => {
       email: 'shared@example.com',
     });
     await call(`/auth/oauth/google/callback?${ownerQuery.toString()}`, {
-      cookie: cookieHeader(startOwner.cookies, OAUTH_COOKIE),
+      cookie: `${cookieHeader(startOwner.cookies, OAUTH_COOKIE)}; ${owner}`,
     });
 
     const other = await registerAndLogin('other@example.com');
@@ -224,7 +224,7 @@ describe('completing a link', () => {
     });
 
     const callback = await call(`/auth/oauth/google/callback?${otherQuery.toString()}`, {
-      cookie: cookieHeader(startOther.cookies, OAUTH_COOKIE),
+      cookie: `${cookieHeader(startOther.cookies, OAUTH_COOKIE)}; ${other}`,
     });
 
     expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_IDENTITY_TAKEN`);
@@ -234,6 +234,45 @@ describe('completing a link', () => {
     expect(ownerIdentities.body).toEqual([expect.objectContaining({ provider: 'google' })]);
     const otherIdentities = await call('/auth/identities', { cookie: other });
     expect(otherIdentities.body).toEqual([]);
+  });
+
+  it('refuses when the session that started the flow was signed out in the meantime', async () => {
+    // The attack this closes: a link started from a compromised session
+    // survives the owner's own logout-all, because the pending row only ever
+    // recorded a user id. Revoking every session for the account must be
+    // enough to stop it, or "sign out my other devices" does not mean what
+    // it says for as long as the state cookie lives.
+    const session = await registerAndLogin('revoked@example.com');
+    const start = await call('/auth/oauth/google/link', { method: 'POST', cookie: session });
+    const authUrl = new URL((start.body as { redirectUrl: string }).redirectUrl);
+    const query = googleStub.approve(authUrl, { id: 'revoked-1', email: 'r@example.com' });
+
+    await call('/auth/logout-all', { method: 'POST', cookie: session });
+
+    const callback = await call(`/auth/oauth/google/callback?${query.toString()}`, {
+      // The oauth state cookie survives (it is independent of the session);
+      // the session cookie is presented too, exactly as a real browser would
+      // still send it, but it no longer resolves to an active session.
+      cookie: `${cookieHeader(start.cookies, OAUTH_COOKIE)}; ${session}`,
+    });
+
+    expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`);
+
+    // The provider account was never attached to anybody.
+    expect(googleStub.requests.some((r) => r.path === '/token')).toBe(false);
+  });
+
+  it('refuses a link callback with no session at all', async () => {
+    const session = await registerAndLogin('nosession@example.com');
+    const start = await call('/auth/oauth/google/link', { method: 'POST', cookie: session });
+    const authUrl = new URL((start.body as { redirectUrl: string }).redirectUrl);
+    const query = googleStub.approve(authUrl, { id: 'nosession-1', email: 'n@example.com' });
+
+    const callback = await call(`/auth/oauth/google/callback?${query.toString()}`, {
+      cookie: cookieHeader(start.cookies, OAUTH_COOKIE),
+    });
+
+    expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`);
   });
 });
 
@@ -255,7 +294,7 @@ describe('unlinking', () => {
     const authUrl = new URL((start.body as { redirectUrl: string }).redirectUrl);
     const query = googleStub.approve(authUrl, { id: 'haspw-1', email: 'g2@example.com' });
     await call(`/auth/oauth/google/callback?${query.toString()}`, {
-      cookie: cookieHeader(start.cookies, OAUTH_COOKIE),
+      cookie: `${cookieHeader(start.cookies, OAUTH_COOKIE)}; ${session}`,
     });
 
     const res = await call('/auth/oauth/google', { method: 'DELETE', cookie: session });

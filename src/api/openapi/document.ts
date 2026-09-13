@@ -440,12 +440,14 @@ export function buildOpenApiDocument(
           summary: 'Provider redirects back here',
           description:
             'Always a redirect, never JSON: this is a browser navigation the provider ' +
-            'sent. On success, to the stored `returnTo` with a new session cookie -- any ' +
-            'cookie already present is ignored and overwritten. On failure, to ' +
-            '`/login?error=<code>` on `WEB_BASE_URL`, with a code from a fixed ' +
-            'enumeration: `OAUTH_STATE_INVALID`, `OAUTH_ACCOUNT_EXISTS`, ' +
-            '`OAUTH_NO_VERIFIED_EMAIL`, `OAUTH_PROVIDER_ERROR`, `OAUTH_IDENTITY_TAKEN`. ' +
-            "The provider's own error text is never rendered.",
+            'sent. On a sign-in success, to the stored `returnTo` with a new session ' +
+            'cookie -- any cookie already present is ignored and overwritten. A linking ' +
+            'flow instead requires the session that started it to still be active, and ' +
+            'answers `OAUTH_SESSION_REVOKED` if it was signed out in the meantime. On ' +
+            'failure, to `/login?error=<code>` on `WEB_BASE_URL`, with a code from a ' +
+            'fixed enumeration: `OAUTH_STATE_INVALID`, `OAUTH_ACCOUNT_EXISTS`, ' +
+            '`OAUTH_NO_VERIFIED_EMAIL`, `OAUTH_PROVIDER_ERROR`, `OAUTH_IDENTITY_TAKEN`, ' +
+            "`OAUTH_SESSION_REVOKED`. The provider's own error text is never rendered.",
           security: [],
           parameters: [
             {

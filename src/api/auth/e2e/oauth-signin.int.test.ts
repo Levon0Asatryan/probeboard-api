@@ -12,7 +12,7 @@ import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
 import { GitHubStrategy } from '../strategies/github.strategy.js';
 import { GoogleStrategy } from '../strategies/google.strategy.js';
 import type { OAuthProviderStrategy } from '../interfaces/oauth-provider.js';
-import { OAuthStrategyRegistry } from '../strategies/index.js';
+import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
 import { oauthCookieName } from '../utils/oauth-cookie.js';
 import { sessionCookieName } from '../utils/session-cookie.js';
 
