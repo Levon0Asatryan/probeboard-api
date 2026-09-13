@@ -1,0 +1,62 @@
+# HTTP request collection
+
+Every endpoint the API serves, as runnable requests. One file per module, named
+after the module it exercises, so the collection stays findable the same way
+the source does.
+
+| File                       | Module       | Covers                                                               |
+| -------------------------- | ------------ | -------------------------------------------------------------------- |
+| [auth.http](auth.http)     | `api/auth`   | register, login, me, change password, logout, logout-all             |
+| [health.http](health.http) | `api/health` | liveness, readiness                                                  |
+| [common.http](common.http) | `api/common` | not-found fallback, error shapes, validation, version prefix, limits |
+
+A module added later gets a file here in the same pull request. A file that
+does not list every route its module serves is worse than no file, because the
+gap reads as "this endpoint does not exist".
+
+## Running them
+
+Install the [REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client)
+extension — it is in `.vscode/extensions.json`, so VSCode offers it — then
+click **Send Request** above any request.
+
+Start the stack first:
+
+```sh
+docker compose up -d --scale worker=2
+```
+
+`auth.http` is written to be run top to bottom the first time: the first
+request creates the account every later request uses, and the login puts the
+session cookie in the extension's cookie jar, so the authenticated requests
+carry no header of their own. After that, any single request can be re-run on
+its own.
+
+## The environment file
+
+`.env` in this folder, read as `{{$dotenv name}}`. Keeping it beside the
+requests rather than in `.vscode/settings.json` means the collection is
+self-contained: it travels with the folder, and a change to it shows up in
+review as a change to the requests.
+
+It is checked in — `.gitignore` carries an exception for this one path —
+because every value is a local development fixture pointing at a stack you
+started yourself. **Never put a real credential in it.** `.env.local` stays
+ignored and is the place for anything that must not be committed.
+
+To point the collection at something other than the local stack, change
+`baseUrl`.
+
+## What is not here
+
+**Anything that needs repetition or concurrency.** The rate limiter and the
+session cap are counted over many requests, and the property worth checking is
+that they hold when requests arrive _together_ — which no interactive client
+produces. `common.http` carries those as shell commands in comments.
+
+**Assertions.** These files are for looking at responses by hand while
+developing. The behaviour they show is covered by the integration suite
+(`npm run test:int`), which is what CI runs and what fails a pull request; a
+request collection that nobody executes automatically cannot be relied on to
+notice a regression. The manual passes are recorded in
+[../docs/](../docs/), one verification record per milestone.

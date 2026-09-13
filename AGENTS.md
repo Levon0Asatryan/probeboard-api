@@ -102,6 +102,10 @@ is a bug.
   logic belongs in `core` so both processes use one definition.
 - Flag probe-execution code that reaches for a database, a scheduler, or global
   state. The probe executor is a pure function of its config (chapter 7.4).
+- Flag a new or changed endpoint whose request is missing from `http/`. One
+  `.http` file per module; a new module needs a new one. A collection that lags
+  the code is worse than none, because a missing request reads as "this
+  endpoint does not exist".
 
 ### Configuration and migrations
 

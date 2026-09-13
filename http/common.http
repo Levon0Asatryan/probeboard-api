@@ -1,0 +1,97 @@
+### api/common — the behaviour that belongs to no single module
+#
+# The error filter, the validation pipe, and the bootstrap-level concerns:
+# the version prefix, the not-found fallback, and the body limit. Each of
+# these has shipped broken at least once, and each failure was invisible
+# from inside the module that appeared to work.
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name notFound
+# 404 {"code":"NOT_FOUND","message":"route not found"} -- JSON, not Express's
+# HTML error page. An API that answers HTML on an unmatched path breaks every
+# client that parses the body before checking the status.
+GET {{baseUrl}}/v1/no-such-route
+
+###
+# @name notFoundOutsidePrefix
+# 404, same JSON body. The fallback covers the whole app, not just /v1.
+GET {{baseUrl}}/no-such-route
+
+###
+# @name wrongMethod
+# 404. /v1/auth/login exists for POST only.
+DELETE {{baseUrl}}/v1/auth/login
+
+###
+# @name missingPrefix
+# 404 -- and this is the request that matters.
+#
+# An earlier catch-all route silently disabled the global prefix, so the API
+# answered on *both* /auth/login and /v1/auth/login. Checking only that the
+# prefixed path works would not have caught it; this one has to fail.
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{$dotenv email}}",
+  "password": "{{$dotenv password}}"
+}
+
+###
+# @name malformedJson
+# 400 {"code":"BAD_REQUEST"}. The parser's own error is translated, so a
+# syntax error does not surface a stack trace or the parser's internals.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{ this is not json
+
+###
+# @name wrongContentType
+# 400 VALIDATION_FAILED. Nothing parsed the body, so the schema sees undefined
+# and says so, rather than the request reaching the handler with no input.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: text/plain
+
+email=someone@example.com
+
+###
+# @name emptyBody
+# 400 naming both missing fields, so a client learns everything wrong with the
+# request in one round trip instead of one field at a time.
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{}
+
+### Body limit (API_BODY_LIMIT, 64kb by default)
+#
+# 413 {"code":"PAYLOAD_TOO_LARGE"}, and no rate-limit attempt is recorded:
+# the body is refused before the handler runs, so an oversized request cannot
+# burn somebody else's login budget. There is no way to write a 200 KB body
+# inline that is worth reading, so this one stays a shell command:
+#
+#   python3 -c "import json,sys; sys.stdout.write(json.dumps({'email':'a@b.co','password':'x'*200000}))" > /tmp/big.json
+#   curl -s -w '%{http_code}\n' -X POST http://127.0.0.1:3000/v1/auth/login \
+#     -H 'content-type: application/json' --data-binary @/tmp/big.json
+
+### Rate limiting (AUTH_MAX_PER_IP, AUTH_MAX_FAILURES_PER_EMAIL)
+#
+# Both limits are counted, so they need repetition rather than a single
+# request. Sending auth.http's loginWrongPassword five times locks the account
+# (429 on the sixth, even with the correct password); twenty requests from one
+# address exhaust the per-address budget whatever account they name.
+#
+# The property worth checking is that the limit holds when the requests arrive
+# together, which no interactive client can produce:
+#
+#   for i in $(seq 1 30); do
+#     curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:3000/v1/auth/login \
+#       -H 'content-type: application/json' \
+#       -d "{\"email\":\"conc$i@example.com\",\"password\":\"parallel attempt\"}" &
+#   done | sort | uniq -c; wait
+#
+# Reset the counters between runs with:
+#   docker compose exec -T postgres psql -U probeboard -d probeboard -c 'truncate auth_attempts'
