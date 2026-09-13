@@ -84,6 +84,18 @@ Keep the subject prefix even inside a folder that repeats it:
 - Tests that span the whole module go in `e2e/`, named
   `<subject>.int.test.ts`, because they belong to no single file.
 
+### Requests
+
+`http/` holds a runnable request collection: one `.http` file per module, plus
+the `.env` those files read. **An endpoint is not finished until its request is
+in there**, in the same change — a collection that lags the code is worse than
+none, because a missing request reads as "this endpoint does not exist".
+
+A new module gets a new `<module>.http`. Include the failure cases worth having
+at hand, not only the happy path. Anything needing repetition or concurrency —
+rate limits, caps — stays a shell snippet in a comment, because no interactive
+client produces it.
+
 ### Top level
 
 Only the deployment layers: `core/` (shared by both processes), `api/`,
