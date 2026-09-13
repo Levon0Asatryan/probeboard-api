@@ -92,6 +92,17 @@ const auth = {
     .default('false')
     .transform((v) => v === 'true'),
 
+  // A login that never expires its predecessors leaves a row per login for
+  // the whole session lifetime. Capping keeps one account from
+  // accumulating sessions indefinitely, and gives "sign out my other
+  // devices" a bound to reason about.
+  MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(1000).default(10),
+
+  // last_seen_at is written by every authenticated request. Updating it on
+  // each one is a write per read for a value no page refreshes that often,
+  // so the write is skipped unless the recorded time is already this old.
+  SESSION_TOUCH_INTERVAL_MS: z.coerce.number().int().min(0).default(300_000),
+
   SESSION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
 };
 

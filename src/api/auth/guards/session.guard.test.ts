@@ -1,6 +1,7 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import { SESSION_COOKIE } from '../utils/session-cookie.js';
+import { loadConfig } from '../../../core/config/index.js';
+import { sessionCookieName } from '../utils/session-cookie.js';
 import { generateToken } from '../utils/session-token.js';
 import { SessionGuard, UnauthenticatedError } from '../guards/session.guard.js';
 import type { SessionRepository } from '../repositories/session.repository.js';
@@ -12,6 +13,13 @@ const active = {
   expiresAt: new Date(Date.now() + 86_400_000),
 };
 
+const cfg = loadConfig({
+  DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  COOKIE_SECURE: 'false',
+});
+
+const COOKIE = sessionCookieName(cfg);
+
 function make(options: { found?: boolean; touch?: () => Promise<void> } = {}) {
   const sessions = {
     findActive: vi.fn().mockResolvedValue(options.found === false ? undefined : active),
@@ -19,7 +27,7 @@ function make(options: { found?: boolean; touch?: () => Promise<void> } = {}) {
   } as unknown as SessionRepository;
   const logger = { warn: vi.fn(), error: vi.fn() };
 
-  return { guard: new SessionGuard(sessions, logger as never), sessions, logger };
+  return { guard: new SessionGuard(sessions, cfg, logger as never), sessions, logger };
 }
 
 const context = (cookies?: Record<string, unknown>) => {
@@ -33,7 +41,7 @@ const context = (cookies?: Record<string, unknown>) => {
 describe('SessionGuard', () => {
   it('attaches the user for a live session', async () => {
     const { guard } = make();
-    const { req, ctx } = context({ [SESSION_COOKIE]: generateToken() });
+    const { req, ctx } = context({ [COOKIE]: generateToken() });
 
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(req.user).toEqual({ id: 'u1', email: 'alice@example.com', sessionId: 's1' });
@@ -47,16 +55,16 @@ describe('SessionGuard', () => {
   it('refuses a malformed token without touching the database', async () => {
     // A junk cookie must cost nothing.
     const { guard, sessions } = make();
-    await expect(
-      guard.canActivate(context({ [SESSION_COOKIE]: 'nonsense' }).ctx),
-    ).rejects.toBeInstanceOf(UnauthenticatedError);
+    await expect(guard.canActivate(context({ [COOKIE]: 'nonsense' }).ctx)).rejects.toBeInstanceOf(
+      UnauthenticatedError,
+    );
     expect(sessions.findActive).not.toHaveBeenCalled();
   });
 
   it('refuses a well-formed token with no live session', async () => {
     const { guard } = make({ found: false });
     await expect(
-      guard.canActivate(context({ [SESSION_COOKIE]: generateToken() }).ctx),
+      guard.canActivate(context({ [COOKIE]: generateToken() }).ctx),
     ).rejects.toBeInstanceOf(UnauthenticatedError);
   });
 
@@ -65,9 +73,7 @@ describe('SessionGuard', () => {
     // must not turn an authenticated request into an error.
     const { guard, logger } = make({ touch: () => Promise.reject(new Error('connection lost')) });
 
-    await expect(
-      guard.canActivate(context({ [SESSION_COOKIE]: generateToken() }).ctx),
-    ).resolves.toBe(true);
+    await expect(guard.canActivate(context({ [COOKIE]: generateToken() }).ctx)).resolves.toBe(true);
 
     await vi.waitFor(() => {
       expect(logger.warn).toHaveBeenCalledOnce();
@@ -83,7 +89,7 @@ describe('SessionGuard', () => {
     process.on('unhandledRejection', onUnhandled);
 
     const { guard } = make({ touch: () => Promise.reject(new Error('connection lost')) });
-    await guard.canActivate(context({ [SESSION_COOKIE]: generateToken() }).ctx);
+    await guard.canActivate(context({ [COOKIE]: generateToken() }).ctx);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     process.off('unhandledRejection', onUnhandled);

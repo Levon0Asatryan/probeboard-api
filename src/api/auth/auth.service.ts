@@ -158,6 +158,13 @@ export class AuthService {
     const token = generateToken();
     const expiresAt = new Date(Date.now() + this.cfg.SESSION_TTL_DAYS * 86_400_000);
     await this.sessions.create(userId, hashToken(token), expiresAt);
+
+    // Bound how many sessions one account can hold. Without this each login
+    // leaves a row alive for the whole session lifetime, so an account
+    // accumulates them for as long as it is used. The session just issued is
+    // the newest, so it is never the one revoked.
+    await this.sessions.revokeBeyondNewest(userId, this.cfg.MAX_SESSIONS_PER_USER);
+
     return { token, expiresAt };
   }
 }

@@ -48,13 +48,51 @@ export class SessionRepository {
     return row;
   }
 
-  /** Records activity. Deliberately does not extend the session (A-3). */
-  async touch(sessionId: string, now: Date = new Date()): Promise<void> {
+  /**
+   * Records activity, at most once per `staleAfterMs`.
+   *
+   * Deliberately does not extend the session (A-3). The staleness check is a
+   * clause of the same UPDATE rather than a read followed by a write, so
+   * concurrent requests cannot both decide the row is due.
+   *
+   * Without the interval this is one write per authenticated read, which is
+   * write amplification for a value nothing displays to the second.
+   */
+  async touch(sessionId: string, staleAfterMs = 0, now: Date = new Date()): Promise<void> {
+    const cutoff = new Date(now.getTime() - staleAfterMs);
+
     await this.db.kysely
       .updateTable('sessions')
       .set({ last_seen_at: now })
       .where('id', '=', sessionId)
+      .where('last_seen_at', '<=', cutoff)
       .execute();
+  }
+
+  /**
+   * Revokes every session beyond the newest `keep`.
+   *
+   * One statement, so two concurrent logins cannot each decide a different set
+   * is surplus. The session just issued is the newest, so it always survives.
+   */
+  async revokeBeyondNewest(userId: string, keep: number, now: Date = new Date()): Promise<number> {
+    const surplus = this.db.kysely
+      .selectFrom('sessions')
+      .select('id')
+      .where('user_id', '=', userId)
+      .where('revoked_at', 'is', null)
+      .where('expires_at', '>', now)
+      .orderBy('issued_at', 'desc')
+      .orderBy('id', 'desc')
+      .offset(keep);
+
+    const result = await this.db.kysely
+      .updateTable('sessions')
+      .set({ revoked_at: now })
+      .where('id', 'in', surplus)
+      .executeTakeFirst();
+
+    return Number(result.numUpdatedRows);
   }
 
   /** Revokes one session. Idempotent: revoking twice keeps the first time. */

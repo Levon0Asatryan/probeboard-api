@@ -13,7 +13,7 @@ import { SessionRepository } from './repositories/session.repository.js';
 import { SessionGuard, type RequestUser } from './guards/session.guard.js';
 import {
   clearSessionCookieOptions,
-  SESSION_COOKIE,
+  sessionCookieName,
   sessionCookieOptions,
 } from './utils/session-cookie.js';
 
@@ -51,7 +51,11 @@ export class AuthController {
   ): Promise<{ status: 'ok' }> {
     const session = await this.auth.login(body.email, body.password, clientIp(req));
 
-    res.cookie(SESSION_COOKIE, session.token, sessionCookieOptions(this.cfg, session.expiresAt));
+    res.cookie(
+      sessionCookieName(this.cfg),
+      session.token,
+      sessionCookieOptions(this.cfg, session.expiresAt),
+    );
     return { status: 'ok' };
   }
 
@@ -63,7 +67,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     await this.sessions.revoke(user.sessionId);
-    res.clearCookie(SESSION_COOKIE, clearSessionCookieOptions(this.cfg));
+    res.clearCookie(sessionCookieName(this.cfg), clearSessionCookieOptions(this.cfg));
   }
 
   /** Revokes every session, including this one. */
@@ -75,7 +79,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     await this.sessions.revokeAllForUser(user.id);
-    res.clearCookie(SESSION_COOKIE, clearSessionCookieOptions(this.cfg));
+    res.clearCookie(sessionCookieName(this.cfg), clearSessionCookieOptions(this.cfg));
   }
 
   /** How a client learns whether its cookie is still good. */
