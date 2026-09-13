@@ -282,6 +282,52 @@ describe('OAuth configuration', () => {
     expect(cfg.OAUTH_REDIRECT_BASE_URL).toBe('http://127.0.0.1:3000');
   });
 
+  it('refuses a plain-http web base url when COOKIE_SECURE is on', () => {
+    // The session cookie the callback just set is Secure in that
+    // configuration; a plain-http web app can never read it back.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        WEB_BASE_URL: 'http://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
+  it('refuses a non-http(s) base url even though it is a valid URL', () => {
+    // z.url() alone accepts mailto: and every other WHATWG-valid scheme;
+    // both base URLs are resolved as a base against a relative reference
+    // (new URL(path, base)), which throws for a non-hierarchical scheme --
+    // an accepted config must not fail on the first request instead of at
+    // boot.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        COOKIE_SECURE: 'false',
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'mailto:ops@example.com',
+        WEB_BASE_URL: 'http://127.0.0.1:5173',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+
+    expect(() =>
+      loadConfig({
+        ...valid,
+        COOKIE_SECURE: 'false',
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000',
+        WEB_BASE_URL: 'mailto:ops@example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
   it('defaults the state ttl to ten minutes, matching GitHub’s code expiry', () => {
     expect(loadConfig(valid).OAUTH_STATE_TTL_MS).toBe(600_000);
   });
