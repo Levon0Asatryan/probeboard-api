@@ -42,6 +42,7 @@ const ERROR_CODES = [
   'NOT_FOUND',
   'CONFLICT',
   'NO_PASSWORD_SET',
+  'LAST_CREDENTIAL',
   'PAYLOAD_TOO_LARGE',
   'RATE_LIMITED',
   'DATABASE_UNAVAILABLE',
@@ -145,6 +146,7 @@ export function buildOpenApiDocument(
     tags: [
       { name: 'health', description: 'Liveness and readiness, served outside the version prefix.' },
       { name: 'auth', description: 'Accounts and sessions.' },
+      { name: 'oauth', description: 'Sign in with Google or GitHub, and linked identities.' },
     ],
     components: {
       schemas: {
@@ -154,10 +156,11 @@ export function buildOpenApiDocument(
         ChangePasswordRequest: schemaOf(changePasswordSchema),
         CurrentUser: {
           type: 'object',
-          required: ['id', 'email'],
+          required: ['id', 'email', 'identities'],
           properties: {
             id: { type: 'string', format: 'uuid' },
             email: { type: 'string', format: 'email', description: 'Normalised to lowercase.' },
+            identities: { type: 'array', items: { $ref: '#/components/schemas/OAuthIdentity' } },
           },
         },
         Ok: {
@@ -171,6 +174,27 @@ export function buildOpenApiDocument(
           properties: {
             status: { type: 'string', enum: ['ok'] },
             database: { type: 'string', enum: ['ok'] },
+          },
+        },
+        OAuthLinkResponse: {
+          type: 'object',
+          required: ['redirectUrl'],
+          properties: {
+            redirectUrl: { type: 'string', format: 'uri' },
+          },
+        },
+        OAuthIdentity: {
+          type: 'object',
+          required: ['provider', 'email', 'linkedAt'],
+          properties: {
+            provider: { type: 'string', enum: ['google', 'github'] },
+            email: {
+              type: 'string',
+              format: 'email',
+              nullable: true,
+              description: 'Display text from the provider. Never the lookup key.',
+            },
+            linkedAt: { type: 'string', format: 'date-time' },
           },
         },
       },
@@ -361,6 +385,160 @@ export function buildOpenApiDocument(
                 'Set-Cookie': {
                   description: 'The same cookie with an expiry in the past.',
                   schema: { type: 'string' },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/auth/oauth/{provider}/start`]: {
+        get: {
+          tags: ['oauth'],
+          operationId: 'oauthStart',
+          summary: 'Begin sign-in with a provider',
+          description:
+            'A plain redirect, so the sign-in button needs no JavaScript and no CORS ' +
+            'preflight. Sets a short-lived state cookie and writes a pending row; the ' +
+            'browser comes back at `callback`.\n\n' +
+            '`:provider` outside `google`/`github` answers 404, the same as one with no ' +
+            'configured credentials -- a half-configured provider must not be ' +
+            'distinguishable from one that does not exist.',
+          security: [],
+          parameters: [
+            {
+              name: 'provider',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', enum: ['google', 'github'] },
+            },
+            {
+              name: 'returnTo',
+              in: 'query',
+              required: false,
+              description:
+                'Path to return to after sign-in. Validated server-side; anything not a ' +
+                'bare site-relative path falls back to `/` silently.',
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '302': {
+              description:
+                'To the provider, carrying a PKCE S256 challenge and `state`. Sets the ' +
+                'state cookie.',
+            },
+            '404': errorResponse('Unknown or unconfigured provider.'),
+            '429': errorResponse('Too many attempts from this address.'),
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/auth/oauth/{provider}/callback`]: {
+        get: {
+          tags: ['oauth'],
+          operationId: 'oauthCallback',
+          summary: 'Provider redirects back here',
+          description:
+            'Always a redirect, never JSON: this is a browser navigation the provider ' +
+            'sent. On success, to the stored `returnTo` with a new session cookie -- any ' +
+            'cookie already present is ignored and overwritten. On failure, to ' +
+            '`/login?error=<code>` on `WEB_BASE_URL`, with a code from a fixed ' +
+            'enumeration: `OAUTH_STATE_INVALID`, `OAUTH_ACCOUNT_EXISTS`, ' +
+            '`OAUTH_NO_VERIFIED_EMAIL`, `OAUTH_PROVIDER_ERROR`, `OAUTH_IDENTITY_TAKEN`. ' +
+            "The provider's own error text is never rendered.",
+          security: [],
+          parameters: [
+            {
+              name: 'provider',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', enum: ['google', 'github'] },
+            },
+          ],
+          responses: {
+            '302': {
+              description: 'To `returnTo` on success, or `/login?error=<code>` on failure.',
+              headers: {
+                'Set-Cookie': {
+                  description: 'The session cookie, only on success.',
+                  schema: { type: 'string' },
+                },
+              },
+            },
+            '429': errorResponse('Too many attempts from this address.'),
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/auth/oauth/{provider}/link`]: {
+        post: {
+          tags: ['oauth'],
+          operationId: 'oauthLink',
+          summary: 'Begin linking a provider to the signed-in account',
+          description:
+            'JSON rather than a redirect, since this is called from an authenticated page ' +
+            'that already has a fetch client. The browser still has to follow ' +
+            '`redirectUrl` itself for the provider leg.',
+          parameters: [
+            {
+              name: 'provider',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', enum: ['google', 'github'] },
+            },
+            {
+              name: 'returnTo',
+              in: 'query',
+              required: false,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Sets the state cookie; follow `redirectUrl` to continue.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/OAuthLinkResponse' } },
+              },
+            },
+            '404': errorResponse('Unknown or unconfigured provider.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/auth/oauth/{provider}`]: {
+        delete: {
+          tags: ['oauth'],
+          operationId: 'oauthUnlink',
+          summary: 'Remove a linked provider identity',
+          parameters: [
+            {
+              name: 'provider',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', enum: ['google', 'github'] },
+            },
+          ],
+          responses: {
+            '204': { description: 'Removed.' },
+            '404': errorResponse('No identity for this provider on this account.'),
+            '409': errorResponse(
+              '`LAST_CREDENTIAL`: removing this would leave the account with no way to ' +
+                'sign in.',
+            ),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/auth/identities`]: {
+        get: {
+          tags: ['oauth'],
+          operationId: 'listIdentities',
+          summary: 'Providers linked to the signed-in account',
+          responses: {
+            '200': {
+              description: 'Every linked identity.',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { $ref: '#/components/schemas/OAuthIdentity' } },
                 },
               },
             },

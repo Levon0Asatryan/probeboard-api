@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { UsersModule } from '../../core/users/users.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { OAuthController } from './oauth.controller.js';
 import { AuthMaintenanceService } from './services/auth-maintenance.service.js';
+import { OAuthService } from './services/oauth.service.js';
 import { PasswordService } from './services/password.service.js';
 import { AuthAttemptRepository } from './repositories/auth-attempt.repository.js';
 import { AuthRateLimitService } from './services/rate-limit.service.js';
@@ -11,6 +13,7 @@ import { SessionRepository } from './repositories/session.repository.js';
 import { OAuthAuthorizationRepository } from './repositories/oauth-authorization.repository.js';
 import { OAuthIdentityRepository } from './repositories/oauth-identity.repository.js';
 import { OAuthIdentityService } from './services/oauth-identity.service.js';
+import { OAuthStrategyRegistry } from './strategies/index.js';
 
 /**
  * Authentication. Lives in `api` because the worker never authenticates a
@@ -19,7 +22,7 @@ import { OAuthIdentityService } from './services/oauth-identity.service.js';
  */
 @Module({
   imports: [UsersModule],
-  controllers: [AuthController],
+  controllers: [AuthController, OAuthController],
   providers: [
     AuthService,
     SessionGuard,
@@ -31,6 +34,8 @@ import { OAuthIdentityService } from './services/oauth-identity.service.js';
     OAuthIdentityRepository,
     OAuthAuthorizationRepository,
     OAuthIdentityService,
+    OAuthStrategyRegistry,
+    OAuthService,
   ],
   exports: [
     AuthService,

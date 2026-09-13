@@ -9,6 +9,10 @@ import { loginSchema, type LoginRequest } from './dto/login.dto.js';
 import { registerSchema, type RegisterRequest } from './dto/register.dto.js';
 import { clientIp } from './utils/client-ip.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
+import {
+  OAuthIdentityRepository,
+  toIdentitySummary,
+} from './repositories/oauth-identity.repository.js';
 import { SessionRepository } from './repositories/session.repository.js';
 import { SessionGuard, type RequestUser } from './guards/session.guard.js';
 import {
@@ -23,6 +27,7 @@ export class AuthController {
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly auth: AuthService,
     private readonly sessions: SessionRepository,
+    private readonly identities: OAuthIdentityRepository,
   ) {}
 
   /**
@@ -82,11 +87,21 @@ export class AuthController {
     res.clearCookie(sessionCookieName(this.cfg), clearSessionCookieOptions(this.cfg));
   }
 
-  /** How a client learns whether its cookie is still good. */
+  /**
+   * How a client learns whether its cookie is still good.
+   *
+   * Carries the linked identities so the settings page can render without a
+   * second call.
+   */
   @Get('me')
   @UseGuards(SessionGuard)
-  me(@CurrentUser() user: RequestUser): { id: string; email: string } {
-    return { id: user.id, email: user.email };
+  async me(@CurrentUser() user: RequestUser): Promise<{
+    id: string;
+    email: string;
+    identities: ReturnType<typeof toIdentitySummary>[];
+  }> {
+    const rows = await this.identities.listForUser(user.id);
+    return { id: user.id, email: user.email, identities: rows.map(toIdentitySummary) };
   }
 
   /** Changes the password and revokes every other session (A-5). */

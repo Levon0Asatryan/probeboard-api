@@ -3,6 +3,17 @@ import { type Kysely, sql } from 'kysely';
 import { DbService } from '../../../core/db/db.service.js';
 import type { Database, OAuthIdentity, OAuthProvider } from '../../../core/db/types.js';
 
+export interface IdentitySummary {
+  provider: OAuthProvider;
+  email: string | null;
+  linkedAt: Date;
+}
+
+/** How an identity row is shown to a client: display text, never a lookup key. */
+export function toIdentitySummary(row: OAuthIdentity): IdentitySummary {
+  return { provider: row.provider, email: row.provider_email, linkedAt: row.created_at };
+}
+
 /** What a provider asserted about the person who just signed in. */
 export interface ProviderAccount {
   provider: OAuthProvider;

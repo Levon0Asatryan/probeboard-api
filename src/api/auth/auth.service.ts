@@ -180,7 +180,17 @@ export class AuthService {
     }
   }
 
-  private async issue(userId: string): Promise<IssuedSession> {
+  /**
+   * Issues a brand-new session for an account, whatever brought the caller
+   * here.
+   *
+   * The one code path every way of authenticating goes through (D10): a
+   * provider sign-in reaches this exactly like a password login does, so the
+   * session cap and the `__Host-` cookie prefix cannot drift between the two.
+   * Exposed deliberately for OAuthService to call -- it was private until the
+   * callback needed the same guarantee a password login already had.
+   */
+  async issue(userId: string): Promise<IssuedSession> {
     const token = generateToken();
     const expiresAt = new Date(Date.now() + this.cfg.SESSION_TTL_DAYS * 86_400_000);
     await this.sessions.create(userId, hashToken(token), expiresAt);
