@@ -85,15 +85,18 @@ noise of the two samples.
 | 6th, from a 6th address                                                          | `429` — the account limit is not per-IP                 |
 | Correct password for that account, 7th address, while locked                     | `429` — lockout is not bypassed by knowing the password |
 | A different account from the same address                                        | `200` — lockout does not spread                         |
-| **30 concurrent logins against one address, cap 20**                             | **exactly 20 admitted, 10 rejected**                    |
+| **30 concurrent logins against one address, cap 20**                             | **19 admitted, 11 rejected; 20 attempts in the window** |
 
 The last row is the one this design exists for. Measured before the advisory
 lock was written, the same burst admitted every request — counting and then
 inserting is a read-modify-write, and credential stuffing arrives in parallel,
-so the limiter was decoration against the only threat it addresses. The
-post-fix count in `auth_attempts` for the contended key is 20 exactly: never
-over the cap under contention, and never under it by more than the requests
-that genuinely raced.
+so the limiter was decoration against the only threat it addresses.
+
+The burst admitted 19 rather than 20 because one attempt from an earlier check
+was still inside the fifteen-minute window; `select count(*) from auth_attempts`
+for the contended key reads exactly 20. That is the number that matters: under
+thirty-way contention the limiter landed on the cap precisely, and the error it
+does make is on the conservative side.
 
 ### Sessions
 
