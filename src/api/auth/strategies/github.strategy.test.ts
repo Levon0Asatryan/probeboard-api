@@ -215,6 +215,25 @@ describe("GitHub's non-standard token errors", () => {
     await refusal(signIn({ id: 1 }, { tokenErrorWith200: true }));
     expect(stub.requests.some((r) => r.path === '/user')).toBe(false);
   });
+
+  it('caps the token endpoint response too, not only /user', async () => {
+    // An otherwise ordinary success response, padded past the limit. Proves
+    // the cap by itself: with no error in the body and nothing wrong with the
+    // exchange, the only way this can fail is standardiseTokenErrors' own read
+    // of the token endpoint's body being bounded, same as api()'s read of
+    // /user and /user/emails. Uncapped, this padded-but-valid response is read
+    // and parsed just fine and the sign-in succeeds -- so this test fails
+    // (resolves instead of rejecting) if the cap is removed.
+    const err = await refusal(
+      signIn(
+        { id: 1 },
+        { oversizedTokenResponseBytes: 10_000 },
+        () => undefined,
+        strategy({ maxResponseBytes: 1000 }),
+      ),
+    );
+    expect(err.reason).toBe('exchange_failed');
+  });
 });
 
 describe('a flow that must be refused', () => {

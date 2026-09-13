@@ -42,6 +42,12 @@ export interface StubFaults {
   omitIdToken?: boolean;
   /** GitHub's quirk: answer a token request with 200 and an error body. */
   tokenErrorWith200?: boolean;
+  /**
+   * Pads the token endpoint's response body with this many extra bytes, in
+   * whichever shape it would otherwise answer with. Proves a client caps that
+   * response too, not only /user and /user/emails.
+   */
+  oversizedTokenResponseBytes?: number;
   /** Status for /user or /user/emails. */
   userStatus?: number;
   emailsStatus?: number;
@@ -266,17 +272,24 @@ export class OAuthProviderStub {
       return json(200, {
         error: 'bad_verification_code',
         error_description: 'The code passed is incorrect or expired.',
+        ...(pending.faults.oversizedTokenResponseBytes
+          ? { padding: 'x'.repeat(pending.faults.oversizedTokenResponseBytes) }
+          : {}),
       });
     }
 
     const accessToken = randomBytes(24).toString('base64url');
     this.tokens.set(accessToken, { ...pending.identity, faults: pending.faults });
+    const padding = pending.faults.oversizedTokenResponseBytes
+      ? { padding: 'x'.repeat(pending.faults.oversizedTokenResponseBytes) }
+      : {};
 
     if (this.shape === 'github') {
       return json(200, {
         access_token: accessToken,
         token_type: 'bearer',
         scope: 'read:user,user:email',
+        ...padding,
       });
     }
 
