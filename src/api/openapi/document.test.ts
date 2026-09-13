@@ -1,10 +1,9 @@
 import 'reflect-metadata';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { RequestMethod } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import { AuthController } from '../auth/auth.controller.js';
+import { AppModule } from '../api.module.js';
 import { API_VERSION_PREFIX, UNVERSIONED_PATHS } from '../bootstrap.js';
-import { HealthController } from '../health/health.controller.js';
 import { buildOpenApiDocument } from './document.js';
 
 /**
@@ -16,6 +15,13 @@ import { buildOpenApiDocument } from './document.js';
  * both directions. An endpoint added without a spec entry fails here, and so
  * does a spec entry for an endpoint that was removed. Without this the
  * document is prose that happens to live in a .ts file.
+ *
+ * Controllers are discovered by walking `AppModule`'s own import graph rather
+ * than named one by one: a hard-coded controller list agrees with the
+ * document by construction whenever a new controller is added and nobody
+ * remembers to list it here too, which is the exact drift this test exists to
+ * catch. Walking the graph means a new controller is covered — or fails
+ * loudly — the moment it is registered anywhere under `AppModule`.
  */
 
 interface Route {
@@ -23,8 +29,45 @@ interface Route {
   path: string;
 }
 
+type Ctor = new (...args: never[]) => unknown;
+/** What can appear in a `@Module()` `imports` array: a class, or the plain
+ * object a `.forRoot()`/`.forRootAsync()` factory returns. */
+type ModuleRef = Ctor | { module: Ctor; imports?: unknown[]; controllers?: Ctor[] };
+
+/**
+ * Every controller reachable from a module's import graph, read the same way
+ * Nest itself reads it: `@Module()` decorator metadata for a static module,
+ * and the object's own properties for a dynamic one (`forRootAsync()` and
+ * friends return a plain object, not a decorated class).
+ */
+function controllersOf(root: Ctor): Ctor[] {
+  const visited = new Set<Ctor>();
+  const found = new Set<Ctor>();
+
+  function visit(ref: ModuleRef): void {
+    const cls = typeof ref === 'function' ? ref : ref.module;
+    if (visited.has(cls)) return;
+    visited.add(cls);
+
+    const ownControllers =
+      typeof ref === 'function'
+        ? ((Reflect.getMetadata(MODULE_METADATA.CONTROLLERS, cls) as Ctor[] | undefined) ?? [])
+        : (ref.controllers ?? []);
+    for (const controller of ownControllers) found.add(controller);
+
+    const imports =
+      typeof ref === 'function'
+        ? ((Reflect.getMetadata(MODULE_METADATA.IMPORTS, cls) as unknown[] | undefined) ?? [])
+        : (ref.imports ?? []);
+    for (const imp of imports) visit(imp as ModuleRef);
+  }
+
+  visit(root);
+  return [...found];
+}
+
 /** Every route Nest would register for a controller, prefixed as it will serve. */
-function routesOf(controller: new (...args: never[]) => unknown): Route[] {
+function routesOf(controller: Ctor): Route[] {
   const base = (Reflect.getMetadata(PATH_METADATA, controller) as string | undefined) ?? '';
   const proto = controller.prototype as object;
 
@@ -54,7 +97,7 @@ function routesOf(controller: new (...args: never[]) => unknown): Route[] {
     });
 }
 
-const actual = [...routesOf(AuthController), ...routesOf(HealthController)];
+const actual = controllersOf(AppModule).flatMap(routesOf);
 
 const documented = Object.entries(buildOpenApiDocument().paths as Record<string, object>).flatMap(
   ([path, operations]) => Object.keys(operations).map((method) => ({ method, path })),
