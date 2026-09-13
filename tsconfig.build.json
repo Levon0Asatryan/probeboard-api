@@ -1,4 +1,9 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // A different file set to the typecheck project, so a different marker.
+    // Sharing one would make each run invalidate the other's.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.build"
+  },
   "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts", "src/testing/**"]
 }

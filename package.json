@@ -9,7 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp -r src/core/db/migrations dist/core/db/migrations",
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/core/db/migrations && cp src/core/db/migrations/*.sql dist/core/db/migrations/",
     "start:api": "node dist/api/main.js",
     "start:worker": "node dist/worker/main.js",
     "dev:api": "tsx watch --env-file-if-exists=.env src/api/main.ts",
