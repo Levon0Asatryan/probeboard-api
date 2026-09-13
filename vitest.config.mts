@@ -23,6 +23,11 @@ export default defineConfig({
         // PostgreSQL, asserts re-running is a no-op, then rolls back and
         // re-applies. Unit tests here would test a mocked pg client.
         'src/core/db/migrator/cli.ts',
+        // The same shape: argv in, a file out. What it produces is covered by
+        // document.test.ts, and that the committed file matches is covered by
+        // the `openapi:check` step in CI, which is a stronger guarantee than a
+        // unit test of the writer could give.
+        'src/api/openapi/cli.ts',
         // A thin Nest adapter over createPool/createDb, both of which are
         // tested directly in database.test.ts.
         'src/core/db/db.service.ts',
