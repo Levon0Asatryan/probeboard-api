@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { sql } from 'kysely';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
 import { UserRepository } from '../../../core/users/repositories/user.repository.js';
+import { normalizeEmail } from '../../../core/users/utils/email.js';
 import {
   OAuthIdentityRepository,
   type ProviderAccount,
@@ -73,19 +75,102 @@ export class OAuthIdentityService {
     // not worth creating. GitHub in particular can decline to give one.
     if (!account.email) return { kind: 'no_email' };
 
-    const existing = await this.users.findByEmail(account.email);
+    return this.resolveUnknownIdentity(account, account.email, now);
+  }
 
-    if (existing) {
-      if (!this.linkByEmailAllowed(account, existing.email_verified_at)) {
-        return { kind: 'account_exists' };
-      }
+  /**
+   * Decides what to do with a provider account we have never seen, under a
+   * lock on the address.
+   *
+   * Every read here has to be inside the lock, and that is the whole point.
+   * The first version looked the identity up, then looked the address up, and
+   * concluded from the second read alone. Two simultaneous first sign-ins with
+   * the same provider account then interleaved between those two reads: the
+   * loser saw no identity, then saw the account the winner had just committed,
+   * and answered `account_exists` -- telling somebody signing in with their
+   * own Google account that the address was already taken, by themselves,
+   * permanently.
+   *
+   * It passed locally and failed in CI, which is what a read-read window looks
+   * like from the outside. The lock makes the interleaving deterministic
+   * rather than a matter of who is faster: the loser now takes the lock only
+   * after the winner has committed, and sees a complete picture.
+   *
+   * Keyed on the address rather than taken globally, so unrelated sign-ins
+   * never contend. It is the idiom the rate limiter already uses.
+   */
+  private async resolveUnknownIdentity(
+    account: ProviderAccount,
+    email: string,
+    now: Date,
+  ): Promise<SignInOutcome> {
+    const outcome = await this.db.kysely
+      .transaction()
+      .execute<SignInOutcome>(async (trx) => {
+        await sql`SELECT pg_advisory_xact_lock(hashtext(${`oauth:signup:${normalizeEmail(email)}`}))`.execute(
+          trx,
+        );
 
-      const linked = await this.identities.link(existing.id, account);
-      // Lost a race with a concurrent link of the same provider account.
-      return linked ? { kind: 'linked', userId: existing.id } : { kind: 'identity_taken' };
-    }
+        // Re-read under the lock. Somebody may have created this identity
+        // while we were waiting for it.
+        const owner = await this.identities.findOwner(account.provider, account.accountId, trx);
+        if (owner) {
+          await this.identities.recordLogin(owner.identityId, account, now, trx);
+          return { kind: 'signed_in', userId: owner.userId };
+        }
 
-    return this.createAccount(account);
+        const existing = await this.users.findByEmail(email, trx);
+
+        if (existing) {
+          if (!this.linkByEmailAllowed(account, existing.email_verified_at)) {
+            return { kind: 'account_exists' };
+          }
+
+          const linked = await this.identities.link(existing.id, account, trx);
+          if (!linked) throw new IdentityRaceLost();
+          return { kind: 'linked', userId: existing.id };
+        }
+
+        // The provider's assertion is recorded because it is true, not because
+        // anything matches on it.
+        const verifiedAt = account.emailVerified ? new Date() : null;
+        const user = await this.users.createFromProvider(email, verifiedAt, trx);
+        if (!user) throw new IdentityRaceLost();
+
+        // The account and its first identity commit together or not at all.
+        // Failing between them would leave an account with no password and no
+        // identity: unreachable, and worse than orphaned, because its address
+        // then matches and every later sign-in is refused telling the person
+        // to log in with a password that does not exist.
+        const identity = await this.identities.link(user.id, account, trx);
+        if (!identity) throw new IdentityRaceLost();
+
+        return { kind: 'created', userId: user.id };
+      })
+      .catch((err: unknown) => {
+        // A race the address lock does not cover: the identity index is keyed
+        // on the provider account, the lock on the address, so two flows for
+        // one provider account asserting different addresses do not serialise
+        // against each other. Roll back and resolve against what the winner
+        // committed.
+        //
+        // Honestly labelled: this path is defence in depth and the suite does
+        // not exercise it. Reaching it needs the winner to commit in the
+        // window between this transaction's identity re-read and its insert,
+        // and no test here can force that interleaving. It is kept because the
+        // alternative -- letting a unique-violation escape as a 500, or
+        // answering `account_exists` to somebody signing in with their own
+        // account -- is the failure this whole method exists to prevent. The
+        // guard that *is* proven is the re-read under the lock above: removing
+        // it fails the concurrency tests every run.
+        if (err instanceof IdentityRaceLost) return undefined;
+        throw err;
+      });
+
+    if (outcome) return outcome;
+
+    const owner = await this.identities.findOwner(account.provider, account.accountId);
+    return owner ? { kind: 'signed_in', userId: owner.userId } : { kind: 'account_exists' };
   }
 
   /**
@@ -138,53 +223,6 @@ export class OAuthIdentityService {
     if (!this.cfg.OAUTH_ALLOW_EMAIL_LINKING) return false;
     if (!account.emailVerified) return false;
     return localVerifiedAt !== null;
-  }
-
-  /**
-   * Creates an account and its first identity, together or not at all.
-   *
-   * Two statements, one transaction. Creating the user and then failing to
-   * insert the identity leaves an account with no password and no identity:
-   * nobody can sign in to it, and it is worse than merely orphaned, because
-   * its address now matches — so every later attempt is refused as
-   * `account_exists` and the person is told to log in with a password that
-   * does not exist. Permanently, with no way out.
-   */
-  private async createAccount(account: ProviderAccount): Promise<SignInOutcome> {
-    const email = account.email;
-    if (!email) return { kind: 'no_email' };
-
-    const outcome = await this.db.kysely
-      .transaction()
-      .execute<SignInOutcome>(async (trx) => {
-        // The provider's assertion is recorded because it is true, not because
-        // anything matches on it.
-        const verifiedAt = account.emailVerified ? new Date() : null;
-        const user = await this.users.createFromProvider(email, verifiedAt, trx);
-
-        // Somebody registered this address between the read above and here.
-        if (!user) return { kind: 'account_exists' };
-
-        const identity = await this.identities.link(user.id, account, trx);
-
-        // Somebody else claimed this provider account in the same window. Roll
-        // the user back rather than leave one nobody can reach; the caller
-        // retries and finds the account they made.
-        if (!identity) throw new IdentityRaceLost();
-
-        return { kind: 'created', userId: user.id };
-      })
-      .catch((err: unknown) => {
-        if (err instanceof IdentityRaceLost) return undefined;
-        throw err;
-      });
-
-    if (outcome) return outcome;
-
-    // Retry once, from the top. The winner of the race has created the
-    // identity, so this resolves to `signed_in` rather than looping.
-    const owner = await this.identities.findOwner(account.provider, account.accountId);
-    return owner ? { kind: 'signed_in', userId: owner.userId } : { kind: 'account_exists' };
   }
 }
 

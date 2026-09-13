@@ -37,8 +37,12 @@ export class OAuthIdentityRepository {
    * The lookup key is the pair, never the email address. Matching on email is
    * the account-takeover primitive this whole table exists to avoid.
    */
-  async findOwner(provider: OAuthProvider, accountId: string): Promise<IdentityOwner | undefined> {
-    return this.db.kysely
+  async findOwner(
+    provider: OAuthProvider,
+    accountId: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<IdentityOwner | undefined> {
+    return executor
       .selectFrom('oauth_identities')
       .innerJoin('users', 'users.id', 'oauth_identities.user_id')
       .select([
@@ -98,8 +102,9 @@ export class OAuthIdentityRepository {
     identityId: string,
     account: ProviderAccount,
     now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
   ): Promise<void> {
-    await this.db.kysely
+    await executor
       .updateTable('oauth_identities')
       .set({
         provider_email: account.email,

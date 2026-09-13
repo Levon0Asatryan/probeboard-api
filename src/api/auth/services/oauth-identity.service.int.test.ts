@@ -285,17 +285,25 @@ describe('linking from an authenticated session', () => {
 
 describe('two flows racing', () => {
   it('creates one account, not two, for simultaneous first sign-ins', async () => {
+    // Ten rather than two on purpose. The bug this catches lived in the window
+    // between reading the identity and reading the address: the loser saw no
+    // identity, then saw the account the winner had just committed, and told
+    // somebody signing in with their own Google account that the address was
+    // already taken. Two requests hit that window rarely enough that it passed
+    // locally and failed only in CI.
     const service = makeService();
 
-    const [a, b] = await Promise.all([
-      service.signIn(google('sub-1', 'race@example.com')),
-      service.signIn(google('sub-1', 'race@example.com')),
-    ]);
+    const outcomes = await Promise.all(
+      Array.from({ length: 10 }, () => service.signIn(google('sub-1', 'race@example.com'))),
+    );
 
-    // One created it; the other found it. Neither may fail, and neither may
-    // leave a second account behind.
-    expect([a.kind, b.kind].sort()).toEqual(['created', 'signed_in']);
-    expect((a as { userId: string }).userId).toBe((b as { userId: string }).userId);
+    const kinds = outcomes.map((o) => o.kind);
+    expect(kinds.filter((k) => k === 'created')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'signed_in')).toHaveLength(9);
+
+    // And every one of them reached the same account.
+    const ids = new Set(outcomes.map((o) => (o as { userId?: string }).userId));
+    expect(ids.size).toBe(1);
   });
 
   it('leaves no account without an identity when a race is lost', async () => {
@@ -308,6 +316,38 @@ describe('two flows racing', () => {
 
     const user = await users.findByEmail('race@example.com');
     expect(await identities.countCredentials(user!.id)).toBe(1);
+  });
+
+  it('never reports the address as taken to the account that owns it', async () => {
+    // The exact regression: a first sign-in answering `account_exists` against
+    // an account it had itself just created, which no retry can recover from
+    // because the address stays taken forever.
+    const service = makeService();
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 10 }, () => service.signIn(google('sub-9', 'self@example.com'))),
+    );
+
+    expect(outcomes.map((o) => o.kind)).not.toContain('account_exists');
+  });
+
+  it('resolves a race the address lock does not cover', async () => {
+    // Same provider account, two different addresses -- the provider changed
+    // the address between the flows. The two take *different* address locks,
+    // so they do not serialise against each other, and the identity still has
+    // to converge on one account rather than creating one per address.
+    const service = makeService();
+
+    const outcomes = await Promise.all([
+      service.signIn(google('same-sub', 'first@example.com')),
+      service.signIn(google('same-sub', 'second@example.com')),
+    ]);
+
+    expect(outcomes.map((o) => o.kind).sort()).toEqual(['created', 'signed_in']);
+    const ids = new Set(outcomes.map((o) => (o as { userId?: string }).userId));
+    expect(ids.size).toBe(1);
+    // And the rolled-back attempt left no account behind.
+    expect(await identities.countCredentials([...ids][0]!)).toBe(1);
   });
 
   it('refuses the second when two different provider accounts claim one address', async () => {

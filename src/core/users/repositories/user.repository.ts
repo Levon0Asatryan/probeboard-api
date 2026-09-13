@@ -71,8 +71,11 @@ export class UserRepository {
       .executeTakeFirst();
   }
 
-  findByEmail(email: string): Promise<User | undefined> {
-    return this.db.kysely
+  findByEmail(
+    email: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<User | undefined> {
+    return executor
       .selectFrom('users')
       .selectAll()
       .where('email', '=', normalizeEmail(email))
