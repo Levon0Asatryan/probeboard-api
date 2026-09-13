@@ -42,6 +42,12 @@ export function configureApp(app: NestExpressApplication, cfg: AppConfig): INest
   // can read it.
   app.use(cookieParser());
 
+  // Express announces itself on every response by default. It is only a hint,
+  // but it is a free one: it names the framework to fingerprint and narrows
+  // which published vulnerabilities are worth trying. Nothing legitimate reads
+  // it.
+  app.disable('x-powered-by');
+
   // Whether X-Forwarded-For may be believed. Off unless a deployment opts in:
   // the per-IP rate limit keys on the client address, and trusting a header
   // any client can set would let an attacker present a fresh address per

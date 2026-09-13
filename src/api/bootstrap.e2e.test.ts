@@ -83,6 +83,19 @@ describe('routing on a running server', () => {
   });
 });
 
+describe('response headers', () => {
+  it('does not announce the framework', async () => {
+    // Express sets X-Powered-By on every response unless it is disabled. The
+    // assertion covers a matched route and an unmatched one, because the
+    // fallback writes its response through Express directly rather than
+    // through Nest.
+    for (const path of ['/v1/monitors', '/healthz', '/nope']) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.headers.get('x-powered-by'), `on ${path}`).toBeNull();
+    }
+  });
+});
+
 describe('unmatched routes', () => {
   it('answer with JSON, not Express HTML, inside the prefix', async () => {
     const res = await fetch(`${base}/v1/nope`);

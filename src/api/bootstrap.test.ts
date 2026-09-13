@@ -15,6 +15,7 @@ function fakeApp() {
     useBodyParser: vi.fn(),
     use: vi.fn(),
     set: vi.fn(),
+    disable: vi.fn(),
     enableShutdownHooks: vi.fn(),
     get: vi.fn().mockReturnValue({ catch: vi.fn() }),
   };
@@ -42,6 +43,12 @@ describe('configureApp', () => {
     // controller. That is exactly what it did: /monitors was served and
     // /v1/monitors returned 404.
     expect(UNVERSIONED_PATHS.every((p) => typeof p === 'string' && !p.includes('*'))).toBe(true);
+  });
+
+  it('does not announce the framework', () => {
+    const app = fakeApp();
+    configureApp(app, cfg);
+    expect(app.disable).toHaveBeenCalledWith('x-powered-by');
   });
 
   it('registers the error filter so no failure escapes unmapped', () => {
