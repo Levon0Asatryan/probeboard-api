@@ -126,7 +126,7 @@ export class OAuthIdentityService {
             return { kind: 'account_exists' };
           }
 
-          const linked = await this.identities.link(existing.id, account, trx);
+          const linked = await this.identities.link(existing.id, account, now, trx);
           if (linked) return { kind: 'linked', userId: existing.id };
 
           // Two unique indexes can refuse that insert, and both can refuse it
@@ -181,7 +181,7 @@ export class OAuthIdentityService {
         // identity: unreachable, and worse than orphaned, because its address
         // then matches and every later sign-in is refused telling the person
         // to log in with a password that does not exist.
-        const identity = await this.identities.link(user.id, account, trx);
+        const identity = await this.identities.link(user.id, account, now, trx);
         if (!identity) throw new IdentityRaceLost();
 
         return { kind: 'created', userId: user.id };

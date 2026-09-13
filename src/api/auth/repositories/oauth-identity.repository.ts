@@ -67,10 +67,19 @@ export class OAuthIdentityRepository {
    *
    * `ON CONFLICT DO NOTHING` rather than a read followed by an insert: two
    * concurrent link attempts would both pass the read.
+   *
+   * `last_login_at` is stamped from `now` rather than left to the column's own
+   * `DEFAULT now()`, so it is comparable against `recordLogin`'s monotonic
+   * guard, which is stamped from the app's clock too. Mixing an
+   * application-clock timestamp with a database-clock one in that comparison
+   * is exactly the bug a real sign-in race exposed as a flaky test: the two
+   * clocks are never guaranteed to agree to the sub-10ms precision the guard
+   * needs.
    */
   async link(
     userId: string,
     account: ProviderAccount,
+    now: Date = new Date(),
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<OAuthIdentity | undefined> {
     return (
@@ -82,6 +91,7 @@ export class OAuthIdentityRepository {
           provider_account_id: account.accountId,
           provider_email: account.email,
           provider_email_verified: account.emailVerified,
+          last_login_at: now,
         })
         // Both unique indexes are covered: the provider account being taken, and
         // the user already holding this provider.
