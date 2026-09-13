@@ -37,3 +37,10 @@ Only if it answers _how_, for someone who has this repository checked out, and
 would be wrong if the code changed without it. Reference material — API
 endpoints, database schema — should be **generated** from the code rather than
 written, so it cannot drift.
+
+`openapi.yaml` is the worked example: `npm run openapi` builds it from the same
+zod schemas the request pipeline validates against, CI fails if the committed
+file is stale, and a test compares it against Nest's own route metadata in both
+directions, so neither an undocumented endpoint nor a documented one that does
+not exist can survive. `API_DOCS_ENABLED=true` serves the same document as
+Swagger UI at `/docs`; `docker compose` sets it.
