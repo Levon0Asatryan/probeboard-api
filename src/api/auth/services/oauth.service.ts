@@ -10,7 +10,7 @@ import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import type { OAuthProvider } from '../../../core/db/types.js';
 import { describeError } from '../../../core/errors/describe.js';
-import { RateLimitedError, type AuthService, type IssuedSession } from '../auth.service.js';
+import { AuthService, RateLimitedError, type IssuedSession } from '../auth.service.js';
 import { OAuthProviderError } from '../interfaces/oauth-provider.js';
 import { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
 import { OAuthStrategyRegistry } from '../strategies/index.js';
