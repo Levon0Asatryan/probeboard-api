@@ -256,6 +256,35 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
     expect(outcome).toEqual({ kind: 'already_linked' });
   });
 
+  it('signs in to the provider account\u2019s owner, not the address-matched account', async () => {
+    // Precedence, at the level a user can observe it. The address matches an
+    // account that already holds a Google identity, and the *incoming* Google
+    // account belongs to somebody else entirely. Whose account the provider
+    // account signs in to is decided by the identity, never by the address --
+    // so this is an ordinary sign-in to its owner, not `already_linked`, which
+    // would name the wrong account.
+    //
+    // This is satisfied by the re-read at the top of the transaction, not by
+    // the ownership check after a failed insert: that one needs a link to
+    // commit mid-transaction and the suite cannot force it. Said plainly so
+    // nobody reads this as covering that branch.
+    const permissive = makeService({ OAUTH_ALLOW_EMAIL_LINKING: 'true' });
+    await ctx.db
+      .updateTable('users')
+      .set({ email_verified_at: new Date() })
+      .where('email', '=', 'victim@example.com')
+      .execute();
+    const victim = await users.findByEmail('victim@example.com');
+    await identities.link(victim!.id, google('first-sub', 'victim@example.com'));
+
+    const other = (await users.create('other@example.com', '$argon2id$hash'))!;
+    await identities.link(other.id, google('incoming-sub', 'other@example.com'));
+
+    const outcome = await permissive.signIn(google('incoming-sub', 'victim@example.com', true));
+
+    expect(outcome).toEqual({ kind: 'signed_in', userId: other.id });
+  });
+
   it('is refused by default even then, since the flag is off', async () => {
     await ctx.db
       .updateTable('users')

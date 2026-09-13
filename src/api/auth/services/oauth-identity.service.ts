@@ -129,12 +129,34 @@ export class OAuthIdentityService {
           const linked = await this.identities.link(existing.id, account, trx);
           if (linked) return { kind: 'linked', userId: existing.id };
 
-          // Two unique indexes can refuse that insert and they mean opposite
-          // things. If the account already holds a different identity for this
-          // provider it is `already_linked` -- nobody took the incoming
-          // provider account, and telling the person the address is taken
-          // sends them to a remedy that does not exist. Only a genuine race on
-          // the provider account is resolved outside.
+          // Two unique indexes can refuse that insert, and both can refuse it
+          // at once. Order matters, and ownership of the incoming provider
+          // account comes first: if somebody linked it while we were between
+          // the re-read above and this insert, it now has an owner, and this
+          // is an ordinary sign-in to *their* account whatever else is true of
+          // the address-matched one.
+          //
+          // Checking the local clash first would answer `already_linked`,
+          // which names the wrong account: it describes the account we matched
+          // by address rather than the one the provider account actually signs
+          // in to.
+          //
+          // Unexercised by the suite, like the rollback below: reaching it
+          // needs a link to commit inside the window between the re-read at
+          // the top of this transaction and this insert, and no test here can
+          // force that. What is covered is the rule it applies -- that a
+          // provider account signs in to whoever owns it, never to whoever
+          // matches the address -- asserted where the ordering is reachable.
+          const owner = await this.identities.findOwner(account.provider, account.accountId, trx);
+          if (owner) {
+            await this.identities.recordLogin(owner.identityId, account, now, trx);
+            return { kind: 'signed_in', userId: owner.userId };
+          }
+
+          // Nobody took it, so the refusal was the (user_id, provider) index:
+          // the matched account already holds an identity for this provider.
+          // `account_exists` here would send the person to a remedy that does
+          // not exist, since linking is precisely what they cannot do.
           const clash = await this.identities
             .listForUser(existing.id, trx)
             .then((rows) => rows.some((r) => r.provider === account.provider));
