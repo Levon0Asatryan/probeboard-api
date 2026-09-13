@@ -33,12 +33,36 @@ describe('validateReturnTo', () => {
     expect(validateReturnTo('/\\evil.com')).toBe('/');
   });
 
-  it('defaults a value carrying a scheme', () => {
-    expect(validateReturnTo('/javascript:alert(1)')).toBe('/');
+  it('defaults an absolute URL to another origin', () => {
     expect(validateReturnTo('https://evil.com')).toBe('/');
   });
 
   it('accepts a colon that appears after the path, not as a scheme', () => {
+    // A leading '/' means this is never interpretable as a scheme by
+    // anything that consumes the resulting redirect -- schemes are
+    // recognised only at the very start of a URL. Refusing it would be
+    // rejecting a harmless path for a resemblance that cannot bite.
     expect(validateReturnTo('/services?returnAt=12:30')).toBe('/services?returnAt=12:30');
+    expect(validateReturnTo('/javascript:alert(1)')).toBe('/javascript:alert(1)');
+  });
+
+  it.each([
+    ['a tab', '/\t/evil.com'],
+    ['a line feed', '/\n/evil.com'],
+    ['a carriage return', '/\r/evil.com'],
+  ])('defaults a path smuggling %s before a protocol-relative host', (_label, value) => {
+    // The WHATWG URL parser strips ASCII tab and newline from the whole
+    // input before parsing anything else, so this is "//evil.com" by the
+    // time origin comparison would see it if these were not caught first --
+    // proof that origin comparison alone, without stripping first, is not
+    // enough; the parser's own stripping step is what does the work here,
+    // and comparing the origin it produces is what catches it.
+    expect(validateReturnTo(value)).toBe('/');
+  });
+
+  it('preserves the query and fragment on an accepted path', () => {
+    expect(validateReturnTo('/services?tab=incidents#section')).toBe(
+      '/services?tab=incidents#section',
+    );
   });
 });
