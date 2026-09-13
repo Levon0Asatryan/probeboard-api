@@ -13,13 +13,14 @@ Last updated: 2026-09-13, by the orchestrator.
   threads yet (Codex may still post).
 - **Next handoff:** social login PR 4 (HTTP surface) and PR 5 (config, log
   sanitising, identities on `/me`), then the #18 follow-ups below.
-- **Waiting on Levon:**
-  - Run worker chats one at a time in this checkout, or give each a worktree.
-  - Turn on branch protection for `main` (require a PR and green CI). Currently
-    off.
-  - Register a Google OAuth client and a GitHub OAuth app, each with the exact
-    callback `http://127.0.0.1:3000/v1/auth/oauth/<provider>/callback`. Without
-    them PR 4 can only be verified against the test double.
+- **Decided (2026-09-13):**
+  - Worker chats run **one at a time** in this checkout; no parallel
+    worktrees. The backend is a dependency chain anyway.
+  - Branch protection on `main` stays **off**. `CLAUDE.md` forbids chats from
+    pushing to it; the orchestrator checks for direct pushes when validating.
+  - Social login is verified against the **local test provider** until the
+    end. Real Google and GitHub OAuth apps are registered at final testing —
+    tracked as a follow-up below.
 
 ## Milestones
 
@@ -66,11 +67,12 @@ M2 → M6 is a dependency chain; run it in order.
 
 Items found while validating, not yet scheduled.
 
-| Source | Item                                                                                                                                        | Kind    |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| #18    | Merged with three review threads unanswered (below). The orchestrator now validates before merge.                                           | process |
-| #18    | `POST /v1/auth/password` omits the 413 the body limit produces; register and login document it.                                             | fix     |
-| #18    | `openapi:check` reports any read failure as "missing", discarding the cause; only `ENOENT` means missing.                                   | fix     |
-| #18    | Drift test reads routes from decorator metadata rather than the running application. Judgement call — reply with a decision or fix it.      | decide  |
-| plan   | Docs repo: ADR-0010 (linking policy), ADR-0011 (cookie and domain), stories A-7 and A-8, a milestone-table row. `social-login-plan.md` §11. | docs    |
-| plan   | Deploy web and api under one registrable domain, decided before M9, or `SameSite=Lax` breaks the SPA. `social-login-plan.md` §10.           | decide  |
+| Source   | Item                                                                                                                                                                                                               | Kind    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| #18      | Merged with three review threads unanswered (below). The orchestrator now validates before merge.                                                                                                                  | process |
+| #18      | `POST /v1/auth/password` omits the 413 the body limit produces; register and login document it.                                                                                                                    | fix     |
+| #18      | `openapi:check` reports any read failure as "missing", discarding the cause; only `ENOENT` means missing.                                                                                                          | fix     |
+| #18      | Drift test reads routes from decorator metadata rather than the running application. Judgement call — reply with a decision or fix it.                                                                             | decide  |
+| plan     | Docs repo: ADR-0010 (linking policy), ADR-0011 (cookie and domain), stories A-7 and A-8, a milestone-table row. `social-login-plan.md` §11.                                                                        | docs    |
+| plan     | Deploy web and api under one registrable domain, decided before M9, or `SameSite=Lax` breaks the SPA. `social-login-plan.md` §10.                                                                                  | decide  |
+| decision | Register a Google OAuth client and a GitHub OAuth app (callback `http://127.0.0.1:3000/v1/auth/oauth/<provider>/callback`) and verify social login against the real providers. Deferred by Levon to final testing. | verify  |
