@@ -3,7 +3,7 @@ import { loadConfig } from '../../../core/config/index.js';
 import { NotFoundError } from '../../../core/errors/app-error.js';
 import { GitHubStrategy } from './github.strategy.js';
 import { GoogleStrategy } from './google.strategy.js';
-import { OAuthStrategyRegistry } from './index.js';
+import { OAuthStrategyRegistry } from './strategy-registry.service.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
   loadConfig({ DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard', ...env });

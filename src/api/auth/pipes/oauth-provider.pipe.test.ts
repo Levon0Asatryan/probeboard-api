@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NotFoundError } from '../../../core/errors/app-error.js';
-import { OAuthProviderParamPipe } from './oauth-params.dto.js';
+import { OAuthProviderParamPipe } from './oauth-provider.pipe.js';
 
 describe('OAuthProviderParamPipe', () => {
   const pipe = new OAuthProviderParamPipe();

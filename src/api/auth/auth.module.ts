@@ -13,7 +13,7 @@ import { SessionRepository } from './repositories/session.repository.js';
 import { OAuthAuthorizationRepository } from './repositories/oauth-authorization.repository.js';
 import { OAuthIdentityRepository } from './repositories/oauth-identity.repository.js';
 import { OAuthIdentityService } from './services/oauth-identity.service.js';
-import { OAuthStrategyRegistry } from './strategies/index.js';
+import { OAuthStrategyRegistry } from './strategies/strategy-registry.service.js';
 
 /**
  * Authentication. Lives in `api` because the worker never authenticates a
