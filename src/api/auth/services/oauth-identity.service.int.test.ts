@@ -331,7 +331,7 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
     // link, and commits the competing identity before delegating.
     let armed = true;
     const racing = Object.create(identities) as OAuthIdentityRepository;
-    racing.link = async (userId, account, executor) => {
+    racing.link = async (userId, account, now, executor) => {
       if (armed) {
         armed = false;
         await identities.link(thief.id, {
@@ -341,7 +341,7 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
           emailVerified: true,
         });
       }
-      return identities.link(userId, account, executor);
+      return identities.link(userId, account, now, executor);
     };
 
     const raced = new OAuthIdentityService(
@@ -490,14 +490,29 @@ describe('two flows racing', () => {
     );
     await ctx.db.deleteFrom('oauth_identities').where('user_id', '=', winner.id).execute();
 
+    // The request's own timestamp, captured once and passed explicitly rather
+    // than left to `signIn`'s own `new Date()` default. The competing link
+    // below is stamped a full second after it: comparing an app-clock
+    // timestamp against another one taken moments apart on the same clock is
+    // deterministic, where comparing it against PostgreSQL's own `now()` is
+    // not -- the two processes' clocks are never guaranteed to agree to the
+    // single-digit-millisecond precision this race actually ran on before,
+    // which is exactly what made this test flake.
+    const requestTime = new Date();
+    const winnerRelinkTime = new Date(requestTime.getTime() + 1000);
+
     let armed = true;
     const racing = Object.create(identities) as OAuthIdentityRepository;
-    racing.link = async (userId, account, executor) => {
+    racing.link = async (userId, account, now, executor) => {
       if (armed) {
         armed = false;
-        await identities.link(winner.id, google('contested', 'winner@example.com'));
+        await identities.link(
+          winner.id,
+          google('contested', 'winner@example.com'),
+          winnerRelinkTime,
+        );
       }
-      return identities.link(userId, account, executor);
+      return identities.link(userId, account, now, executor);
     };
 
     const raced = new OAuthIdentityService(
@@ -507,7 +522,7 @@ describe('two flows racing', () => {
       racing,
     );
 
-    const outcome = await raced.signIn(google('contested', 'loser@example.com'));
+    const outcome = await raced.signIn(google('contested', 'loser@example.com'), requestTime);
 
     // Resolved against what the winner committed.
     expect(outcome).toEqual({ kind: 'signed_in', userId: winner.id });

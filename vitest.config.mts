@@ -65,6 +65,14 @@ export default defineConfig({
         // its own unit tests, so excluding it would hide real coverage.
         'src/api/auth/auth.controller.ts',
         'src/api/auth/auth.service.ts',
+        // Same shape as auth.controller.ts/auth.service.ts above: HTTP
+        // wiring and the flow it drives, covered by
+        // e2e/oauth-signin.int.test.ts and e2e/oauth-linking.int.test.ts
+        // against a real server, a real database, and a stub identity
+        // provider -- including the callback's error paths, which need a
+        // provider response to reach at all.
+        'src/api/auth/oauth.controller.ts',
+        'src/api/auth/services/oauth.service.ts',
       ],
       // Deliberately low for M0, when most of the tree is wiring. The
       // thresholds rise as the milestones that carry real logic land; docs

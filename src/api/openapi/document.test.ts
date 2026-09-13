@@ -103,7 +103,12 @@ const documented = Object.entries(buildOpenApiDocument().paths as Record<string,
   ([path, operations]) => Object.keys(operations).map((method) => ({ method, path })),
 );
 
-const key = (r: Route) => `${r.method.toUpperCase()} ${r.path}`;
+// Nest's own route metadata spells a path parameter Express-style (`:id`);
+// OpenAPI requires `{id}`. Normalising here, rather than making the document
+// non-standard to match, keeps the generated spec valid for the tooling that
+// actually consumes it (codegen, Swagger UI's "Try it out").
+const asOpenApiPath = (path: string) => path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
+const key = (r: Route) => `${r.method.toUpperCase()} ${asOpenApiPath(r.path)}`;
 
 describe('the document and the router agree', () => {
   it('documents every route the controllers serve', () => {

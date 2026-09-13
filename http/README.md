@@ -7,6 +7,7 @@ the source does.
 | File                         | Module        | Covers                                                               |
 | ---------------------------- | ------------- | -------------------------------------------------------------------- |
 | [auth.http](auth.http)       | `api/auth`    | register, login, me, change password, logout, logout-all             |
+| [oauth.http](oauth.http)     | `api/auth`    | sign in with Google/GitHub, link, unlink, identities                 |
 | [health.http](health.http)   | `api/health`  | liveness, readiness                                                  |
 | [common.http](common.http)   | `api/common`  | not-found fallback, error shapes, validation, version prefix, limits |
 | [openapi.http](openapi.http) | `api/openapi` | the Swagger UI page, the document it renders from                    |

@@ -1,7 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { Kysely } from 'kysely';
 import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
+import type { Database } from '../../core/db/types.js';
 import { AppError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/repositories/user.repository.js';
 import { PasswordService } from './services/password.service.js';
@@ -180,16 +182,30 @@ export class AuthService {
     }
   }
 
-  private async issue(userId: string): Promise<IssuedSession> {
+  /**
+   * Issues a brand-new session for an account, whatever brought the caller
+   * here.
+   *
+   * The one code path every way of authenticating goes through (D10): a
+   * provider sign-in reaches this exactly like a password login does, so the
+   * session cap and the `__Host-` cookie prefix cannot drift between the two.
+   * Exposed deliberately for OAuthService to call -- it was private until the
+   * callback needed the same guarantee a password login already had.
+   */
+  async issue(
+    userId: string,
+    now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<IssuedSession> {
     const token = generateToken();
-    const expiresAt = new Date(Date.now() + this.cfg.SESSION_TTL_DAYS * 86_400_000);
-    await this.sessions.create(userId, hashToken(token), expiresAt);
+    const expiresAt = new Date(now.getTime() + this.cfg.SESSION_TTL_DAYS * 86_400_000);
+    await this.sessions.create(userId, hashToken(token), expiresAt, executor);
 
     // Bound how many sessions one account can hold. Without this each login
     // leaves a row alive for the whole session lifetime, so an account
     // accumulates them for as long as it is used. The session just issued is
     // the newest, so it is never the one revoked.
-    await this.sessions.revokeBeyondNewest(userId, this.cfg.MAX_SESSIONS_PER_USER);
+    await this.sessions.revokeBeyondNewest(userId, this.cfg.MAX_SESSIONS_PER_USER, now, executor);
 
     return { token, expiresAt };
   }

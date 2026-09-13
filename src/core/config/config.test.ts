@@ -96,6 +96,43 @@ describe('API_BODY_LIMIT', () => {
   });
 });
 
+describe('OAUTH_PROVIDER_MAX_RESPONSE_BYTES', () => {
+  it('defaults to a generous but bounded size', () => {
+    expect(loadConfig(valid).OAUTH_PROVIDER_MAX_RESPONSE_BYTES).toBe('1mb');
+  });
+
+  it('accepts a well-formed size', () => {
+    expect(
+      loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '256kb' })
+        .OAUTH_PROVIDER_MAX_RESPONSE_BYTES,
+    ).toBe('256kb');
+  });
+
+  it('refuses unparseable text instead of silently removing the cap', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: 'abc' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses a bare number, which would mean bytes rather than a unit', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '64' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses zero and negative sizes', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '0kb' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses an absurd cap that would defeat the protection', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '5gb' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+});
+
 describe('cross-field rules', () => {
   it('refuses retention shorter than the rate-limit window', () => {
     // The housekeeping sweep would delete the evidence the limiter is still
@@ -132,6 +169,177 @@ describe('cross-field rules', () => {
       }
     })();
     expect(message).toContain('bypassed');
+  });
+});
+
+describe('OAuth configuration', () => {
+  it('defaults to disabled with no provider configured', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.OAUTH_ENABLED).toBe(false);
+    expect(cfg.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(cfg.GITHUB_CLIENT_ID).toBeUndefined();
+  });
+
+  it('refuses a client id with no secret, for either provider', () => {
+    expect(() => loadConfig({ ...valid, GOOGLE_CLIENT_ID: 'g-id' })).toThrow(
+      /GOOGLE_CLIENT_SECRET/,
+    );
+    expect(() => loadConfig({ ...valid, GITHUB_CLIENT_ID: 'gh-id' })).toThrow(
+      /GITHUB_CLIENT_SECRET/,
+    );
+  });
+
+  it('refuses a secret with no client id', () => {
+    expect(() => loadConfig({ ...valid, GOOGLE_CLIENT_SECRET: 'g-secret' })).toThrow(
+      /GOOGLE_CLIENT_SECRET/,
+    );
+  });
+
+  it('accepts a fully configured provider', () => {
+    const cfg = loadConfig({
+      ...valid,
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.GOOGLE_CLIENT_ID).toBe('g-id');
+  });
+
+  it('refuses OAUTH_ENABLED with no redirect base url', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        WEB_BASE_URL: 'https://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+
+  it('refuses OAUTH_ENABLED with no web base url', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
+  it('refuses OAUTH_ENABLED with no provider configured at all', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        WEB_BASE_URL: 'https://app.example.com',
+      }),
+    ).toThrow(/OAUTH_ENABLED/);
+  });
+
+  it('accepts a fully configured, enabled provider', () => {
+    const cfg = loadConfig({
+      ...valid,
+      OAUTH_ENABLED: 'true',
+      OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+      WEB_BASE_URL: 'https://app.example.com',
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.OAUTH_ENABLED).toBe(true);
+  });
+
+  it('refuses a plain-http redirect base url when COOKIE_SECURE is on', () => {
+    // A Secure state cookie is never returned to a plain-http callback, so
+    // this combination fails every sign-in as OAUTH_STATE_INVALID rather than
+    // at boot -- the same class of bug as a __Host- cookie without Secure.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'http://api.example.com',
+        WEB_BASE_URL: 'https://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+
+  it('accepts a plain-http redirect base url when COOKIE_SECURE is off', () => {
+    // The local-development escape hatch: docker-compose and the e2e suite
+    // both run this way against 127.0.0.1.
+    const cfg = loadConfig({
+      ...valid,
+      COOKIE_SECURE: 'false',
+      OAUTH_ENABLED: 'true',
+      OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000',
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.OAUTH_REDIRECT_BASE_URL).toBe('http://127.0.0.1:3000');
+  });
+
+  it('refuses a plain-http web base url when COOKIE_SECURE is on', () => {
+    // The session cookie the callback just set is Secure in that
+    // configuration; a plain-http web app can never read it back.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'https://api.example.com',
+        WEB_BASE_URL: 'http://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
+  it('refuses a non-http(s) base url even though it is a valid URL', () => {
+    // z.url() alone accepts mailto: and every other WHATWG-valid scheme;
+    // both base URLs are resolved as a base against a relative reference
+    // (new URL(path, base)), which throws for a non-hierarchical scheme --
+    // an accepted config must not fail on the first request instead of at
+    // boot.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        COOKIE_SECURE: 'false',
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'mailto:ops@example.com',
+        WEB_BASE_URL: 'http://127.0.0.1:5173',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+
+    expect(() =>
+      loadConfig({
+        ...valid,
+        COOKIE_SECURE: 'false',
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000',
+        WEB_BASE_URL: 'mailto:ops@example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/WEB_BASE_URL/);
+  });
+
+  it('defaults the state ttl to ten minutes, matching GitHub’s code expiry', () => {
+    expect(loadConfig(valid).OAUTH_STATE_TTL_MS).toBe(600_000);
+  });
+
+  it('rejects a state ttl too short to be a real limit', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_STATE_TTL_MS: '1000' })).toThrow(
+      /OAUTH_STATE_TTL_MS/,
+    );
+  });
+
+  it('defaults the provider http timeout to five seconds', () => {
+    expect(loadConfig(valid).OAUTH_HTTP_TIMEOUT_MS).toBe(5000);
   });
 });
 

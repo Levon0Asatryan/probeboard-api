@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { sql } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
+import type { Database } from '../../../core/db/types.js';
 import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import { normalizeEmail } from '../../../core/users/utils/email.js';
 import {
@@ -126,7 +127,7 @@ export class OAuthIdentityService {
             return { kind: 'account_exists' };
           }
 
-          const linked = await this.identities.link(existing.id, account, trx);
+          const linked = await this.identities.link(existing.id, account, now, trx);
           if (linked) return { kind: 'linked', userId: existing.id };
 
           // Two unique indexes can refuse that insert, and both can refuse it
@@ -181,7 +182,7 @@ export class OAuthIdentityService {
         // identity: unreachable, and worse than orphaned, because its address
         // then matches and every later sign-in is refused telling the person
         // to log in with a password that does not exist.
-        const identity = await this.identities.link(user.id, account, trx);
+        const identity = await this.identities.link(user.id, account, now, trx);
         if (!identity) throw new IdentityRaceLost();
 
         return { kind: 'created', userId: user.id };
@@ -220,8 +221,13 @@ export class OAuthIdentityService {
    * The user comes from the session, never from the address the provider
    * asserted, which is what makes linking safe where implicit linking is not.
    */
-  async link(userId: string, account: ProviderAccount): Promise<SignInOutcome> {
-    const owner = await this.identities.findOwner(account.provider, account.accountId);
+  async link(
+    userId: string,
+    account: ProviderAccount,
+    now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<SignInOutcome> {
+    const owner = await this.identities.findOwner(account.provider, account.accountId, executor);
 
     if (owner) {
       // Already ours: linking twice is not an error, it is a no-op. Somebody
@@ -231,12 +237,12 @@ export class OAuthIdentityService {
       return owner.userId === userId ? { kind: 'linked', userId } : { kind: 'identity_taken' };
     }
 
-    const linked = await this.identities.link(userId, account);
+    const linked = await this.identities.link(userId, account, now, executor);
     if (linked) return { kind: 'linked', userId };
 
     // The insert conflicted on one of two unique indexes. Which one decides
     // what the user is told, so ask rather than guess.
-    const owned = await this.identities.findOwner(account.provider, account.accountId);
+    const owned = await this.identities.findOwner(account.provider, account.accountId, executor);
 
     // And the owner may be the caller: two link requests racing means the
     // loser finds the link it asked for already made. That is the operation

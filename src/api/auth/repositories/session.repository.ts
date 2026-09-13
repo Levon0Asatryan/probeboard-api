@@ -15,8 +15,13 @@ export interface ActiveSession {
 export class SessionRepository {
   constructor(private readonly db: DbService) {}
 
-  async create(userId: string, tokenHash: Buffer, expiresAt: Date): Promise<Session> {
-    return this.db.kysely
+  async create(
+    userId: string,
+    tokenHash: Buffer,
+    expiresAt: Date,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<Session> {
+    return executor
       .insertInto('sessions')
       .values({ user_id: userId, token_hash: tokenHash, expires_at: expiresAt })
       .returningAll()
@@ -49,6 +54,40 @@ export class SessionRepository {
   }
 
   /**
+   * Same as `findActive`, but locks the row for the rest of the caller's
+   * transaction.
+   *
+   * For a write that must not race a revocation: a plain read-then-write
+   * leaves a window where `revokeAllForUser` commits after the read and
+   * before the write, and the write goes ahead on a session that no longer
+   * exists as far as anyone else can tell. `FOR UPDATE` closes it by making
+   * the revoking `UPDATE` block until this transaction ends, rather than by
+   * checking harder.
+   */
+  async findActiveForUpdate(
+    tokenHash: Buffer,
+    now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<ActiveSession | undefined> {
+    const row = await executor
+      .selectFrom('sessions')
+      .innerJoin('users', 'users.id', 'sessions.user_id')
+      .select([
+        'sessions.id as sessionId',
+        'sessions.user_id as userId',
+        'sessions.expires_at as expiresAt',
+        'users.email as email',
+      ])
+      .where('sessions.token_hash', '=', tokenHash)
+      .where('sessions.revoked_at', 'is', null)
+      .where('sessions.expires_at', '>', now)
+      .forUpdate()
+      .executeTakeFirst();
+
+    return row;
+  }
+
+  /**
    * Records activity, at most once per `staleAfterMs`.
    *
    * Deliberately does not extend the session (A-3). The staleness check is a
@@ -75,8 +114,13 @@ export class SessionRepository {
    * One statement, so two concurrent logins cannot each decide a different set
    * is surplus. The session just issued is the newest, so it always survives.
    */
-  async revokeBeyondNewest(userId: string, keep: number, now: Date = new Date()): Promise<number> {
-    const surplus = this.db.kysely
+  async revokeBeyondNewest(
+    userId: string,
+    keep: number,
+    now: Date = new Date(),
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<number> {
+    const surplus = executor
       .selectFrom('sessions')
       .select('id')
       .where('user_id', '=', userId)
@@ -86,7 +130,7 @@ export class SessionRepository {
       .orderBy('id', 'desc')
       .offset(keep);
 
-    const result = await this.db.kysely
+    const result = await executor
       .updateTable('sessions')
       .set({ revoked_at: now })
       .where('id', 'in', surplus)

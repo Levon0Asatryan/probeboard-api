@@ -47,7 +47,7 @@ describe('consume', () => {
   it('returns the flow and destroys it', async () => {
     const row = await pending.create(signin({ returnTo: '/services' }));
 
-    const taken = await pending.consume(row.id, row.state);
+    const taken = await pending.consume(row.id, row.state, row.provider);
 
     expect(taken?.code_verifier).toBe('verifier');
     expect(taken?.return_to).toBe('/services');
@@ -56,8 +56,8 @@ describe('consume', () => {
   it('is single use, so a replayed callback finds nothing', async () => {
     const row = await pending.create(signin());
 
-    expect(await pending.consume(row.id, row.state)).toBeDefined();
-    expect(await pending.consume(row.id, row.state)).toBeUndefined();
+    expect(await pending.consume(row.id, row.state, row.provider)).toBeDefined();
+    expect(await pending.consume(row.id, row.state, row.provider)).toBeUndefined();
   });
 
   it('admits only one of two simultaneous replays', async () => {
@@ -66,8 +66,8 @@ describe('consume', () => {
     const row = await pending.create(signin());
 
     const results = await Promise.all([
-      pending.consume(row.id, row.state),
-      pending.consume(row.id, row.state),
+      pending.consume(row.id, row.state, row.provider),
+      pending.consume(row.id, row.state, row.provider),
     ]);
 
     expect(results.filter(Boolean)).toHaveLength(1);
@@ -77,23 +77,36 @@ describe('consume', () => {
     const mine = await pending.create(signin());
     const theirs = await pending.create(signin());
 
-    expect(await pending.consume(mine.id, theirs.state)).toBeUndefined();
+    expect(await pending.consume(mine.id, theirs.state, mine.provider)).toBeUndefined();
     // And refusing must not have consumed it.
-    expect(await pending.consume(mine.id, mine.state)).toBeDefined();
+    expect(await pending.consume(mine.id, mine.state, mine.provider)).toBeDefined();
+  });
+
+  it('refuses a flow completed through the wrong provider (OAuth mix-up)', async () => {
+    // A flow started for google must not be completable through github's
+    // callback, even presenting the row's own id and state -- otherwise a
+    // relayed authorization response can reuse one provider's state and PKCE
+    // challenge at the other, whose callback then processes it with the
+    // original verifier.
+    const row = await pending.create(signin({ provider: 'google' }));
+
+    expect(await pending.consume(row.id, row.state, 'github')).toBeUndefined();
+    // Not consumed by the mismatched attempt.
+    expect(await pending.consume(row.id, row.state, 'google')).toBeDefined();
   });
 
   it('refuses an id that does not exist', async () => {
     const row = await pending.create(signin());
 
     expect(
-      await pending.consume('00000000-0000-0000-0000-000000000000', row.state),
+      await pending.consume('00000000-0000-0000-0000-000000000000', row.state, row.provider),
     ).toBeUndefined();
   });
 
   it('refuses an expired flow', async () => {
     const row = await pending.create(signin({ expiresAt: inMinutes(-1) }));
 
-    expect(await pending.consume(row.id, row.state)).toBeUndefined();
+    expect(await pending.consume(row.id, row.state, row.provider)).toBeUndefined();
   });
 
   it('applies expiry as a clause, not by trusting the caller to check', async () => {
@@ -101,8 +114,8 @@ describe('consume', () => {
     // caller cannot forget the check: there is nowhere to forget it.
     const row = await pending.create(signin({ expiresAt: inMinutes(10) }));
 
-    expect(await pending.consume(row.id, row.state, inMinutes(20))).toBeUndefined();
-    expect(await pending.consume(row.id, row.state, inMinutes(1))).toBeDefined();
+    expect(await pending.consume(row.id, row.state, row.provider, inMinutes(20))).toBeUndefined();
+    expect(await pending.consume(row.id, row.state, row.provider, inMinutes(1))).toBeDefined();
   });
 });
 
@@ -118,7 +131,7 @@ describe('mode', () => {
   it('accepts a link flow carrying the user it will attach to', async () => {
     const row = await pending.create(signin({ mode: 'link', userId }));
 
-    expect((await pending.consume(row.id, row.state))?.user_id).toBe(userId);
+    expect((await pending.consume(row.id, row.state, row.provider))?.user_id).toBe(userId);
   });
 
   it('refuses a link flow with no user, which would attach to nobody', async () => {
@@ -136,7 +149,7 @@ describe('housekeeping', () => {
 
     await pending.discard(row.id);
 
-    expect(await pending.consume(row.id, row.state)).toBeUndefined();
+    expect(await pending.consume(row.id, row.state, row.provider)).toBeUndefined();
   });
 
   it('prunes expired rows and leaves live ones', async () => {
@@ -145,7 +158,7 @@ describe('housekeeping', () => {
     const live = await pending.create(signin({ expiresAt: inMinutes(10) }));
 
     expect(await pending.pruneExpired()).toBe(2);
-    expect(await pending.consume(live.id, live.state)).toBeDefined();
+    expect(await pending.consume(live.id, live.state, live.provider)).toBeDefined();
   });
 });
 
@@ -155,6 +168,6 @@ describe('cascade', () => {
 
     await ctx.db.deleteFrom('users').where('id', '=', userId).execute();
 
-    expect(await pending.consume(row.id, row.state)).toBeUndefined();
+    expect(await pending.consume(row.id, row.state, row.provider)).toBeUndefined();
   });
 });
