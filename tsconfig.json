@@ -10,6 +10,13 @@
     "sourceMap": true,
     "removeComments": true,
     "incremental": true,
+    // Inside the output directory, not beside the config: a build marker that
+    // outlives the output it describes makes `rm -rf dist && npm run build`
+    // emit nothing at all — tsc considers the project current — and the build
+    // then fails on the step after it. Deleting dist must delete the marker.
+    // tsconfig.build.json overrides this with its own name, because the two
+    // projects compile different file sets and must not share one marker.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.typecheck",
     "resolveJsonModule": true,
 
     "emitDecoratorMetadata": true,
