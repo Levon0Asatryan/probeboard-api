@@ -8,6 +8,8 @@ import { AuthAttemptRepository } from './repositories/auth-attempt.repository.js
 import { AuthRateLimitService } from './services/rate-limit.service.js';
 import { SessionGuard } from './guards/session.guard.js';
 import { SessionRepository } from './repositories/session.repository.js';
+import { OAuthAuthorizationRepository } from './repositories/oauth-authorization.repository.js';
+import { OAuthIdentityRepository } from './repositories/oauth-identity.repository.js';
 
 /**
  * Authentication. Lives in `api` because the worker never authenticates a
@@ -25,7 +27,17 @@ import { SessionRepository } from './repositories/session.repository.js';
     AuthAttemptRepository,
     AuthRateLimitService,
     AuthMaintenanceService,
+    OAuthIdentityRepository,
+    OAuthAuthorizationRepository,
   ],
-  exports: [AuthService, SessionGuard, PasswordService, SessionRepository, AuthRateLimitService],
+  exports: [
+    AuthService,
+    SessionGuard,
+    PasswordService,
+    SessionRepository,
+    AuthRateLimitService,
+    OAuthIdentityRepository,
+    OAuthAuthorizationRepository,
+  ],
 })
 export class AuthModule {}

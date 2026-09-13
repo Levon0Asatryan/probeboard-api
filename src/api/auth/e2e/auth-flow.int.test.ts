@@ -90,10 +90,13 @@ async function login(email: string, password: string, ip = IP) {
 
   const user = await users.findByEmail(email);
 
-  // Both paths spend one Argon2 verification (A-2).
-  const ok = user
-    ? await passwords.verify(user.password_hash, password)
-    : await passwords.verifyDummy(password);
+  // Every path spends one Argon2 verification (A-2), including an account
+  // with no password, which signs in through a provider. Mirrors
+  // AuthService.login; the property itself is asserted there.
+  const ok =
+    user?.password_hash != null
+      ? await passwords.verify(user.password_hash, password)
+      : await passwords.verifyDummy(password);
 
   if (!ok || !user) return { outcome: 'rejected' as const };
   await limiter.succeeded(ip, email);
