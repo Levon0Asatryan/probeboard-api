@@ -37,6 +37,20 @@ services:
       COOKIE_SECURE: 'false'
       # Browsable API documentation at http://127.0.0.1:3000/docs
       API_DOCS_ENABLED: 'true'
+      # Placeholder credentials: a real Google OAuth client is registered at
+      # final testing (tracker.md), not here. These are enough to exercise
+      # /start (redirect-building, PKCE, the state cookie and its pending row)
+      # and every callback refusal path (missing cookie, foreign state,
+      # replay, expired) without reaching Google at all -- the full round
+      # trip is proved instead by the integration suite against the local
+      # stub (src/api/auth/e2e/oauth-*.int.test.ts). Actually completing a
+      # sign-in against this compose stack will fail at Google with
+      # invalid_client, which is expected.
+      OAUTH_ENABLED: 'true'
+      GOOGLE_CLIENT_ID: 'placeholder-client-id'
+      GOOGLE_CLIENT_SECRET: 'placeholder-client-secret'
+      OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000'
+      WEB_BASE_URL: 'http://127.0.0.1:5173'
     ports:
       - '3000:3000'
     restart: unless-stopped

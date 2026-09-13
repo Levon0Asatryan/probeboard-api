@@ -1,0 +1,123 @@
+### api/auth/oauth — sign in with Google or GitHub
+#
+# The provider leg cannot be scripted: /start's 302 goes to a real Google or
+# GitHub consent screen, and completing it needs a human. What follows are the
+# requests that do not need the provider, plus the manual steps for the two
+# that do, as comments -- the same idiom common.http uses for concurrency
+# checks no interactive client can produce.
+#
+# Requires OAUTH_ENABLED=true and real GOOGLE_CLIENT_ID/SECRET or
+# GITHUB_CLIENT_ID/SECRET in the running stack's environment. Against the
+# local docker-compose stack, which sets none of these by default, the whole
+# provider round trip is covered instead by
+# src/api/auth/e2e/oauth-signin.int.test.ts and oauth-linking.int.test.ts
+# against a local stub, and the refusal paths below still exercise fully
+# without any provider at all.
+#
+# Variables come from .env in this folder. See README.md.
+
+@baseUrl = {{$dotenv baseUrl}}
+@email = {{$dotenv email}}
+@password = {{$dotenv password}}
+@cookieName = {{$dotenv cookieName}}
+@oauthCookieName = {{$dotenv oauthCookieName}}
+@forgedOauthCookie = {{$dotenv forgedOauthCookie}}
+
+###
+# @name startGoogle
+# 302 to accounts.google.com, carrying client_id, redirect_uri, an S256 PKCE
+# challenge, state and nonce. Sets the state cookie ({{oauthCookieName}}).
+#
+# Manual step: follow the redirect, sign in, and the provider redirects back
+# to redirect_uri with ?code=...&state=.... That completes the flow -- there
+# is no way to script picking a Google account.
+GET {{baseUrl}}/v1/auth/oauth/google/start
+
+###
+# @name startGitHub
+# 302 to github.com/login/oauth/authorize. Same manual step as above.
+GET {{baseUrl}}/v1/auth/oauth/github/start
+
+###
+# @name startUnknownProvider
+# 404 NOT_FOUND. An unknown provider name is an unknown route, not a
+# validation error about a route that might exist -- and answers identically
+# to a real provider name with no configured credentials.
+GET {{baseUrl}}/v1/auth/oauth/bitbucket/start
+
+###
+# @name callbackNoCookie
+# 302 to {WEB_BASE_URL}/login?error=OAUTH_STATE_INVALID. REST Client sends the
+# jar's cookie automatically, so this blanks it explicitly.
+GET {{baseUrl}}/v1/auth/oauth/google/callback?code=whatever&state=whatever
+Cookie:
+
+###
+# @name callbackMismatchedState
+# 302 to .../login?error=OAUTH_STATE_INVALID. A well-formed state cookie value
+# that does not match any pending row -- the shape a forged or stale cookie
+# takes.
+GET {{baseUrl}}/v1/auth/oauth/google/callback?code=whatever&state=whatever
+Cookie: {{oauthCookieName}}={{forgedOauthCookie}}
+
+###
+# @name callbackStaleState
+# Run startGoogle above, do not follow the redirect, then run this within ten
+# minutes of that request but with a state that does not match the one it
+# issued: 302 to .../login?error=OAUTH_STATE_INVALID. The genuinely expired
+# case (wait ten minutes, or shorten OAUTH_STATE_TTL_MS) answers the same way.
+GET {{baseUrl}}/v1/auth/oauth/google/callback?code=whatever&state=not-the-issued-state
+
+###
+# @name login
+# Needed for the authenticated requests below.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+# @name linkGoogle
+# 200 {"redirectUrl": "..."}. Sets the state cookie the same way /start does;
+# unlike /start this requires a session. Follow redirectUrl manually to
+# complete the same provider leg as startGoogle.
+POST {{baseUrl}}/v1/auth/oauth/google/link
+
+###
+# @name linkNoSession
+# 401 UNAUTHENTICATED.
+POST {{baseUrl}}/v1/auth/oauth/google/link
+Cookie:
+
+###
+# @name identities
+# 200 [{"provider":"google","email":"...","linkedAt":"..."}], or [] before
+# linking anything.
+GET {{baseUrl}}/v1/auth/identities
+
+###
+# @name unlinkGoogle
+# 204 if a password or another identity remains; 409 LAST_CREDENTIAL if this
+# is the account's only way to sign in.
+DELETE {{baseUrl}}/v1/auth/oauth/google
+
+###
+# @name unlinkNeverLinked
+# 404 NOT_FOUND.
+DELETE {{baseUrl}}/v1/auth/oauth/github
+
+###
+# @name unlinkNoSession
+# 401 UNAUTHENTICATED.
+DELETE {{baseUrl}}/v1/auth/oauth/google
+Cookie:
+
+# Not here: the rate limit on /start and /callback (auth_attempts, ip scope
+# only -- see common.http for the same idiom), and the last-credential
+# concurrency guarantee (two unlinks fired at once). Both need many requests
+# arriving together, which no interactive client produces; both are covered by
+# src/api/auth/e2e/oauth-signin.int.test.ts and
+# src/api/auth/repositories/oauth-identity.repository.int.test.ts.
