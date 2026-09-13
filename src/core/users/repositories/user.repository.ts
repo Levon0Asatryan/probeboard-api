@@ -25,10 +25,47 @@ export class UserRepository {
    * decides what to tell the client — A-1 requires that a taken address is
    * indistinguishable from a fresh one.
    */
-  async create(email: string, passwordHash: string): Promise<User | undefined> {
-    return this.db.kysely
+  async create(
+    email: string,
+    passwordHash: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<User | undefined> {
+    return this.insert(email, passwordHash, null, executor);
+  }
+
+  /**
+   * Creates an account that signs in through a provider, with no password.
+   *
+   * `emailVerifiedAt` comes from the provider's own assertion. It is recorded
+   * because it is true — the provider verified it — and not because it makes
+   * anything easier: it is never used to match an incoming identity to an
+   * existing account. See the linking policy in docs/social-login-plan.md.
+   *
+   * Returns undefined if the address is taken, exactly like `create`. The
+   * caller must not then fall back to signing that account in; that fallback
+   * is the published takeover (CVE-2026-53516).
+   */
+  async createFromProvider(
+    email: string,
+    emailVerifiedAt: Date | null,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<User | undefined> {
+    return this.insert(email, null, emailVerifiedAt, executor);
+  }
+
+  private async insert(
+    email: string,
+    passwordHash: string | null,
+    emailVerifiedAt: Date | null,
+    executor: Kysely<Database>,
+  ): Promise<User | undefined> {
+    return executor
       .insertInto('users')
-      .values({ email: normalizeEmail(email), password_hash: passwordHash })
+      .values({
+        email: normalizeEmail(email),
+        password_hash: passwordHash,
+        email_verified_at: emailVerifiedAt,
+      })
       .onConflict((oc) => oc.column('email').doNothing())
       .returningAll()
       .executeTakeFirst();
