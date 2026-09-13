@@ -4,11 +4,13 @@ Documentation that belongs **with the code**: it would go stale if the code
 changed and nobody updated it, so it is reviewed in the same pull request as
 the change that affects it.
 
-| Document                                 | Covers                                                     |
-| ---------------------------------------- | ---------------------------------------------------------- |
-| [../README.md](../README.md)             | Running, developing, configuring, the layout and its rules |
-| [m0-verification.md](m0-verification.md) | What was executed to accept M0 and what it produced        |
-| [m1-verification.md](m1-verification.md) | What was executed to accept M1 and what it produced        |
+| Document                                     | Covers                                                     |
+| -------------------------------------------- | ---------------------------------------------------------- |
+| [../README.md](../README.md)                 | Running, developing, configuring, the layout and its rules |
+| [m0-verification.md](m0-verification.md)     | What was executed to accept M0 and what it produced        |
+| [m1-plan.md](m1-plan.md)                     | The investigation and plan M1 was built from               |
+| [m1-verification.md](m1-verification.md)     | What was executed to accept M1 and what it produced        |
+| [social-login-plan.md](social-login-plan.md) | Google and GitHub sign-in: investigation and plan          |
 
 ## What is not here
 
