@@ -258,8 +258,19 @@ Three reasons, in order of weight:
 The cost is one write per sign-in attempt and a sweep, both trivial next to an
 Argon2 verification.
 
-**D7 — The state cookie is `__Host-pb_oauth`, `HttpOnly`, `SameSite=Lax`,
-`Path=/`, 10-minute expiry.**
+**D7 — The state cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, no
+`Domain`, 10-minute expiry, and takes its name the same way the session cookie
+does.**
+
+`__Host-pb_oauth` when `COOKIE_SECURE` is on, bare `pb_oauth` otherwise — the
+existing `sessionCookieName(cfg)` contract, reused rather than restated. The
+prefix is enforced by the browser, not by us: it _refuses_ the cookie unless it
+is Secure, `Path=/` and carries no `Domain`. A `__Host-` name without `Secure`
+is therefore not a weaker cookie but no cookie at all: the browser stores
+nothing, and every callback then fails at step 8 with `OAUTH_STATE_INVALID` — a
+bug that reads as a broken state check and is really a cookie that was never
+set. The prefix cannot be used over plain HTTP at all, which is why the name is
+conditional rather than constant.
 
 `Lax` is exactly right and is not an accident: the callback is a top-level
 cross-site **GET** navigation, which `Lax` permits and `Strict` does not. If a
@@ -295,9 +306,26 @@ not guessed, so counting failures against it would let anyone lock out an
 account by mashing a broken OAuth flow. This is the same reasoning that keeps
 registration on IP only, and it is the mistake that shipped once already.
 
-**D12 — Provider tokens are never persisted and never logged.** The access token
-lives in a local variable for the duration of two HTTPS calls. `code`,
-`code_verifier`, `access_token` and `id_token` join the redaction list.
+**D12 — Provider tokens are never persisted, and the authorization code never
+reaches a log.** The access token lives in a local variable for the duration of
+two HTTPS calls.
+
+Adding `code` to `REDACT_PATHS` would not be enough, and believing it was is the
+trap here. Redaction matches _fields_, and the authorization code does not
+arrive as a field — it arrives inside a URL. `pino-http`'s default request
+serializer logs `url` and `query` on every request, and the global `ErrorFilter`
+logs `path: req.url` on every failure, so a callback would write
+`?code=…&state=…` into the log on the ordinary success path, twice over, with
+the redaction list fully configured. Confirmed by reading a live log line from
+the M1 verification run: `"req":{…,"url":"/readyz","query":{},…}`.
+
+So the fix is a serializer, not a list: a custom pino `req` serializer that
+keeps the path and drops the query string, and the same treatment for
+`ErrorFilter`'s `path`. Both land **before** the OAuth surface is enabled, and
+both ship with a test that runs a request carrying `?code=secret` and asserts
+the string appears in no emitted line. `code_verifier`, `access_token`,
+`id_token` and `client_secret` join the field redaction list as well, for the
+places they genuinely are fields.
 
 **D13 — Linking is an authenticated action.** `POST /v1/auth/oauth/:provider/link`
 requires a session and starts a flow whose pending row records `mode = 'link'`
@@ -305,8 +333,18 @@ and the user id. The callback then attaches the identity to _that_ user, not to
 whoever the email suggests. An identity already attached elsewhere is refused
 rather than moved.
 
-**D14 — Unlink refuses to remove the last credential.** `DELETE /v1/auth/oauth/:provider`
-returns `LAST_CREDENTIAL` if the account has no password and no other identity.
+**D14 — Unlink refuses to remove the last credential, and does the refusing
+atomically.** `DELETE /v1/auth/oauth/:provider` returns `LAST_CREDENTIAL` if the
+account has no password and no other identity.
+
+Counting and then deleting as two steps is a read-modify-write on shared state.
+An account linked to both providers, sent two unlinks at once, has each request
+observe the other identity, pass the check, and delete its own — leaving an
+account nobody can ever sign in to. So the count and the delete are one
+transaction holding `FOR UPDATE` on the **user** row: the row every credential
+of that account hangs off, and the one that exists whether or not a password
+does. Requests for different accounts never contend. It ships with a test that
+fires both unlinks concurrently and asserts exactly one succeeds.
 
 **D15 — GitHub's email comes from `/user/emails`, primary and verified.**
 `GET /user` alone returns a _public profile_ email, which is frequently null and
@@ -327,8 +365,9 @@ api/auth/
   services/
     oauth.service.ts                      the flow: start, complete, link, unlink
     oauth-identity.service.ts             the linking policy of D4, alone and testable
+  interfaces/
+    oauth-provider.ts                     the contract both strategies implement
   strategies/
-    provider.ts                           the interface both implement
     google.strategy.ts                    discovery, ID token validation
     github.strategy.ts                    token exchange, /user, /user/emails
     index.ts                              name -> strategy
@@ -500,11 +539,12 @@ balancer, which would be a self-inflicted outage of a monitoring product.
    `/start`.
 8. Read the cookie. Missing → `OAUTH_STATE_INVALID`. Clear the cookie now,
    whatever happens next.
-9. Consume the pending row: `DELETE … WHERE id = $1 AND expires_at > now() RETURNING *`.
-   No row → `OAUTH_STATE_INVALID`.
-10. Compare the row's `state` with the query's, in constant time. Mismatch →
-    `OAUTH_STATE_INVALID`.
-11. Exchange the code with `code_verifier`, bounded by the timeout.
+9. Consume the pending row:
+   `DELETE … WHERE id = $1 AND state = $2 AND expires_at > now() RETURNING *`.
+   No row → `OAUTH_STATE_INVALID`. The `state` comparison is a clause of the
+   same statement, so a caller cannot forget it and a replay cannot win a race
+   against a separate read.
+10. Exchange the code with `code_verifier`, bounded by the timeout.
     - Google: validate the ID token — signature against JWKS, `iss` in
       `{https://accounts.google.com, accounts.google.com}`, `aud` equal to our
       client id, `exp` unexpired with a small skew allowance, `nonce` equal to
@@ -512,15 +552,33 @@ balancer, which would be a self-inflicted outage of a monitoring product.
     - GitHub: `Accept: application/json`; treat an `error` member as a failure
       **regardless of status** (§2.2); then `GET /user` for the numeric `id`,
       and `GET /user/emails` for the primary verified address (D15).
-12. Apply the linking policy of D4.
-13. Upsert `oauth_identities`, refreshing the display email and `last_login_at`,
-    with `ON CONFLICT (provider, provider_account_id) DO UPDATE` — not a read
-    followed by a write.
-14. Issue a session through the existing `issue()` (D10) and set the session
-    cookie.
-15. `302` to `WEB_BASE_URL + returnTo`.
+11. Apply the linking policy of D4, and **write its outcome in one
+    transaction**:
+    - Known identity → one `UPDATE` refreshing the display email and
+      `last_login_at`.
+    - New account → `INSERT users` and `INSERT oauth_identities` together, or
+      neither.
 
-Steps 8–10 are three separate rejections that all produce one error code. That is
+    The second case is why this is a numbered step rather than an aside.
+    Creating the user and then failing to insert the identity — a dropped
+    connection, or a concurrent first sign-in losing the unique index — leaves
+    an account with no password and no identity: unreachable forever, and, worse
+    than merely orphaned, its address now matches, so every later sign-in is
+    refused with `OAUTH_ACCOUNT_EXISTS` and the user is told to log in with a
+    password that does not exist. Both repositories already take an executor
+    parameter so the caller can commit them together.
+
+    Uniqueness conflicts resolve inside that transaction: if the user insert
+    conflicts on email, the whole attempt becomes the `OAUTH_ACCOUNT_EXISTS`
+    branch; if the identity insert conflicts, the flow restarts from the
+    identity lookup, because somebody else won the race and the account now
+    exists.
+
+12. Issue a session through the existing `issue()` (D10) and set the session
+    cookie.
+13. `302` to `WEB_BASE_URL + returnTo`.
+
+Steps 8 and 9 are separate rejections that produce one error code. That is
 deliberate: which of them fired is a fact about our internals, and belongs in the
 log.
 
@@ -579,16 +637,19 @@ when it should. A guard never observed to fail is not known to work.
 | An expired ID token is refused                    | Same                                                                                                                                                                                                                                                        |
 | An unsigned or wrongly-signed ID token is refused | Sign with a key absent from the JWKS                                                                                                                                                                                                                        |
 | **No implicit linking by email**                  | Register `victim@example.com` by password; complete a Google flow asserting the same address with `email_verified: true`; expect `OAUTH_ACCOUNT_EXISTS` and **assert no row was added to `oauth_identities`**. This is CVE-2026-53516 as an executable test |
+| A half-created account is impossible              | Make the identity insert fail after the user insert; assert no `users` row survives, and that signing in again still works rather than hitting `OAUTH_ACCOUNT_EXISTS`                                                                                       |
 | Identity, not email, is the key                   | Sign in; change the stub's asserted email; sign in again; the same `user_id` comes back                                                                                                                                                                     |
 | GitHub `login` is not the key                     | Change the stub's `login`, keep the `id`; same account                                                                                                                                                                                                      |
 | GitHub's HTTP-200 error is treated as an error    | Stub returns `200` with `error=bad_verification_code`; sign-in fails and no session is issued                                                                                                                                                               |
 | No verified GitHub email is refused               | `/user/emails` returns only unverified entries                                                                                                                                                                                                              |
 | Unlink cannot orphan an account                   | OAuth-only account attempts unlink; `LAST_CREDENTIAL`; the identity is still there afterwards                                                                                                                                                               |
+| Unlink cannot orphan it under concurrency         | Account linked to both providers, both unlinks fired at once; exactly one succeeds and one credential remains                                                                                                                                               |
 | An identity cannot be stolen                      | Link a provider account to user A, attempt to link the same one to user B                                                                                                                                                                                   |
 | `returnTo` cannot leave the site                  | `//evil.com`, `https://evil.com`, `/\evil.com` all fall back to the default                                                                                                                                                                                 |
 | Session fixation is not possible                  | Send a valid session cookie for user A into a callback completing as user B; the resulting session is B's, and A's is untouched                                                                                                                             |
 | The callback is rate limited                      | Exhaust the IP budget, then call the callback; `429` before any provider call                                                                                                                                                                               |
-| No secret reaches a log                           | Run a flow with the log captured; assert the code, verifier and tokens appear nowhere                                                                                                                                                                       |
+| No authorization code reaches a log               | Request `/callback?code=secret&state=…` with the log captured; assert `secret` appears in no line — request log, error log, or either. A field-redaction list alone passes nothing here, because the code arrives inside `req.url`                          |
+| No token or verifier reaches a log                | Run a whole flow with the log captured; assert the verifier and both tokens appear nowhere                                                                                                                                                                  |
 
 The provider stub is a small local HTTP server, in `testing/`, that speaks both
 shapes: an OIDC provider with a real signed ID token (a generated key pair, JWKS
