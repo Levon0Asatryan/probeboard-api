@@ -147,10 +147,14 @@ export class OAuthIdentityService {
           // force that. What is covered is the rule it applies -- that a
           // provider account signs in to whoever owns it, never to whoever
           // matches the address -- asserted where the ordering is reachable.
-          const owner = await this.identities.findOwner(account.provider, account.accountId, trx);
-          if (owner) {
-            await this.identities.recordLogin(owner.identityId, account, now, trx);
-            return { kind: 'signed_in', userId: owner.userId };
+          const newOwner = await this.identities.findOwner(
+            account.provider,
+            account.accountId,
+            trx,
+          );
+          if (newOwner) {
+            await this.identities.recordLogin(newOwner.identityId, account, now, trx);
+            return { kind: 'signed_in', userId: newOwner.userId };
           }
 
           // Nobody took it, so the refusal was the (user_id, provider) index:
@@ -205,8 +209,15 @@ export class OAuthIdentityService {
 
     if (outcome) return outcome;
 
-    const owner = await this.identities.findOwner(account.provider, account.accountId);
-    return owner ? { kind: 'signed_in', userId: owner.userId } : { kind: 'account_exists' };
+    const winner = await this.identities.findOwner(account.provider, account.accountId);
+    if (!winner) return { kind: 'account_exists' };
+
+    // Recorded here too. Every other path that answers `signed_in` refreshes
+    // the identity, and a sign-in that reaches this one is no less a sign-in
+    // for having lost a race -- leaving it out would make `last_login_at`
+    // quietly wrong for exactly the requests that were hardest to get right.
+    await this.identities.recordLogin(winner.identityId, account, now);
+    return { kind: 'signed_in', userId: winner.userId };
   }
 
   /**

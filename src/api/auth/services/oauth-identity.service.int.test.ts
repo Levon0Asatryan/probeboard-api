@@ -133,6 +133,31 @@ describe('a provider account nobody has yet', () => {
   });
 });
 
+describe('recording the login', () => {
+  it('refreshes last_login_at on the paths a sign-in ordinarily takes', async () => {
+    // Three paths answer signed_in: the fast lookup, the re-read under the
+    // lock, and the resolution after a rolled-back attempt. This covers the
+    // first two. The third is unreachable from here -- the same rolled-back
+    // race the comments in the service label as unexercised -- and removing
+    // its refresh does not fail this test. Said plainly rather than left to
+    // look like coverage it is not.
+    const service = makeService();
+    await service.signIn(google('sub-1', 'first@example.com'));
+
+    const user = await users.findByEmail('first@example.com');
+    const before = (await identities.listForUser(user!.id))[0].last_login_at;
+
+    const later = new Date(Date.now() + 60_000);
+    const outcomes = await Promise.all(
+      Array.from({ length: 6 }, () => service.signIn(google('sub-1', 'first@example.com'), later)),
+    );
+
+    expect(outcomes.every((o) => o.kind === 'signed_in')).toBe(true);
+    const after = (await identities.listForUser(user!.id))[0].last_login_at;
+    expect(after.getTime()).toBeGreaterThan(before.getTime());
+  });
+});
+
 describe('a provider account we already know', () => {
   it('signs in to the same account', async () => {
     const first = await makeService().signIn(google('sub-1', 'alice@example.com'));

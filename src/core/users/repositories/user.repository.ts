@@ -30,7 +30,7 @@ export class UserRepository {
     passwordHash: string,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<User | undefined> {
-    return this.insert(email, passwordHash, null, executor);
+    return this.insert(email, passwordHash, executor);
   }
 
   /**
@@ -62,13 +62,21 @@ export class UserRepository {
     email: string,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<User | undefined> {
-    return this.insert(email, null, null, executor);
+    return this.insert(email, null, executor);
   }
 
+  /**
+   * No `emailVerifiedAt` parameter, deliberately.
+   *
+   * Nothing may set that column at creation time. It means probeboard verified
+   * the address, which cannot be true of a row that has just come into
+   * existence, and a parameter for it is an invitation to pass a provider's
+   * claim -- the bug this file was just fixed for. M7 sets it with an update,
+   * after a mail is sent and confirmed.
+   */
   private async insert(
     email: string,
     passwordHash: string | null,
-    emailVerifiedAt: Date | null,
     executor: Kysely<Database>,
   ): Promise<User | undefined> {
     return executor
@@ -76,7 +84,6 @@ export class UserRepository {
       .values({
         email: normalizeEmail(email),
         password_hash: passwordHash,
-        email_verified_at: emailVerifiedAt,
       })
       .onConflict((oc) => oc.column('email').doNothing())
       .returningAll()
