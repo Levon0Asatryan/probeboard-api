@@ -2,6 +2,7 @@ import { type ArgumentsHost, Catch, type ExceptionFilter } from '@nestjs/common'
 import type { Request, Response } from 'express';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { toErrorResponse } from '../../../core/errors/http-mapping.js';
+import { requestUrlPath } from '../../../core/logging/index.js';
 
 /**
  * Turns every thrown value into the same response shape. A thin adapter over
@@ -22,7 +23,10 @@ export class ErrorFilter implements ExceptionFilter {
       status,
       code: body.code,
       method: req.method,
-      path: req.url,
+      // Path only, never the query string: a failed OAuth callback carries
+      // `?code=...&state=...`, and req.url is the one place that survives
+      // even when the request never reaches a handler.
+      path: requestUrlPath(req.url),
       cause: logDetail,
     };
 

@@ -36,10 +36,23 @@ describe('loggerOptions', () => {
       '*.token',
       '*.secret',
       '*.headers',
+      // OAuth secrets that arrive as fields, not inside a URL (the code
+      // itself is handled by the request serializer instead).
+      '*.codeVerifier',
+      '*.accessToken',
+      '*.idToken',
+      '*.clientSecret',
     ]) {
       expect(paths).toContain(path);
     }
     expect(opts.pinoHttp.redact.censor).toBe('[redacted]');
+  });
+
+  it('serializes requests through the query-stripping serializer', () => {
+    const opts = loggerOptions('api', cfg()) as {
+      pinoHttp: { serializers?: { req?: unknown } };
+    };
+    expect(opts.pinoHttp.serializers?.req).toBeTypeOf('function');
   });
 
   it('pretty-prints only in development, so production logs stay parseable', () => {

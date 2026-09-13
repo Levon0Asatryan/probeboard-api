@@ -83,6 +83,24 @@ describe('ErrorFilter', () => {
     expect(logger.error.mock.calls[0]?.[0].cause).toContain('users_secret_tokens');
   });
 
+  it('strips the query string from the logged path', () => {
+    // D12: an OAuth callback that fails would otherwise write
+    // ?code=...&state=... straight into the log via this path field, with a
+    // fully configured redaction list -- the code arrives inside req.url,
+    // which no field-redaction path matches.
+    const { f, logger } = filter();
+    f.catch(
+      new AppError('OAUTH_STATE_INVALID', 'sign-in failed', 400),
+      host('GET', '/v1/auth/oauth/google/callback?code=super-secret-code&state=abc').args,
+    );
+
+    const logged = JSON.stringify(logger.warn.mock.calls[0]);
+    expect(logged).not.toContain('super-secret-code');
+    expect(logger.warn.mock.calls[0]?.[0]).toMatchObject({
+      path: '/v1/auth/oauth/google/callback',
+    });
+  });
+
   it('handles a thrown non-error without failing itself', () => {
     const { f } = filter();
     const { args, status } = host();
