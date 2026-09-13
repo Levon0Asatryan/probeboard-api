@@ -263,6 +263,19 @@ export const configSchema = baseSchema
     path: ['OAUTH_REDIRECT_BASE_URL'],
     message: 'required when OAUTH_ENABLED is true',
   })
+  .refine(
+    (c) =>
+      !c.COOKIE_SECURE ||
+      !c.OAUTH_REDIRECT_BASE_URL ||
+      c.OAUTH_REDIRECT_BASE_URL.startsWith('https://'),
+    {
+      path: ['OAUTH_REDIRECT_BASE_URL'],
+      message:
+        'must be https:// when COOKIE_SECURE is on, or the browser refuses to return the ' +
+        'state cookie to a plain-http callback and every sign-in fails as ' +
+        'OAUTH_STATE_INVALID -- set COOKIE_SECURE=false only for local development',
+    },
+  )
   .refine((c) => !c.OAUTH_ENABLED || Boolean(c.WEB_BASE_URL), {
     path: ['WEB_BASE_URL'],
     message: 'required when OAUTH_ENABLED is true',

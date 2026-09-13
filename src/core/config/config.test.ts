@@ -251,6 +251,37 @@ describe('OAuth configuration', () => {
     expect(cfg.OAUTH_ENABLED).toBe(true);
   });
 
+  it('refuses a plain-http redirect base url when COOKIE_SECURE is on', () => {
+    // A Secure state cookie is never returned to a plain-http callback, so
+    // this combination fails every sign-in as OAUTH_STATE_INVALID rather than
+    // at boot -- the same class of bug as a __Host- cookie without Secure.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        OAUTH_ENABLED: 'true',
+        OAUTH_REDIRECT_BASE_URL: 'http://api.example.com',
+        WEB_BASE_URL: 'https://app.example.com',
+        GOOGLE_CLIENT_ID: 'g-id',
+        GOOGLE_CLIENT_SECRET: 'g-secret',
+      }),
+    ).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+
+  it('accepts a plain-http redirect base url when COOKIE_SECURE is off', () => {
+    // The local-development escape hatch: docker-compose and the e2e suite
+    // both run this way against 127.0.0.1.
+    const cfg = loadConfig({
+      ...valid,
+      COOKIE_SECURE: 'false',
+      OAUTH_ENABLED: 'true',
+      OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000',
+      WEB_BASE_URL: 'http://127.0.0.1:5173',
+      GOOGLE_CLIENT_ID: 'g-id',
+      GOOGLE_CLIENT_SECRET: 'g-secret',
+    });
+    expect(cfg.OAUTH_REDIRECT_BASE_URL).toBe('http://127.0.0.1:3000');
+  });
+
   it('defaults the state ttl to ten minutes, matching GitHub’s code expiry', () => {
     expect(loadConfig(valid).OAUTH_STATE_TTL_MS).toBe(600_000);
   });
