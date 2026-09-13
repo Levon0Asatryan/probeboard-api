@@ -4,10 +4,17 @@ import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { describeError } from '../../../core/errors/describe.js';
 import { AuthAttemptRepository } from '../repositories/auth-attempt.repository.js';
+import { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
 import { SessionRepository } from '../repositories/session.repository.js';
 
+export interface SweepResult {
+  sessions: number;
+  attempts: number;
+  authorizations: number;
+}
+
 /**
- * Keeps `sessions` and `auth_attempts` bounded.
+ * Keeps `sessions`, `auth_attempts` and `oauth_authorizations` bounded.
  *
  * Both would otherwise grow without limit, which is the same defect this
  * project criticises elsewhere. M5 owns retention across the whole schema and
@@ -25,6 +32,7 @@ export class AuthMaintenanceService implements OnModuleInit, OnModuleDestroy {
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly sessions: SessionRepository,
     private readonly attempts: AuthAttemptRepository,
+    private readonly authorizations: OAuthAuthorizationRepository,
     @InjectPinoLogger(AuthMaintenanceService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -52,26 +60,33 @@ export class AuthMaintenanceService implements OnModuleInit, OnModuleDestroy {
    * expiry, so an operator can still answer "was this session live at the
    * time?" after an incident.
    */
-  async sweep(now: Date = new Date()): Promise<{ sessions: number; attempts: number }> {
+  async sweep(now: Date = new Date()): Promise<SweepResult> {
     const retention = this.cfg.AUTH_ATTEMPT_RETENTION_MS;
 
     try {
-      const [sessions, attempts] = await Promise.all([
+      const [sessions, attempts, authorizations] = await Promise.all([
         this.sessions.pruneExpired(
           new Date(now.getTime() - this.cfg.SESSION_RETENTION_DAYS * 86_400_000),
         ),
         this.attempts.pruneBefore(new Date(now.getTime() - retention)),
+        // No grace period, unlike the two above. An abandoned sign-in answers
+        // no question after the fact, and the row holds a PKCE verifier, so
+        // the shortest life is the right one.
+        this.authorizations.pruneExpired(now),
       ]);
 
-      if (sessions > 0 || attempts > 0) {
-        this.logger.info({ sessions, attempts }, 'auth housekeeping removed expired rows');
+      if (sessions > 0 || attempts > 0 || authorizations > 0) {
+        this.logger.info(
+          { sessions, attempts, authorizations },
+          'auth housekeeping removed expired rows',
+        );
       }
-      return { sessions, attempts };
+      return { sessions, attempts, authorizations };
     } catch (err) {
       // Housekeeping failing must not take the api down; it runs again next
       // interval. Never swallowed silently.
       this.logger.error({ cause: describeError(err) }, 'auth housekeeping failed');
-      return { sessions: 0, attempts: 0 };
+      return { sessions: 0, attempts: 0, authorizations: 0 };
     }
   }
 }

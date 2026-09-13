@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
 import { AuthMaintenanceService } from '../services/auth-maintenance.service.js';
 import type { AuthAttemptRepository } from '../repositories/auth-attempt.repository.js';
+import type { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
 import type { SessionRepository } from '../repositories/session.repository.js';
 
 const cfg = loadConfig({
@@ -11,7 +12,13 @@ const cfg = loadConfig({
   SESSION_RETENTION_DAYS: '7',
 });
 
-function make(overrides: { sessions?: number | Error; attempts?: number | Error } = {}) {
+function make(
+  overrides: {
+    sessions?: number | Error;
+    attempts?: number | Error;
+    authorizations?: number | Error;
+  } = {},
+) {
   const asResult = (v: number | Error | undefined, fallback: number) =>
     v instanceof Error ? Promise.reject(v) : Promise.resolve(v ?? fallback);
 
@@ -21,23 +28,48 @@ function make(overrides: { sessions?: number | Error; attempts?: number | Error 
   const attempts = {
     pruneBefore: vi.fn(() => asResult(overrides.attempts, 0)),
   } as unknown as AuthAttemptRepository;
+  const authorizations = {
+    pruneExpired: vi.fn(() => asResult(overrides.authorizations, 0)),
+  } as unknown as OAuthAuthorizationRepository;
   const logger = { info: vi.fn(), error: vi.fn() };
 
   return {
-    service: new AuthMaintenanceService(cfg, sessions, attempts, logger as never),
+    service: new AuthMaintenanceService(cfg, sessions, attempts, authorizations, logger as never),
     sessions,
     attempts,
+    authorizations,
     logger,
   };
 }
 
 describe('sweep', () => {
-  it('prunes both tables', async () => {
-    const { service, sessions, attempts } = make({ sessions: 3, attempts: 7 });
+  it('prunes every table it owns', async () => {
+    const { service, sessions, attempts, authorizations } = make({
+      sessions: 3,
+      attempts: 7,
+      authorizations: 2,
+    });
 
-    await expect(service.sweep()).resolves.toEqual({ sessions: 3, attempts: 7 });
+    await expect(service.sweep()).resolves.toEqual({
+      sessions: 3,
+      attempts: 7,
+      authorizations: 2,
+    });
     expect(sessions.pruneExpired).toHaveBeenCalledOnce();
     expect(attempts.pruneBefore).toHaveBeenCalledOnce();
+    expect(authorizations.pruneExpired).toHaveBeenCalledOnce();
+  });
+
+  it('prunes pending authorizations at the current time, with no grace period', async () => {
+    // Unlike sessions and attempts, which are kept for a window so an
+    // operator can still ask about them afterwards: an abandoned sign-in
+    // answers nothing and holds a PKCE verifier.
+    const now = new Date('2026-06-01T12:00:00Z');
+    const { service, authorizations } = make();
+
+    await service.sweep(now);
+
+    expect(vi.mocked(authorizations.pruneExpired).mock.calls[0][0]).toEqual(now);
   });
 
   it('uses the configured retention for attempts', async () => {
@@ -71,7 +103,11 @@ describe('sweep', () => {
     // Housekeeping runs again next interval; it must not propagate.
     const { service, logger } = make({ sessions: new Error('connection terminated') });
 
-    await expect(service.sweep()).resolves.toEqual({ sessions: 0, attempts: 0 });
+    await expect(service.sweep()).resolves.toEqual({
+      sessions: 0,
+      attempts: 0,
+      authorizations: 0,
+    });
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error.mock.calls[0]?.[0].cause).toContain('connection terminated');
   });
