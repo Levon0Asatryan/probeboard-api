@@ -1,0 +1,29 @@
+### api/health — every request the module serves
+#
+# Both paths sit outside the /v1 prefix on purpose: an orchestrator's probe
+# configuration should not have to change when the API version does.
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name liveness
+# 200 {"status":"ok"}. Answers only "is this process running", so it must stay
+# 200 while the database is down -- restarting the api would not help.
+GET {{baseUrl}}/healthz
+
+###
+# @name readiness
+# 200 {"status":"ok","database":"ok"}, or 503 DATABASE_UNAVAILABLE.
+# Answers "can this instance serve traffic", so it fails when the database is
+# unreachable and the load balancer should route elsewhere.
+#
+# To see the failing case:
+#   docker compose stop postgres   # readyz -> 503, healthz stays 200
+#   docker compose start postgres  # readyz -> 200 again, no api restart
+GET {{baseUrl}}/readyz
+
+###
+# @name livenessUnderPrefix
+# 404. Proof the exclusion is an exclusion and not an addition: the health
+# paths must exist at the root and *only* at the root.
+GET {{baseUrl}}/v1/healthz

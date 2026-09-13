@@ -1,0 +1,188 @@
+### api/auth — every request the module serves
+#
+# Run them top to bottom the first time: registration creates the account the
+# rest of the file uses, and login puts the session cookie in the client's jar
+# so the authenticated requests need no header of their own.
+#
+# Variables come from .env in this folder. See README.md.
+
+@baseUrl = {{$dotenv baseUrl}}
+@email = {{$dotenv email}}
+@password = {{$dotenv password}}
+@newPassword = {{$dotenv newPassword}}
+@cookieName = {{$dotenv cookieName}}
+
+###
+# @name register
+# 204, and deliberately no Set-Cookie: registering does not sign you in.
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+# @name registerDuplicate
+# Also 204, byte-identical to the first. Answering "already registered" here
+# would turn the endpoint into an account-enumeration oracle (A-2).
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "some entirely different password"
+}
+
+###
+# @name registerInvalidEmail
+# 400 VALIDATION_FAILED, details[].path = "email".
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "not-an-email",
+  "password": "{{password}}"
+}
+
+###
+# @name registerShortPassword
+# 400. The minimum is configuration, so the message quotes the running value.
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "short"
+}
+
+###
+# @name registerUnknownField
+# 400. The schema is .strict(), so an unexpected field is rejected rather than
+# silently dropped -- a typo'd field name should not look like it worked.
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}",
+  "isAdmin": true
+}
+
+###
+# @name login
+# 200 {"status":"ok"} and Set-Cookie. The token is in the cookie only; it is
+# never in the body, so a script that logs responses cannot leak it.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+# @name loginWrongPassword
+# 401 INVALID_CREDENTIALS.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "wrong password entirely"
+}
+
+###
+# @name loginUnknownAddress
+# 401, byte-identical to the request above -- and in the same time, because an
+# address with no account is still verified against a dummy hash. Compare the
+# two durations in the response pane; a visible gap is the enumeration bug.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "nobody-here@example.com",
+  "password": "wrong password entirely"
+}
+
+###
+# @name me
+# 200 {"id":"...","email":"..."} using the cookie stored by `login`.
+GET {{baseUrl}}/v1/auth/me
+
+###
+# @name meNoCookie
+# 401 UNAUTHENTICATED. REST Client sends the jar's cookie automatically, so
+# this request blanks it explicitly.
+GET {{baseUrl}}/v1/auth/me
+Cookie:
+
+###
+# @name meForgedCookie
+# 401. A well-formed token that was never issued must fail the same way as no
+# token at all.
+GET {{baseUrl}}/v1/auth/me
+Cookie: {{cookieName}}={{$dotenv forgedToken}}
+
+###
+# @name changePasswordWrongCurrent
+# 401, and the password is unchanged. Knowing a live session is not enough to
+# take the account over.
+POST {{baseUrl}}/v1/auth/password
+Content-Type: application/json
+
+{
+  "currentPassword": "not the current password",
+  "newPassword": "{{newPassword}}"
+}
+
+###
+# @name changePassword
+# 204. Every *other* session for the account is revoked; the session that made
+# the change survives, so you are not signed out of the device you are holding.
+POST {{baseUrl}}/v1/auth/password
+Content-Type: application/json
+
+{
+  "currentPassword": "{{password}}",
+  "newPassword": "{{newPassword}}"
+}
+
+###
+# @name loginOldPassword
+# 401 after the change above.
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+# @name changePasswordBack
+# 204, restoring the .env password so the file can be run again from the top.
+POST {{baseUrl}}/v1/auth/password
+Content-Type: application/json
+
+{
+  "currentPassword": "{{newPassword}}",
+  "newPassword": "{{password}}"
+}
+
+###
+# @name logout
+# 204 and a cleared cookie. Revokes this session only.
+POST {{baseUrl}}/v1/auth/logout
+
+###
+# @name logoutAgain
+# 401. The cookie is already dead, so this is an unauthenticated request.
+POST {{baseUrl}}/v1/auth/logout
+
+###
+# @name logoutAll
+# 204. Revokes every session for the account, this one included. Log in again
+# before running the authenticated requests above.
+POST {{baseUrl}}/v1/auth/logout-all

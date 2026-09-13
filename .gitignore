@@ -3,6 +3,11 @@ dist/
 *.tsbuildinfo
 .env
 .env.local
+
+# ...except the request collection's, which holds local development fixtures
+# rather than secrets and is useless to the next person if it does not travel
+# with the requests that read it. See http/README.md.
+!http/.env
 coverage/
 .DS_Store
 coverage/
