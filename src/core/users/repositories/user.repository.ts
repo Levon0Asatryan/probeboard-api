@@ -36,10 +36,23 @@ export class UserRepository {
   /**
    * Creates an account that signs in through a provider, with no password.
    *
-   * `emailVerifiedAt` comes from the provider's own assertion. It is recorded
-   * because it is true — the provider verified it — and not because it makes
-   * anything easier: it is never used to match an incoming identity to an
-   * existing account. See the linking policy in docs/social-login-plan.md.
+   * `email_verified_at` is left null, deliberately, even though the provider
+   * usually asserts the address is verified.
+   *
+   * That column means "probeboard verified this address", and a provider's
+   * claim is not that. Writing the claim here would make it indistinguishable
+   * from our own verification, and the linking policy reads this column to
+   * decide whether an incoming identity may attach itself to an existing
+   * account by address -- so a provider-created account would immediately
+   * satisfy a check designed to require independent evidence. The new holder
+   * of a recycled domain could then attach a second sign-in method to the
+   * previous owner's account, which is the Google Workspace takeover this
+   * design exists to avoid.
+   *
+   * The provider's claim is not lost: it is stored on the identity row, as
+   * `oauth_identities.provider_email_verified`, where it is attributable to
+   * the provider that made it. M7 sets this column when it sends and confirms
+   * a verification mail.
    *
    * Returns undefined if the address is taken, exactly like `create`. The
    * caller must not then fall back to signing that account in; that fallback
@@ -47,10 +60,9 @@ export class UserRepository {
    */
   async createFromProvider(
     email: string,
-    emailVerifiedAt: Date | null,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<User | undefined> {
-    return this.insert(email, null, emailVerifiedAt, executor);
+    return this.insert(email, null, null, executor);
   }
 
   private async insert(

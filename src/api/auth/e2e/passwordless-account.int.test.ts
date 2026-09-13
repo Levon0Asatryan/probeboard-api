@@ -69,7 +69,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(pool);
   await auth.register('withpassword@example.com', PASSWORD, '198.51.100.1');
-  await users.createFromProvider('provideronly@example.com', new Date());
+  await users.createFromProvider('provideronly@example.com');
 });
 
 /** Median of several samples: one timing is noise, a median is a signal. */

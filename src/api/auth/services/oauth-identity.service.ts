@@ -127,14 +127,28 @@ export class OAuthIdentityService {
           }
 
           const linked = await this.identities.link(existing.id, account, trx);
-          if (!linked) throw new IdentityRaceLost();
-          return { kind: 'linked', userId: existing.id };
+          if (linked) return { kind: 'linked', userId: existing.id };
+
+          // Two unique indexes can refuse that insert and they mean opposite
+          // things. If the account already holds a different identity for this
+          // provider it is `already_linked` -- nobody took the incoming
+          // provider account, and telling the person the address is taken
+          // sends them to a remedy that does not exist. Only a genuine race on
+          // the provider account is resolved outside.
+          const clash = await this.identities
+            .listForUser(existing.id, trx)
+            .then((rows) => rows.some((r) => r.provider === account.provider));
+
+          if (clash) return { kind: 'already_linked' };
+          throw new IdentityRaceLost();
         }
 
-        // The provider's assertion is recorded because it is true, not because
-        // anything matches on it.
-        const verifiedAt = account.emailVerified ? new Date() : null;
-        const user = await this.users.createFromProvider(email, verifiedAt, trx);
+        // The provider's assertion goes on the identity row, not on the user:
+        // `users.email_verified_at` means we verified the address ourselves,
+        // and the check below reads it as independent evidence. Recording a
+        // provider's claim there would satisfy that check with the very thing
+        // it exists to corroborate.
+        const user = await this.users.createFromProvider(email, trx);
         if (!user) throw new IdentityRaceLost();
 
         // The account and its first identity commit together or not at all.
@@ -197,7 +211,15 @@ export class OAuthIdentityService {
     // The insert conflicted on one of two unique indexes. Which one decides
     // what the user is told, so ask rather than guess.
     const owned = await this.identities.findOwner(account.provider, account.accountId);
-    return owned ? { kind: 'identity_taken' } : { kind: 'already_linked' };
+
+    // And the owner may be the caller: two link requests racing means the
+    // loser finds the link it asked for already made. That is the operation
+    // succeeding, not an identity belonging to somebody else -- the same
+    // comparison the fast path above already makes.
+    if (owned) {
+      return owned.userId === userId ? { kind: 'linked', userId } : { kind: 'identity_taken' };
+    }
+    return { kind: 'already_linked' };
   }
 
   /**
