@@ -141,12 +141,11 @@ export class OAuthIdentityService {
           // by address rather than the one the provider account actually signs
           // in to.
           //
-          // Unexercised by the suite, like the rollback below: reaching it
-          // needs a link to commit inside the window between the re-read at
-          // the top of this transaction and this insert, and no test here can
-          // force that. What is covered is the rule it applies -- that a
-          // provider account signs in to whoever owns it, never to whoever
-          // matches the address -- asserted where the ordering is reachable.
+          // Covered by a test that forces the interleaving rather than hoping
+          // for it: a repository wrapper commits the competing identity on a
+          // separate connection immediately before the insert below, so both
+          // unique indexes refuse it. Removing this block makes that test
+          // answer `already_linked`.
           const newOwner = await this.identities.findOwner(
             account.provider,
             account.accountId,
@@ -194,15 +193,9 @@ export class OAuthIdentityService {
         // against each other. Roll back and resolve against what the winner
         // committed.
         //
-        // Honestly labelled: this path is defence in depth and the suite does
-        // not exercise it. Reaching it needs the winner to commit in the
-        // window between this transaction's identity re-read and its insert,
-        // and no test here can force that interleaving. It is kept because the
-        // alternative -- letting a unique-violation escape as a 500, or
-        // answering `account_exists` to somebody signing in with their own
-        // account -- is the failure this whole method exists to prevent. The
-        // guard that *is* proven is the re-read under the lock above: removing
-        // it fails the concurrency tests every run.
+        // Forced by the same barrier in the suite: the account is created, the
+        // identity insert then loses, and the test asserts the user is rolled
+        // back rather than left holding the address with no way to sign in.
         if (err instanceof IdentityRaceLost) return undefined;
         throw err;
       });

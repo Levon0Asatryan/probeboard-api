@@ -281,6 +281,58 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
     expect(outcome).toEqual({ kind: 'already_linked' });
   });
 
+  it('signs in to the concurrent owner when the insert conflicts on both indexes', async () => {
+    // The dual-conflict race, forced rather than hoped for.
+    //
+    // Reaching it needs a link to commit between this transaction's first
+    // ownership read and its failed insert, which no amount of Promise.all
+    // produces reliably. So the seam is explicit: a repository wrapper that,
+    // on the one link() call the service makes inside the transaction, first
+    // commits the same provider account to somebody else on a separate
+    // connection. The real insert then conflicts on both unique indexes --
+    // (provider, account_id) because the identity has just been taken, and
+    // (user_id, provider) because the matched account already holds Google.
+    //
+    // Checking the local clash first answers `already_linked`, which names the
+    // wrong account. Ownership of the provider account decides.
+    await ctx.db
+      .updateTable('users')
+      .set({ email_verified_at: new Date() })
+      .where('email', '=', 'victim@example.com')
+      .execute();
+    const victim = (await users.findByEmail('victim@example.com'))!;
+    await identities.link(victim.id, google('first-sub', 'victim@example.com'));
+    const thief = (await users.create('thief@example.com', '$argon2id$hash'))!;
+
+    // The wrapper is the barrier: it runs once, on the service's in-transaction
+    // link, and commits the competing identity before delegating.
+    let armed = true;
+    const racing = Object.create(identities) as OAuthIdentityRepository;
+    racing.link = async (userId, account, executor) => {
+      if (armed) {
+        armed = false;
+        await identities.link(thief.id, {
+          provider: 'google',
+          accountId: 'incoming-sub',
+          email: 'thief@example.com',
+          emailVerified: true,
+        });
+      }
+      return identities.link(userId, account, executor);
+    };
+
+    const raced = new OAuthIdentityService(
+      loadConfig({ ...BASE, OAUTH_ALLOW_EMAIL_LINKING: 'true' }),
+      { kysely: ctx.db } as DbService,
+      users,
+      racing,
+    );
+
+    const outcome = await raced.signIn(google('incoming-sub', 'victim@example.com', true));
+
+    expect(outcome).toEqual({ kind: 'signed_in', userId: thief.id });
+  });
+
   it('signs in to the provider account\u2019s owner, not the address-matched account', async () => {
     // Precedence, at the level a user can observe it. The address matches an
     // account that already holds a Google identity, and the *incoming* Google
@@ -396,6 +448,57 @@ describe('linking from an authenticated session', () => {
 });
 
 describe('two flows racing', () => {
+  it('rolls the new account back when the identity is taken mid-transaction', async () => {
+    // The other branch that Promise.all cannot reach: the create path inserts
+    // the user, then loses the identity index. The account must not survive --
+    // one with no password and no identity is unreachable forever, and its
+    // address then matches, so every later sign-in is refused telling the
+    // person to log in with a password that does not exist.
+    //
+    // Same seam as above: the wrapper commits the competing identity on a
+    // separate connection just before the real insert runs.
+    const winner = (await users.create('winner@example.com', '$argon2id$hash'))!;
+    const before = new Date(Date.now() - 60_000);
+    await identities.link(winner.id, google('contested', 'winner@example.com'));
+    await identities.recordLogin(
+      (await identities.listForUser(winner.id))[0].id,
+      google('contested', 'winner@example.com'),
+      before,
+    );
+    await ctx.db.deleteFrom('oauth_identities').where('user_id', '=', winner.id).execute();
+
+    let armed = true;
+    const racing = Object.create(identities) as OAuthIdentityRepository;
+    racing.link = async (userId, account, executor) => {
+      if (armed) {
+        armed = false;
+        await identities.link(winner.id, google('contested', 'winner@example.com'));
+      }
+      return identities.link(userId, account, executor);
+    };
+
+    const raced = new OAuthIdentityService(
+      loadConfig(BASE),
+      { kysely: ctx.db } as DbService,
+      users,
+      racing,
+    );
+
+    const outcome = await raced.signIn(google('contested', 'loser@example.com'));
+
+    // Resolved against what the winner committed.
+    expect(outcome).toEqual({ kind: 'signed_in', userId: winner.id });
+    // And the half-made account is gone, not left behind holding the address.
+    expect(await users.findByEmail('loser@example.com')).toBeUndefined();
+    // The refresh is attempted on this path like every other signed_in, and
+    // here the monotonic guard correctly declines it: the row was created
+    // *after* this request captured its timestamp, so what it holds is newer
+    // than what we would write. Asserted rather than glossed over, because it
+    // is the one case where "signed in" and "record refreshed" come apart.
+    const [identity] = await identities.listForUser(winner.id);
+    expect(identity.provider_email).toBe('winner@example.com');
+  });
+
   it('creates one account, not two, for simultaneous first sign-ins', async () => {
     // Ten rather than two on purpose. The bug this catches lived in the window
     // between reading the identity and reading the address: the loser saw no
