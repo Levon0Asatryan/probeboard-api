@@ -79,16 +79,40 @@ describe('a provider account nobody has yet', () => {
     expect(user?.password_hash).toBeNull();
   });
 
-  it('records the provider’s verification of the address, because it is true', async () => {
+  it('keeps the provider’s claim on the identity, not on the account', async () => {
+    // users.email_verified_at means probeboard verified the address, and the
+    // linking policy reads it as independent evidence. A provider's claim
+    // recorded there would satisfy the check it exists to corroborate.
     await makeService().signIn(google('sub-1', 'new@example.com', true));
 
-    expect((await users.findByEmail('new@example.com'))?.email_verified_at).toBeInstanceOf(Date);
+    expect((await users.findByEmail('new@example.com'))?.email_verified_at).toBeNull();
+
+    const user = await users.findByEmail('new@example.com');
+    const [identity] = await identities.listForUser(user!.id);
+    expect(identity.provider_email_verified).toBe(true);
   });
 
-  it('does not record verification the provider did not assert', async () => {
+  it('records an unverified provider address as unverified on the identity', async () => {
     await makeService().signIn(google('sub-1', 'new@example.com', false));
 
-    expect((await users.findByEmail('new@example.com'))?.email_verified_at).toBeNull();
+    const user = await users.findByEmail('new@example.com');
+    const [identity] = await identities.listForUser(user!.id);
+    expect(identity.provider_email_verified).toBe(false);
+  });
+
+  it('does not let a provider-created account become implicitly linkable', async () => {
+    // The hole this closes: an account created through Google would carry a
+    // non-null email_verified_at, so with the flag on an unrelated GitHub
+    // identity asserting the same address would attach itself automatically --
+    // which is how the new holder of a recycled domain reaches the previous
+    // owner's account.
+    const permissive = makeService({ OAUTH_ALLOW_EMAIL_LINKING: 'true' });
+    await permissive.signIn(google('google-sub', 'shared@example.com', true));
+
+    const outcome = await permissive.signIn(github('99', 'shared@example.com', true));
+
+    expect(outcome).toEqual({ kind: 'account_exists' });
+    expect(await identities.findOwner('github', '99')).toBeUndefined();
   });
 
   it('creates the account and the identity together, or not at all', async () => {
@@ -213,6 +237,25 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
     expect(outcome.kind).toBe('linked');
   });
 
+  it('says already_linked, not account_exists, when the account holds that provider', async () => {
+    // With linking permitted and the address verified on both sides, the
+    // insert can still be refused -- by the (user_id, provider) index, because
+    // the account already has a Google identity. Reporting that the address is
+    // taken sends the person to a remedy that does not exist.
+    const permissive = makeService({ OAUTH_ALLOW_EMAIL_LINKING: 'true' });
+    await ctx.db
+      .updateTable('users')
+      .set({ email_verified_at: new Date() })
+      .where('email', '=', 'victim@example.com')
+      .execute();
+    const victim = await users.findByEmail('victim@example.com');
+    await identities.link(victim!.id, google('first-sub', 'victim@example.com'));
+
+    const outcome = await permissive.signIn(google('second-sub', 'victim@example.com', true));
+
+    expect(outcome).toEqual({ kind: 'already_linked' });
+  });
+
   it('is refused by default even then, since the flag is off', async () => {
     await ctx.db
       .updateTable('users')
@@ -271,6 +314,21 @@ describe('linking from an authenticated session', () => {
     expect(await makeService().link(aliceId, google('sub-2', 'alice@example.com'))).toEqual({
       kind: 'already_linked',
     });
+  });
+
+  it('treats two simultaneous identical links as the success they are', async () => {
+    // The loser of the race finds the link it asked for already made. That is
+    // the operation succeeding, not somebody else holding the identity.
+    const service = makeService();
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 6 }, () => service.link(aliceId, google('sub-1', 'alice@example.com'))),
+    );
+
+    expect(outcomes).toEqual(
+      Array.from({ length: 6 }, () => ({ kind: 'linked', userId: aliceId })),
+    );
+    expect(await identities.listForUser(aliceId)).toHaveLength(1);
   });
 
   it('allows one identity per provider on the same account', async () => {

@@ -210,7 +210,12 @@ describe('boolean settings are strict, not truthy', () => {
   // Both gate a security property, so a typo must stop the process rather than
   // being read as one value or the other. 'yes', '1' and 'TRUE' are the
   // spellings an operator actually reaches for.
-  const booleans = ['SSRF_GUARD_ENABLED', 'COOKIE_SECURE', 'TRUST_PROXY'];
+  const booleans = [
+    'SSRF_GUARD_ENABLED',
+    'COOKIE_SECURE',
+    'TRUST_PROXY',
+    'OAUTH_ALLOW_EMAIL_LINKING',
+  ];
 
   it.each(booleans)('%s accepts only the two documented spellings', (key) => {
     expect(loadConfig({ ...valid, [key]: 'true' })).toBeDefined();
@@ -244,6 +249,9 @@ describe('boolean settings are strict, not truthy', () => {
     expect(cfg.TRUST_PROXY).toBe(false);
     expect(cfg.COOKIE_SECURE).toBe(true);
     expect(cfg.SSRF_GUARD_ENABLED).toBe(true);
+    // Off: attaching a provider identity to an account matched by address is
+    // the published account-takeover primitive.
+    expect(cfg.OAUTH_ALLOW_EMAIL_LINKING).toBe(false);
   });
 });
 

@@ -161,8 +161,11 @@ export class OAuthIdentityRepository {
   }
 
   /** Every identity on an account, for the settings page and for unlink. */
-  async listForUser(userId: string): Promise<OAuthIdentity[]> {
-    return this.db.kysely
+  async listForUser(
+    userId: string,
+    executor: Kysely<Database> = this.db.kysely,
+  ): Promise<OAuthIdentity[]> {
+    return executor
       .selectFrom('oauth_identities')
       .selectAll()
       .where('user_id', '=', userId)
