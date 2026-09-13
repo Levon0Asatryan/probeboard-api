@@ -238,10 +238,33 @@ describe('CVE-2026-53516: an address that already belongs to a password account'
     expect(await identities.findOwner('google', 'victim-sub')).toBeUndefined();
   });
 
-  it('refuses when the provider says the address is unverified, flag or no flag', async () => {
+  it('refuses when the provider says the address is unverified', async () => {
+    // The local row is marked verified on purpose, so this is the *only*
+    // condition left that can reject the request. Leaving it unverified -- as
+    // every row is until M7 -- meant the local check rejected first and the
+    // provider-side check could be deleted with the suite still green.
+    //
+    // The regression that would hide behind it is the one that matters once
+    // M7 exists: an identity attached to a verified account on the strength of
+    // an address its own provider never verified, which anyone able to type an
+    // address into a provider profile could claim.
     const permissive = makeService({ OAUTH_ALLOW_EMAIL_LINKING: 'true' });
+    await ctx.db
+      .updateTable('users')
+      .set({ email_verified_at: new Date() })
+      .where('email', '=', 'victim@example.com')
+      .execute();
 
     expect(await permissive.signIn(google('victim-sub', 'victim@example.com', false))).toEqual({
+      kind: 'account_exists',
+    });
+    expect(await identities.findOwner('google', 'victim-sub')).toBeUndefined();
+  });
+
+  it('refuses an unverified provider address with the flag off too', async () => {
+    // Both conditions independently sufficient, which is the point of having
+    // two: neither is load-bearing alone.
+    expect(await makeService().signIn(google('victim-sub', 'victim@example.com', false))).toEqual({
       kind: 'account_exists',
     });
   });
