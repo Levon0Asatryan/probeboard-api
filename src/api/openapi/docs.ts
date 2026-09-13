@@ -28,7 +28,7 @@ export const DOCS_PATH = 'docs';
 export function setupApiDocs(app: INestApplication, cfg: AppConfig): boolean {
   if (!cfg.API_DOCS_ENABLED) return false;
 
-  SwaggerModule.setup(DOCS_PATH, app, buildOpenApiDocument() as unknown as OpenAPIObject, {
+  SwaggerModule.setup(DOCS_PATH, app, buildOpenApiDocument(cfg) as unknown as OpenAPIObject, {
     customSiteTitle: 'probeboard API',
     swaggerOptions: {
       // The session is an HttpOnly cookie, so "Try it out" has to send

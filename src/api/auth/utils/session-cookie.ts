@@ -17,7 +17,7 @@ const BASE_NAME = 'pb_session';
  * development falls back to the bare name rather than setting a cookie every
  * browser will silently drop.
  */
-export function sessionCookieName(cfg: AppConfig): string {
+export function sessionCookieName(cfg: Pick<AppConfig, 'COOKIE_SECURE'>): string {
   return cfg.COOKIE_SECURE ? `__Host-${BASE_NAME}` : BASE_NAME;
 }
 

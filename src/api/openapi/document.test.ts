@@ -177,3 +177,30 @@ describe('the server entry', () => {
     }
   });
 });
+
+describe('the session cookie scheme', () => {
+  function cookieNameOf(cfg: { COOKIE_SECURE: boolean }): string {
+    const doc = buildOpenApiDocument(cfg);
+    const schemes = (doc.components as { securitySchemes: { sessionCookie: { name: string } } })
+      .securitySchemes;
+    return schemes.sessionCookie.name;
+  }
+
+  it('names the cookie a Secure deployment actually sets', () => {
+    expect(cookieNameOf({ COOKIE_SECURE: true })).toBe('__Host-pb_session');
+  });
+
+  it('names the cookie a plain-HTTP local deployment actually sets', () => {
+    // The bug this proves is fixed: the scheme used to hard-code
+    // __Host-pb_session even while documenting the local compose server,
+    // where COOKIE_SECURE=false makes the real cookie pb_session.
+    expect(cookieNameOf({ COOKIE_SECURE: false })).toBe('pb_session');
+  });
+
+  it('defaults to the production name when built with no config, as cli.ts does', () => {
+    const doc = buildOpenApiDocument();
+    const schemes = (doc.components as { securitySchemes: { sessionCookie: { name: string } } })
+      .securitySchemes;
+    expect(schemes.sessionCookie.name).toBe('__Host-pb_session');
+  });
+});

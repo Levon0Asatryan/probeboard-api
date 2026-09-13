@@ -3,7 +3,9 @@ import { API_VERSION_PREFIX } from '../bootstrap.js';
 import { changePasswordSchema } from '../auth/dto/change-password.dto.js';
 import { loginSchema } from '../auth/dto/login.dto.js';
 import { registerSchema } from '../auth/dto/register.dto.js';
+import { sessionCookieName } from '../auth/utils/session-cookie.js';
 import { LIVENESS_PATH, READINESS_PATH } from '../health/constants.js';
+import type { AppConfig } from '../../core/config/schema.js';
 
 /**
  * The OpenAPI description of what this service serves.
@@ -98,7 +100,17 @@ const authErrors = {
   '429': errorResponse('Too many requests from this address.'),
 };
 
-export function buildOpenApiDocument(): Record<string, unknown> {
+/**
+ * `cfg` is only available when the document is built for a running server
+ * (`docs.ts`, which knows the actual `COOKIE_SECURE`); `cli.ts` generates the
+ * static file with no running config, so it falls back to the production
+ * default — the same default `sessionCookieName` itself uses.
+ */
+export function buildOpenApiDocument(
+  cfg?: Pick<AppConfig, 'COOKIE_SECURE'>,
+): Record<string, unknown> {
+  const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
+
   return {
     openapi: '3.0.3',
     info: {
@@ -166,10 +178,12 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         sessionCookie: {
           type: 'apiKey',
           in: 'cookie',
-          name: '__Host-pb_session',
+          name: cookieName,
           description:
             'Opaque session token, HttpOnly. Set by login; sent automatically by the browser. ' +
-            'Named `pb_session` when COOKIE_SECURE is off, which is local development only.',
+            'Named `__Host-pb_session` when COOKIE_SECURE is on, `pb_session` when it is off ' +
+            '(local development only) — this document names the one the serving deployment ' +
+            'actually sets.',
         },
       },
     },

@@ -159,7 +159,7 @@ components:
       type: apiKey
       in: cookie
       name: __Host-pb_session
-      description: Opaque session token, HttpOnly. Set by login; sent automatically by the browser. Named `pb_session` when COOKIE_SECURE is off, which is local development only.
+      description: Opaque session token, HttpOnly. Set by login; sent automatically by the browser. Named `__Host-pb_session` when COOKIE_SECURE is on, `pb_session` when it is off (local development only) — this document names the one the serving deployment actually sets.
 paths:
   /healthz:
     get:
