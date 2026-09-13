@@ -32,6 +32,13 @@ export class RateLimitedError extends AppError {
   }
 }
 
+/** An account that signs in through a provider has no password to change. */
+export class NoPasswordSetError extends AppError {
+  constructor() {
+    super('NO_PASSWORD_SET', 'this account has no password', 409);
+  }
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -79,11 +86,19 @@ export class AuthService {
 
     const user = await this.users.findByEmail(email);
 
-    // Both paths spend one Argon2 verification, or the time difference reveals
-    // which addresses are registered (A-2).
-    const ok = user
-      ? await this.passwords.verify(user.password_hash, password)
-      : await this.passwords.verifyDummy(password);
+    // Three paths, one cost. Unknown address, known address with a password,
+    // and known address with none — an account created through a provider —
+    // all spend exactly one Argon2 verification.
+    //
+    // The third is easy to get wrong by returning early, and returning early
+    // would make login an oracle for which accounts sign in through a
+    // provider: a fast rejection here and a slow one there, which is a list of
+    // accounts worth phishing rather than brute-forcing. A-2 does not stop
+    // applying because an account happens to have no password.
+    const ok =
+      user?.password_hash != null
+        ? await this.passwords.verify(user.password_hash, password)
+        : await this.passwords.verifyDummy(password);
 
     if (!ok || !user) throw new InvalidCredentialsError();
 
@@ -117,6 +132,17 @@ export class AuthService {
 
     const user = await this.users.findById(userId);
     if (!user) throw new InvalidCredentialsError();
+
+    // An account created through a provider has no password to change.
+    //
+    // This one is safe to answer plainly, unlike the login path above: the
+    // caller already holds a session for this account, so it tells them
+    // nothing they could not learn from their own settings page. Setting a
+    // first password is a different operation, and it needs email
+    // verification before it can be offered — otherwise anyone reaching an
+    // authenticated session could plant a password and keep access after the
+    // provider link is gone.
+    if (user.password_hash == null) throw new NoPasswordSetError();
 
     if (!(await this.passwords.verify(user.password_hash, currentPassword))) {
       throw new InvalidCredentialsError();
