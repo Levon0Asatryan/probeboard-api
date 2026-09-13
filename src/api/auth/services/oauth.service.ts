@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { Kysely } from 'kysely';
 import {
   calculatePKCECodeChallenge,
   randomNonce,
@@ -8,10 +9,12 @@ import {
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
-import type { OAuthProvider } from '../../../core/db/types.js';
+import { DbService } from '../../../core/db/db.service.js';
+import type { Database, OAuthProvider } from '../../../core/db/types.js';
 import { describeError } from '../../../core/errors/describe.js';
 import { AuthService, RateLimitedError, type IssuedSession } from '../auth.service.js';
 import { OAuthProviderError } from '../interfaces/oauth-provider.js';
+import type { ProviderAccount } from '../repositories/oauth-identity.repository.js';
 import { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
 import { SessionRepository } from '../repositories/session.repository.js';
 import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
@@ -47,6 +50,7 @@ export type CallbackResult =
 export class OAuthService {
   constructor(
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    private readonly db: DbService,
     private readonly strategies: OAuthStrategyRegistry,
     private readonly authorizations: OAuthAuthorizationRepository,
     private readonly identities: OAuthIdentityService,
@@ -124,7 +128,9 @@ export class OAuthService {
     }
 
     const state = opts.query.get('state') ?? '';
-    const pending = await this.authorizations.consume(opts.cookieValue, state, now);
+    // Bound to the provider the callback actually arrived on (RFC 9700's
+    // mix-up), not only the id and state: see consume()'s own comment.
+    const pending = await this.authorizations.consume(opts.cookieValue, state, provider, now);
     if (!pending) {
       this.logger.warn({ provider }, 'oauth callback: no matching pending authorization');
       return { kind: 'error', code: 'OAUTH_STATE_INVALID' };
@@ -136,24 +142,6 @@ export class OAuthService {
       // NULL): this is a DB invariant violation, not a request to handle.
       if (!pending.user_id) throw new Error('link authorization with no user_id');
       linkUserId = pending.user_id;
-
-      // The session that started this flow must still be the one completing
-      // it. Without this, a link started from a compromised session survives
-      // the owner's own logout-all: the pending row only ever recorded a
-      // user id, so revoking every session for that account left nothing for
-      // the callback to notice, and it would attach the attacker's provider
-      // identity and issue a fresh session anyway -- defeating the whole
-      // point of "sign out my other devices" for as long as OAUTH_STATE_TTL_MS
-      // allows. Checked before the provider is even called, so a stale link
-      // costs nothing.
-      const currentUserId = await this.currentSessionUserId(opts.sessionToken);
-      if (currentUserId !== linkUserId) {
-        this.logger.warn(
-          { provider, userId: linkUserId },
-          'oauth link: originating session is no longer active',
-        );
-        return { kind: 'error', code: 'OAUTH_SESSION_REVOKED' };
-      }
     }
 
     const strategy = this.strategies.get(provider);
@@ -167,11 +155,18 @@ export class OAuthService {
         nonce: pending.nonce ?? undefined,
       });
 
-      const outcome: SignInOutcome = linkUserId
-        ? await this.identities.link(linkUserId, account)
-        : await this.identities.signIn(account, now);
+      if (linkUserId) {
+        return await this.completeLink(
+          linkUserId,
+          opts.sessionToken,
+          account,
+          pending.return_to,
+          now,
+        );
+      }
 
-      return await this.toResult(outcome, pending.return_to);
+      const outcome = await this.identities.signIn(account, now);
+      return await this.toResult(outcome, pending.return_to, now);
     } catch (err) {
       if (err instanceof OAuthProviderError) {
         // The provider's own error text is attacker-influenceable and never
@@ -186,12 +181,54 @@ export class OAuthService {
     }
   }
 
-  private async toResult(outcome: SignInOutcome, returnTo: string): Promise<CallbackResult> {
+  /**
+   * Links a provider account, re-checking the originating session and
+   * issuing the resulting session in the same transaction.
+   *
+   * A check-then-write with no lock leaves a window: `logout-all` commits
+   * between the check and the write, and the write -- which the slow
+   * provider round trip has already delayed by however long that took --
+   * proceeds anyway. `FOR UPDATE` on the session row inside the same
+   * transaction as the link and the issue closes it: a concurrent
+   * `revokeAllForUser` either committed before this transaction started (the
+   * lookup below then correctly finds nothing) or blocks until this one
+   * commits or rolls back (in which case the link already happened, which is
+   * correct -- the session really was live for the whole time this
+   * transaction held it).
+   */
+  private async completeLink(
+    linkUserId: string,
+    sessionToken: string | undefined,
+    account: ProviderAccount,
+    returnTo: string,
+    now: Date,
+  ): Promise<CallbackResult> {
+    return this.db.kysely.transaction().execute(async (trx) => {
+      const currentUserId = await this.currentSessionUserId(sessionToken, now, trx);
+      if (currentUserId !== linkUserId) {
+        this.logger.warn(
+          { userId: linkUserId },
+          'oauth link: originating session is no longer active',
+        );
+        return { kind: 'error', code: 'OAUTH_SESSION_REVOKED' };
+      }
+
+      const outcome = await this.identities.link(linkUserId, account, now, trx);
+      return await this.toResult(outcome, returnTo, now, trx);
+    });
+  }
+
+  private async toResult(
+    outcome: SignInOutcome,
+    returnTo: string,
+    now: Date,
+    executor?: Kysely<Database>,
+  ): Promise<CallbackResult> {
     switch (outcome.kind) {
       case 'signed_in':
       case 'created':
       case 'linked': {
-        const session = await this.authService.issue(outcome.userId);
+        const session = await this.authService.issue(outcome.userId, now, executor);
         return { kind: 'success', returnTo, ...session };
       }
       case 'account_exists':
@@ -209,10 +246,20 @@ export class OAuthService {
    * live, active session -- missing, malformed, expired or revoked. Soft by
    * design: an absent or dead session here is a fact for the caller to act
    * on, not a reason to throw, since sign-in mode never has one at all.
+   *
+   * Locks the row (`FOR UPDATE`) when called with a transaction executor, so
+   * a caller writing inside that same transaction can rely on the answer
+   * still being true when the write commits -- see `completeLink`.
    */
-  private async currentSessionUserId(token: string | undefined): Promise<string | undefined> {
+  private async currentSessionUserId(
+    token: string | undefined,
+    now: Date,
+    executor?: Kysely<Database>,
+  ): Promise<string | undefined> {
     if (!token || !looksLikeToken(token)) return undefined;
-    const session = await this.sessions.findActive(hashToken(token));
+    const session = executor
+      ? await this.sessions.findActiveForUpdate(hashToken(token), now, executor)
+      : await this.sessions.findActive(hashToken(token), now);
     return session?.userId;
   }
 

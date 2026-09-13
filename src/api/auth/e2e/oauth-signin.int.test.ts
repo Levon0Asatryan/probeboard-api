@@ -288,6 +288,28 @@ describe('the state cookie is required and single-use', () => {
 
     expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_STATE_INVALID`);
   });
+
+  it('refuses a flow started on one provider and completed via the other (OAuth mix-up)', async () => {
+    // A flow started for google carries google's state and PKCE challenge.
+    // Presenting the completed authorization query at github's callback
+    // instead must not be honoured just because the id and state happen to
+    // match a real row -- that row belongs to a different provider.
+    const start = await get('/auth/oauth/google/start');
+    const authorizationUrl = new URL(start.location!);
+    const query = googleStub.approve(authorizationUrl, { id: 'mixup-1', email: 'm@example.com' });
+    const cookie = cookieHeader(start.cookies, OAUTH_COOKIE);
+
+    const mismatched = await get(`/auth/oauth/github/callback?${query.toString()}`, { cookie });
+
+    expect(mismatched.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_STATE_INVALID`);
+    expect(mismatched.cookies[SESSION_COOKIE]).toBeUndefined();
+
+    // Not consumed by the mismatched attempt: the real callback still works.
+    const real = await get(`/auth/oauth/google/callback?${query.toString()}`, { cookie });
+    expect(real.status).toBe(302);
+    expect(real.location).toBe(`${WEB_BASE_URL}/`);
+    expect(real.cookies[SESSION_COOKIE]).toBeDefined();
+  });
 });
 
 describe('returnTo', () => {
@@ -300,15 +322,23 @@ describe('returnTo', () => {
     expect(callback.location).toBe(`${WEB_BASE_URL}/services`);
   });
 
-  it.each(['//evil.com', 'https://evil.com', '/\\evil.com'])(
-    'falls back to the default for %s',
-    async (returnTo) => {
+  it.each([
+    ['//evil.com', '//evil.com'],
+    ['https://evil.com', 'https://evil.com'],
+    ['/\\evil.com', '/\\evil.com'],
+    ['a tab before a protocol-relative host', '/\t/evil.com'],
+    ['a line feed before a protocol-relative host', '/\n/evil.com'],
+    ['a carriage return before a protocol-relative host', '/\r/evil.com'],
+  ])(
+    'falls back to the default for %s, and the Location stays on WEB_BASE_URL',
+    async (label, returnTo) => {
       const { callback } = await signIn(
         'google',
-        { id: `sub-return-${returnTo}`, email: 'r2@example.com' },
+        { id: `sub-return-${label}`, email: 'r2@example.com' },
         { returnTo },
       );
       expect(callback.location).toBe(`${WEB_BASE_URL}/`);
+      expect(callback.location?.startsWith(WEB_BASE_URL)).toBe(true);
     },
   );
 });

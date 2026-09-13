@@ -8,9 +8,14 @@ import { createTestPool, truncateAll } from '../../../testing/database.js';
 import { OAuthProviderStub } from '../../../testing/oauth-provider-stub.js';
 import { AppModule } from '../../api.module.js';
 import { configureApp, registerNotFoundFallback } from '../../bootstrap.js';
-import type { OAuthProviderStrategy } from '../interfaces/oauth-provider.js';
+import type {
+  AuthorizationCallback,
+  AuthorizationRequest,
+  OAuthProviderStrategy,
+} from '../interfaces/oauth-provider.js';
 import { GoogleStrategy } from '../strategies/google.strategy.js';
 import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
+import { OAuthIdentityRepository } from '../repositories/oauth-identity.repository.js';
 import { oauthCookieName } from '../utils/oauth-cookie.js';
 import { sessionCookieName } from '../utils/session-cookie.js';
 
@@ -31,10 +36,38 @@ class StubStrategyRegistry {
   }
 }
 
+/**
+ * Fires `linkBarrier()` the instant the provider round trip resolves, before
+ * anything downstream of it runs. This is the seam the TOCTOU test needs:
+ * a hook at exactly "the provider call has returned" lets a test commit a
+ * competing write from a second connection right where a slow network call
+ * would otherwise leave a real window open, without needing genuine
+ * thread-level concurrency to land the timing.
+ */
+let linkBarrier: () => Promise<void> = () => Promise.resolve();
+
+class BarrierStrategy implements OAuthProviderStrategy {
+  readonly provider: OAuthProviderStrategy['provider'];
+  readonly usesNonce: boolean;
+  constructor(private readonly inner: OAuthProviderStrategy) {
+    this.provider = inner.provider;
+    this.usesNonce = inner.usesNonce;
+  }
+  authorizationUrl(request: AuthorizationRequest) {
+    return this.inner.authorizationUrl(request);
+  }
+  async complete(callback: AuthorizationCallback) {
+    const account = await this.inner.complete(callback);
+    await linkBarrier();
+    return account;
+  }
+}
+
 let app: NestExpressApplication;
 let base: string;
 let pool: Pool;
 let googleStub: OAuthProviderStub;
+let identities: OAuthIdentityRepository;
 
 const WEB_BASE_URL = 'http://127.0.0.1:5173';
 let OAUTH_COOKIE: string;
@@ -62,13 +95,15 @@ beforeAll(async () => {
     new Map([
       [
         'google',
-        new GoogleStrategy({
-          clientId: googleStub.clientId,
-          clientSecret: googleStub.clientSecret,
-          timeoutMs: 5000,
-          issuer: new URL(googleStub.url),
-          allowInsecureRequests: true,
-        }),
+        new BarrierStrategy(
+          new GoogleStrategy({
+            clientId: googleStub.clientId,
+            clientSecret: googleStub.clientSecret,
+            timeoutMs: 5000,
+            issuer: new URL(googleStub.url),
+            allowInsecureRequests: true,
+          }),
+        ),
       ],
     ]),
   );
@@ -86,6 +121,7 @@ beforeAll(async () => {
   const addr = app.getHttpServer().address() as { port: number };
   base = `http://127.0.0.1:${addr.port}/v1`;
   pool = createTestPool();
+  identities = app.get(OAuthIdentityRepository);
 
   const cfg = loadConfig();
   OAUTH_COOKIE = oauthCookieName(cfg);
@@ -104,6 +140,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   googleStub.requests.length = 0;
+  linkBarrier = () => Promise.resolve();
 });
 
 interface Res {
@@ -258,8 +295,35 @@ describe('completing a link', () => {
 
     expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`);
 
-    // The provider account was never attached to anybody.
-    expect(googleStub.requests.some((r) => r.path === '/token')).toBe(false);
+    // The provider account was never attached to anybody, even though the
+    // exchange itself happened -- the check that refuses it runs after the
+    // provider round trip now, atomically with the write that would have
+    // attached it (see completeLink), not before.
+    expect(await identities.findOwner('google', 'revoked-1')).toBeUndefined();
+  });
+
+  it('cannot be raced by a logout-all that commits after the provider call (TOCTOU)', async () => {
+    // The gap the atomic rewrite closes: a naive "check the session, then
+    // call the provider, then write" leaves a window between the check and
+    // the write that a slow provider round trip only makes wider. This drives
+    // a revocation into exactly that window -- fired the instant the
+    // provider call resolves, before completeLink's transaction has even
+    // started -- rather than hoping a real race lands there.
+    const session = await registerAndLogin('barrier@example.com');
+    const start = await call('/auth/oauth/google/link', { method: 'POST', cookie: session });
+    const authUrl = new URL((start.body as { redirectUrl: string }).redirectUrl);
+    const query = googleStub.approve(authUrl, { id: 'barrier-1', email: 'barrier@example.com' });
+
+    linkBarrier = async () => {
+      await call('/auth/logout-all', { method: 'POST', cookie: session });
+    };
+
+    const callback = await call(`/auth/oauth/google/callback?${query.toString()}`, {
+      cookie: `${cookieHeader(start.cookies, OAUTH_COOKIE)}; ${session}`,
+    });
+
+    expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`);
+    expect(await identities.findOwner('google', 'barrier-1')).toBeUndefined();
   });
 
   it('refuses a link callback with no session at all', async () => {

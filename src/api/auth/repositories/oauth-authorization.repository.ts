@@ -53,16 +53,27 @@ export class OAuthAuthorizationRepository {
    * The `state` from the callback query is compared here too, not only the id
    * from the cookie. Requiring both means a stolen cookie without the callback
    * URL, or a callback URL without the cookie, is useless.
+   *
+   * `provider` is bound too, matching the route the callback actually
+   * arrived on. Without it, a flow started for one provider can be completed
+   * through the other provider's callback: the state and PKCE challenge are
+   * only ever compared against what this row holds, so a relayed
+   * authorization response reusing them at the wrong provider's callback
+   * would otherwise be processed with the original verifier -- an OAuth
+   * mix-up RFC 9700 names explicitly, and the whole reason each provider gets
+   * its own registered redirect URI (D8) in the first place.
    */
   async consume(
     id: string,
     state: string,
+    provider: OAuthProvider,
     now: Date = new Date(),
   ): Promise<OAuthAuthorization | undefined> {
     return this.db.kysely
       .deleteFrom('oauth_authorizations')
       .where('id', '=', id)
       .where('state', '=', state)
+      .where('provider', '=', provider)
       .where('expires_at', '>', now)
       .returningAll()
       .executeTakeFirst();
