@@ -138,6 +138,22 @@ const auth = {
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
+  // Caps every provider response body a strategy buffers: GitHub's /user,
+  // /user/emails, and the token endpoint's error body. GitHub's own responses
+  // are a few hundred bytes; an unexpectedly large or indefinitely streamed
+  // one is refused rather than buffered without limit. Validated the same way
+  // as API_BODY_LIMIT, for the same reason: a typo here must stop the process
+  // at boot, not quietly remove the cap.
+  OAUTH_PROVIDER_MAX_RESPONSE_BYTES: z
+    .string()
+    .default('1mb')
+    .refine((v) => parseByteSize(v) !== undefined, {
+      message: 'must be a positive byte size with an explicit unit, such as "1mb"',
+    })
+    .refine((v) => (parseByteSize(v) ?? 0) <= 8 * 1024 * 1024, {
+      message: 'must not exceed 8mb',
+    }),
 };
 
 const database = {

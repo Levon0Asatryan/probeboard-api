@@ -96,6 +96,43 @@ describe('API_BODY_LIMIT', () => {
   });
 });
 
+describe('OAUTH_PROVIDER_MAX_RESPONSE_BYTES', () => {
+  it('defaults to a generous but bounded size', () => {
+    expect(loadConfig(valid).OAUTH_PROVIDER_MAX_RESPONSE_BYTES).toBe('1mb');
+  });
+
+  it('accepts a well-formed size', () => {
+    expect(
+      loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '256kb' })
+        .OAUTH_PROVIDER_MAX_RESPONSE_BYTES,
+    ).toBe('256kb');
+  });
+
+  it('refuses unparseable text instead of silently removing the cap', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: 'abc' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses a bare number, which would mean bytes rather than a unit', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '64' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses zero and negative sizes', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '0kb' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+
+  it('refuses an absurd cap that would defeat the protection', () => {
+    expect(() => loadConfig({ ...valid, OAUTH_PROVIDER_MAX_RESPONSE_BYTES: '5gb' })).toThrow(
+      /OAUTH_PROVIDER_MAX_RESPONSE_BYTES/,
+    );
+  });
+});
+
 describe('cross-field rules', () => {
   it('refuses retention shorter than the rate-limit window', () => {
     // The housekeeping sweep would delete the evidence the limiter is still
