@@ -126,7 +126,10 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       ].join('\n'),
       license: { name: 'MIT' },
     },
-    servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development (docker compose)' }],
+    // Relative, so it resolves against whichever origin serves the document.
+    // An absolute URL would send every "Try it out" on a staging deployment
+    // to the visitor's own machine instead of the API that served the page.
+    servers: [{ url: '/', description: 'The origin serving this document' }],
     tags: [
       { name: 'health', description: 'Liveness and readiness, served outside the version prefix.' },
       { name: 'auth', description: 'Accounts and sessions.' },

@@ -24,8 +24,8 @@ info:
   license:
     name: MIT
 servers:
-  - url: http://127.0.0.1:3000
-    description: Local development (docker compose)
+  - url: /
+    description: The origin serving this document
 tags:
   - name: health
     description: Liveness and readiness, served outside the version prefix.

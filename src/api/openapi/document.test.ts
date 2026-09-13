@@ -162,3 +162,18 @@ describe('authentication', () => {
     expect(doc.security).toEqual([{ sessionCookie: [] }]);
   });
 });
+
+describe('the server entry', () => {
+  it('is relative, so it resolves against whatever origin serves the document', () => {
+    // An absolute address baked into the document sends every "Try it out"
+    // on a deployment other than exactly that address to the wrong place --
+    // a hard-coded http://127.0.0.1:3000 works only on the machine that
+    // string names.
+    const doc = buildOpenApiDocument();
+    const servers = doc.servers as { url: string }[];
+    expect(servers.length).toBeGreaterThan(0);
+    for (const server of servers) {
+      expect(() => new URL(server.url)).toThrow();
+    }
+  });
+});

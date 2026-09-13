@@ -77,6 +77,18 @@ describe('when enabled', () => {
     expect(Object.keys(doc.paths)).toContain('/v1/auth/login');
   });
 
+  it('points "Try it out" at the origin actually serving the page, not a fixed address', async () => {
+    // This harness listens on a random port, so a document that hard-coded
+    // an address (as a staging deployment would see) resolves somewhere
+    // other than `enabled.url` and this assertion catches it.
+    const docUrl = `${enabled.url}/${DOCS_PATH}-json`;
+    const doc = (await (await fetch(docUrl)).json()) as { servers: { url: string }[] };
+    expect(doc.servers.length).toBeGreaterThan(0);
+    for (const server of doc.servers) {
+      expect(new URL(server.url, docUrl).origin).toBe(enabled.url);
+    }
+  });
+
   it('does not shadow the API it documents', async () => {
     expect((await fetch(`${enabled.url}/v1/monitors`)).status).toBe(200);
   });
