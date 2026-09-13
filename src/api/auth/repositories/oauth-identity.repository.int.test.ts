@@ -123,6 +123,29 @@ describe('link', () => {
 });
 
 describe('recordLogin', () => {
+  it('refuses a write that would rewind the record', async () => {
+    // Two overlapping sign-ins each capture their timestamp before the lookups
+    // that precede the write, so they can arrive here out of order. The older
+    // one must not land last: it would rewind last_login_at and restore the
+    // address and verification flag the provider has since changed.
+    const identity = await identities.link(aliceId, googleAccount('sub-1', 'new@example.com'));
+
+    const later = new Date(Date.now() + 60_000);
+    const earlier = new Date(Date.now() - 60_000);
+
+    await identities.recordLogin(identity!.id, googleAccount('sub-1', 'new@example.com'), later);
+    await identities.recordLogin(
+      identity!.id,
+      { ...googleAccount('sub-1', 'stale@example.com'), emailVerified: false },
+      earlier,
+    );
+
+    const [row] = await identities.listForUser(aliceId);
+    expect(row.last_login_at.getTime()).toBe(later.getTime());
+    expect(row.provider_email).toBe('new@example.com');
+    expect(row.provider_email_verified).toBe(true);
+  });
+
   it('refreshes the display email without changing which account is reached', async () => {
     const identity = await identities.link(aliceId, googleAccount('sub-1', 'old@example.com'));
 

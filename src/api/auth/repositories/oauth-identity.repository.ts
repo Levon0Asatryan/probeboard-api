@@ -95,8 +95,16 @@ export class OAuthIdentityRepository {
    * Records a sign-in through an identity that already exists.
    *
    * The provider's email is refreshed because it is display text and people
-   * change addresses; it is still never a lookup key. Written as one UPDATE
-   * rather than read-modify-write.
+   * change addresses; it is still never a lookup key.
+   *
+   * Monotonic, and that is a clause rather than a caller's responsibility.
+   * Each callback captures its timestamp before the lookups that precede this
+   * write, so two overlapping sign-ins can arrive here out of order: the
+   * earlier one, having stalled, would otherwise land last and rewind
+   * `last_login_at` while restoring the address and verification flag the
+   * provider has since changed. Refusing the older write in the WHERE clause
+   * makes that a no-op instead -- the same shape as `SessionRepository.touch`,
+   * and for the same reason.
    */
   async recordLogin(
     identityId: string,
@@ -112,6 +120,7 @@ export class OAuthIdentityRepository {
         last_login_at: now,
       })
       .where('id', '=', identityId)
+      .where('last_login_at', '<=', now)
       .execute();
   }
 
