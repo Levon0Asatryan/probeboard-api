@@ -30,6 +30,11 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
 
+      # The committed document must match what the schemas produce. Without
+      # this a changed request shape ships a spec describing the old one, and
+      # the first thing to notice is a client built against it.
+      - run: npm run openapi:check
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest

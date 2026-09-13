@@ -1,0 +1,18 @@
+### api/openapi — the documentation page, when it is served at all
+#
+# Off unless API_DOCS_ENABLED is set. docker-compose.yml sets it, so both
+# requests answer here; against a stack with it unset, expect 404 on both.
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name docsPage
+# 200, text/html -- Swagger UI, rendered from the same document /docs-json
+# serves. 404 when API_DOCS_ENABLED is off.
+GET {{baseUrl}}/docs
+
+###
+# @name docsJson
+# 200, the OpenAPI document Swagger UI reads -- the same shape openapi.yaml
+# carries. 404 when API_DOCS_ENABLED is off.
+GET {{baseUrl}}/docs-json

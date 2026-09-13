@@ -215,6 +215,7 @@ describe('boolean settings are strict, not truthy', () => {
     'COOKIE_SECURE',
     'TRUST_PROXY',
     'OAUTH_ALLOW_EMAIL_LINKING',
+    'API_DOCS_ENABLED',
   ];
 
   it.each(booleans)('%s accepts only the two documented spellings', (key) => {
@@ -252,6 +253,9 @@ describe('boolean settings are strict, not truthy', () => {
     // Off: attaching a provider identity to an account matched by address is
     // the published account-takeover primitive.
     expect(cfg.OAUTH_ALLOW_EMAIL_LINKING).toBe(false);
+    // Off: third-party browser code with its own XSS history, serving people
+    // who build against this API rather than people who use it.
+    expect(cfg.API_DOCS_ENABLED).toBe(false);
   });
 });
 

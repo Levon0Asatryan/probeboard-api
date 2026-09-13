@@ -6,6 +6,7 @@ import { loadConfig } from '../core/config/index.js';
 import { describeError } from '../core/errors/describe.js';
 import { AppModule } from './api.module.js';
 import { configureApp, registerNotFoundFallback } from './bootstrap.js';
+import { DOCS_PATH, setupApiDocs } from './openapi/docs.js';
 
 async function bootstrap(): Promise<void> {
   // Validate the environment before anything else is constructed, so a bad
@@ -16,10 +17,20 @@ async function bootstrap(): Promise<void> {
   app.useLogger(app.get(Logger));
 
   configureApp(app, cfg);
+
+  // Before the fallback, which answers everything the router did not match:
+  // registered after it, every asset the documentation page loads would 404.
+  const docs = setupApiDocs(app, cfg);
+
   await registerNotFoundFallback(app);
 
   await app.listen(cfg.API_PORT);
-  app.get(Logger).log({ port: cfg.API_PORT, env: cfg.NODE_ENV, msg: 'api listening' });
+  app.get(Logger).log({
+    port: cfg.API_PORT,
+    env: cfg.NODE_ENV,
+    docs: docs ? `/${DOCS_PATH}` : 'disabled',
+    msg: 'api listening',
+  });
 }
 
 bootstrap().catch((err: unknown) => {

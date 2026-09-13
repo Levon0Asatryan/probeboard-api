@@ -4,11 +4,12 @@ Every endpoint the API serves, as runnable requests. One file per module, named
 after the module it exercises, so the collection stays findable the same way
 the source does.
 
-| File                       | Module       | Covers                                                               |
-| -------------------------- | ------------ | -------------------------------------------------------------------- |
-| [auth.http](auth.http)     | `api/auth`   | register, login, me, change password, logout, logout-all             |
-| [health.http](health.http) | `api/health` | liveness, readiness                                                  |
-| [common.http](common.http) | `api/common` | not-found fallback, error shapes, validation, version prefix, limits |
+| File                         | Module        | Covers                                                               |
+| ---------------------------- | ------------- | -------------------------------------------------------------------- |
+| [auth.http](auth.http)       | `api/auth`    | register, login, me, change password, logout, logout-all             |
+| [health.http](health.http)   | `api/health`  | liveness, readiness                                                  |
+| [common.http](common.http)   | `api/common`  | not-found fallback, error shapes, validation, version prefix, limits |
+| [openapi.http](openapi.http) | `api/openapi` | the Swagger UI page, the document it renders from                    |
 
 A module added later gets a file here in the same pull request. A file that
 does not list every route its module serves is worse than no file, because the
@@ -46,6 +47,17 @@ ignored and is the place for anything that must not be committed.
 
 To point the collection at something other than the local stack, change
 `baseUrl`.
+
+## The generated spec
+
+[`../openapi.yaml`](../openapi.yaml) describes the same endpoints with exact
+types, for client generation and for the frontend. These files and that one
+answer different questions: the spec says what the contract is, these say what
+to send to see it. Both are checked — the spec against Nest's route metadata,
+these against a running stack.
+
+`docker compose up` also serves the spec as Swagger UI at
+<http://127.0.0.1:3000/docs>.
 
 ## What is not here
 

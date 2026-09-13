@@ -35,6 +35,8 @@ services:
       DATABASE_URL: postgres://probeboard:probeboard@postgres:5432/probeboard
       API_PORT: '3000'
       COOKIE_SECURE: 'false'
+      # Browsable API documentation at http://127.0.0.1:3000/docs
+      API_DOCS_ENABLED: 'true'
     ports:
       - '3000:3000'
     restart: unless-stopped
