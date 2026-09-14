@@ -184,6 +184,28 @@ describe('pause and resume', () => {
   });
 });
 
+describe('delete', () => {
+  it('does not delete another user’s endpoint, and reports false', async () => {
+    const created = await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/orders',
+    });
+
+    await expect(endpoints.delete(created.id, otherUserId)).resolves.toBe(false);
+    await expect(endpoints.findById(created.id, userId)).resolves.toMatchObject({
+      id: created.id,
+    });
+
+    await expect(endpoints.delete(created.id, userId)).resolves.toBe(true);
+    await expect(endpoints.findById(created.id, userId)).resolves.toBeUndefined();
+  });
+});
+
 describe('listForService excludes another user’s endpoints', () => {
   it('does not return an endpoint belonging to another user, even under the same-looking service id', async () => {
     await endpoints.create({
