@@ -65,4 +65,45 @@ describe('validateReturnTo', () => {
       '/services?tab=incidents#section',
     );
   });
+
+  it.each([
+    ['a leading dot segment', '/.//evil.com'],
+    ['a percent-encoded dot segment', '/%2e//evil.com'],
+    ['a dot-dot segment', '/a/..//evil.com'],
+  ])(
+    'defaults a returnTo whose dot-segment resolution produces a protocol-relative path (%s)',
+    (_label, value) => {
+      // The origin comparison alone is not enough here: dot-segment
+      // resolution happens on the path, before the origin is fixed, so
+      // url.origin never moves even though the resolved pathname is
+      // "//evil.com" -- exactly as dangerous once the caller does its own
+      // new URL(returnTo, WEB_BASE_URL), one level down.
+      expect(validateReturnTo(value)).toBe('/');
+    },
+  );
+
+  it('is idempotent: validating an already-accepted value returns it unchanged', () => {
+    for (const value of [
+      '/services',
+      '/services?tab=incidents#section',
+      '/javascript:alert(1)',
+      '/',
+    ]) {
+      const once = validateReturnTo(value);
+      expect(validateReturnTo(once)).toBe(once);
+    }
+  });
+
+  it('is idempotent for every rejected value too: the default survives re-validation', () => {
+    for (const value of [
+      '//evil.com',
+      '/\\evil.com',
+      '/.//evil.com',
+      '/%2e//evil.com',
+      '/a/..//evil.com',
+    ]) {
+      const once = validateReturnTo(value);
+      expect(validateReturnTo(once)).toBe(once);
+    }
+  });
 });

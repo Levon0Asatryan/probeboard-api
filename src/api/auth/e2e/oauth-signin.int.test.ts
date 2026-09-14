@@ -329,6 +329,9 @@ describe('returnTo', () => {
     ['a tab before a protocol-relative host', '/\t/evil.com'],
     ['a line feed before a protocol-relative host', '/\n/evil.com'],
     ['a carriage return before a protocol-relative host', '/\r/evil.com'],
+    ['a leading dot segment resolving to a protocol-relative host', '/.//evil.com'],
+    ['a percent-encoded dot segment', '/%2e//evil.com'],
+    ['a dot-dot segment', '/a/..//evil.com'],
   ])(
     'falls back to the default for %s, and the Location stays on WEB_BASE_URL',
     async (label, returnTo) => {
