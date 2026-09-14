@@ -52,6 +52,9 @@ record — read it first. Levon approves plans and merges; no chat merges.
    `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments`. Verify each
    against the code before acting: fix what is real, push back with evidence on
    what is not, and **reply on every thread**. Re-check after each push.
+   Codex is done with a push when `pulls/<n>/reviews` has an entry whose
+   `commit_id` is the head SHA, or `issues/<n>/reactions` has its 👍 (`+1`)
+   dated after that push. 👀 means still reviewing.
 5. At milestone end, `docs/mN-verification.md`: what was executed and what it
    produced, including defects found by running it.
 6. Report back in the format in `docs/handoff-template.md`. Say plainly what
