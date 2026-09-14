@@ -85,6 +85,26 @@ describe('the headers_secret_shape CHECK', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects a non-secret row carrying ciphertext alongside its plaintext value', async () => {
+    // The opposite invalid shape: is_secret false with a valid plaintext
+    // value, but also carrying ciphertext metadata that has no business
+    // being there. Independent of the two cases above -- removing just the
+    // secret_ciphertext/iv/auth-tag "must be null" half of the CHECK would
+    // leave those green while letting this row through.
+    await expect(
+      headers.replaceForService(serviceId, [
+        {
+          name: 'X-Foo',
+          is_secret: false,
+          value: 'plain',
+          secret_ciphertext: Buffer.from('ct'),
+          secret_iv: Buffer.from('iv12'),
+          secret_auth_tag: Buffer.from('tag'),
+        },
+      ]),
+    ).rejects.toThrow();
+  });
+
   it('accepts a secret row with ciphertext and no plaintext value', async () => {
     const result = await headers.replaceForService(serviceId, [
       {
