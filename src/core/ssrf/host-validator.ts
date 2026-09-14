@@ -239,9 +239,19 @@ async function resolveAll(hostname: string): Promise<string[]> {
     }
     const code = (result.reason as NodeJS.ErrnoException).code;
     if (!code || !NO_RECORD_CODES.has(code)) {
-      throw new SsrfValidationError('URL_UNRESOLVABLE', 'the hostname could not be resolved', {
-        code,
-      });
+      // The resolver's raw code (SERVFAIL, ETIMEOUT, ...) is internal DNS
+      // state, not something to hand to whoever submitted the URL --
+      // AppError's `details` is serialized straight into the HTTP response
+      // (toErrorResponse), so it never goes there. Attached as the standard
+      // `cause` instead, which stays off the response and is available to
+      // whatever catches and logs this once this module is wired into a
+      // service (docs/m2-plan.md PR4).
+      const error = new SsrfValidationError(
+        'URL_UNRESOLVABLE',
+        'the hostname could not be resolved',
+      );
+      error.cause = result.reason;
+      throw error;
     }
   }
 

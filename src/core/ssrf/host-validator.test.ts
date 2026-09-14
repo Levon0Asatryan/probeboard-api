@@ -204,6 +204,23 @@ describe('DNS-resolved hostnames', () => {
     },
   );
 
+  it('keeps the resolver failure code out of the client-visible details, but on cause', async () => {
+    const dnsError = Object.assign(new Error('SERVFAIL'), { code: 'SERVFAIL' });
+    resolve4.mockResolvedValue(['93.184.216.34']);
+    resolve6.mockRejectedValue(dnsError);
+
+    try {
+      await assertSaveableUrl('http://half-broken.example.com/', cfg);
+      expect.unreachable();
+    } catch (err) {
+      const e = err as SsrfValidationErrorType;
+      // details is what AppError's own mapping serializes straight into the
+      // HTTP response -- SERVFAIL must never appear there.
+      expect(JSON.stringify(e.details ?? null)).not.toContain('SERVFAIL');
+      expect(e.cause).toBe(dnsError);
+    }
+  });
+
   it('does not silently accept a hostname whose only working family errored unexpectedly', async () => {
     resolve4.mockRejectedValue(Object.assign(new Error('SERVFAIL'), { code: 'SERVFAIL' }));
     resolve6.mockRejectedValue(enotfound);
