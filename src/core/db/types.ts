@@ -1,4 +1,11 @@
-import type { ColumnType, Generated, Insertable, Selectable, Updateable } from 'kysely';
+import type {
+  ColumnType,
+  Generated,
+  Insertable,
+  JSONColumnType,
+  Selectable,
+  Updateable,
+} from 'kysely';
 
 /**
  * Kysely database types.
@@ -101,6 +108,80 @@ export interface OAuthAuthorizationsTable {
   expires_at: Timestamp;
 }
 
+export interface ServicesTable {
+  id: Generated<string>;
+  user_id: string;
+  name: string;
+  /** Origin only: scheme + host [+ port], never a path. */
+  base_url: string;
+  created_at: CreatedAt;
+  updated_at: CreatedAt;
+}
+
+/** One `{min, max}` status-code range. Validated at the DTO layer. */
+export interface StatusRange {
+  min: number;
+  max: number;
+}
+
+/** Structured, versioned assertion -- never a string DSL (architecture ADR-5). */
+export type EndpointAssertion =
+  | { type: 'body_contains'; value: string }
+  | { type: 'body_not_contains'; value: string }
+  | { type: 'json_path'; path: string; equals: unknown };
+
+export interface EndpointsTable {
+  id: Generated<string>;
+  service_id: string;
+  /** Denormalized from services.user_id; written once at insert. */
+  user_id: string;
+  method: Generated<string>;
+  path: Generated<string>;
+  interval_s: Generated<number>;
+  timeout_ms: Generated<number>;
+  /**
+   * Stringified JSON on insert/update (Kysely's `JSONColumnType`), parsed on
+   * select. Optional on insert/update -- both have a database default.
+   */
+  expected_status: JSONColumnType<StatusRange[], string | undefined, string | undefined>;
+  latency_warn_ms: number | null;
+  failure_threshold: Generated<number>;
+  success_threshold: Generated<number>;
+  follow_redirects: Generated<boolean>;
+  max_redirects: Generated<number>;
+  assertions: JSONColumnType<EndpointAssertion[], string | undefined, string | undefined>;
+  /** Pause/resume (FR-9). Inert until M4's scheduler reads it. */
+  enabled: Generated<boolean>;
+  created_at: CreatedAt;
+  updated_at: CreatedAt;
+}
+
+export interface HeadersTable {
+  id: Generated<string>;
+  /** Exactly one of service_id/endpoint_id is set, enforced by a CHECK. */
+  service_id: string | null;
+  endpoint_id: string | null;
+  name: string;
+  is_secret: Generated<boolean>;
+  /** Set when `is_secret` is false; null otherwise. */
+  value: string | null;
+  /** Set when `is_secret` is true; null otherwise. AES-256-GCM. */
+  secret_ciphertext: Buffer | null;
+  secret_iv: Buffer | null;
+  secret_auth_tag: Buffer | null;
+  created_at: CreatedAt;
+  updated_at: CreatedAt;
+}
+
+export interface TagsTable {
+  id: Generated<string>;
+  /** Exactly one of service_id/endpoint_id is set, enforced by a CHECK. */
+  service_id: string | null;
+  endpoint_id: string | null;
+  key: string;
+  value: string;
+}
+
 export interface Database {
   schema_migrations: SchemaMigrationsTable;
   users: UsersTable;
@@ -108,6 +189,10 @@ export interface Database {
   auth_attempts: AuthAttemptsTable;
   oauth_identities: OAuthIdentitiesTable;
   oauth_authorizations: OAuthAuthorizationsTable;
+  services: ServicesTable;
+  endpoints: EndpointsTable;
+  headers: HeadersTable;
+  tags: TagsTable;
 }
 
 export type User = Selectable<UsersTable>;
@@ -122,3 +207,17 @@ export type NewOAuthIdentity = Insertable<OAuthIdentitiesTable>;
 
 export type OAuthAuthorization = Selectable<OAuthAuthorizationsTable>;
 export type NewOAuthAuthorization = Insertable<OAuthAuthorizationsTable>;
+
+export type Service = Selectable<ServicesTable>;
+export type NewService = Insertable<ServicesTable>;
+export type ServiceUpdate = Updateable<ServicesTable>;
+
+export type Endpoint = Selectable<EndpointsTable>;
+export type NewEndpoint = Insertable<EndpointsTable>;
+export type EndpointUpdate = Updateable<EndpointsTable>;
+
+export type Header = Selectable<HeadersTable>;
+export type NewHeader = Insertable<HeadersTable>;
+
+export type Tag = Selectable<TagsTable>;
+export type NewTag = Insertable<TagsTable>;
