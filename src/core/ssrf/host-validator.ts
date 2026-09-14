@@ -111,6 +111,12 @@ function getBlockList(): BlockList {
   // site-scoped multicast (e.g. ff05::1) is not "a public address", it is
   // network-scoped, and net.isIP recognizes it fine without this rule.
   bl.addSubnet('ff00::', 8, 'ipv6');
+  // RFC 6145/SIIT's extended IPv4-translatable form, ::ffff:0:a.b.c.d --
+  // distinct from the plain IPv4-mapped ::ffff:a.b.c.d BlockList's
+  // cross-family matching already handles. This one re-serializes with an
+  // extra zero group (::ffff:0:7f00:1 for 127.0.0.1) and matches none of
+  // the rules above, so it needs its own explicit range.
+  bl.addSubnet('::ffff:0:0:0', 96, 'ipv6');
 
   blockList = bl;
   return bl;
