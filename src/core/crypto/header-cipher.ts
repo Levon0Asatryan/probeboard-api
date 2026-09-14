@@ -18,6 +18,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_BYTES = 12;
+const AUTH_TAG_BYTES = 16;
 
 export interface EncryptedSecret {
   ciphertext: Buffer;
@@ -32,19 +33,30 @@ export function parseHeaderEncryptionKey(base64Key: string): Buffer {
 
 export function encryptSecret(plaintext: string, key: Buffer): EncryptedSecret {
   const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_BYTES });
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   return { ciphertext, iv, authTag: cipher.getAuthTag() };
 }
 
 /**
- * Throws if `key` is wrong or `secret` was tampered with -- GCM's tag check
- * fails closed. The thrown error carries no plaintext and no key material;
- * callers must not include `secret` itself in whatever they log or respond
- * with (docs/m2-plan.md §5.4's "never logged, never in an error response").
+ * Throws if `key` is wrong, `secret` was tampered with, or the auth tag is
+ * not the full 16 bytes -- GCM's tag check fails closed. The length check is
+ * not cosmetic: without pinning `authTagLength`, Node accepts a shorter tag
+ * (`setAuthTag` on a 4-byte tag succeeds) and authenticates against that
+ * weaker value instead of rejecting it, so a corrupted or truncated
+ * `secret_auth_tag` column would silently downgrade the integrity guarantee
+ * rather than fail. The thrown error carries no plaintext and no key
+ * material; callers must not include `secret` itself in whatever they log or
+ * respond with (docs/m2-plan.md §5.4's "never logged, never in an error
+ * response").
  */
 export function decryptSecret(secret: EncryptedSecret, key: Buffer): string {
-  const decipher = createDecipheriv(ALGORITHM, key, secret.iv);
+  if (secret.authTag.length !== AUTH_TAG_BYTES) {
+    throw new Error('invalid auth tag length');
+  }
+  const decipher = createDecipheriv(ALGORITHM, key, secret.iv, {
+    authTagLength: AUTH_TAG_BYTES,
+  });
   decipher.setAuthTag(secret.authTag);
   return Buffer.concat([decipher.update(secret.ciphertext), decipher.final()]).toString('utf8');
 }

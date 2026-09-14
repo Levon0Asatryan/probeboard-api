@@ -65,6 +65,16 @@ describe('encryptSecret / decryptSecret', () => {
     expect(() => decryptSecret(tampered, key)).toThrow();
   });
 
+  it('rejects a truncated auth tag rather than authenticating against the shorter value', () => {
+    // Without pinning authTagLength, Node accepts a tag shorter than 16
+    // bytes and authenticates against it -- weaker, not absent, integrity.
+    // A corrupted or truncated secret_auth_tag column must fail closed, not
+    // silently downgrade.
+    const secret = encryptSecret('sk_live_abc123', key);
+    const truncated: EncryptedSecret = { ...secret, authTag: secret.authTag.subarray(0, 4) };
+    expect(() => decryptSecret(truncated, key)).toThrow();
+  });
+
   it('the thrown error on decryption failure carries no plaintext and no key material', () => {
     const secret = encryptSecret('sk_live_abc123', key);
     try {
