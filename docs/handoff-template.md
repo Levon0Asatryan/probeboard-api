@@ -38,6 +38,35 @@ AGENTS.md (review rules), docs/tracker.md (current state).
 ## Deliverables
 <plan doc if not yet approved | PR(s) | verification record>
 
+## Phase 1 — Investigation (before any plan or code)
+Go deep; record findings in the plan doc with sources.
+- Read every requirement and story in scope, and the architecture chapter.
+  List contradictions or gaps between them.
+- Read the code on main this work touches. Note the patterns to follow.
+- Study how comparable systems solve it, and their published vulnerabilities
+  and bug reports for this area. Each one becomes a test or a decision.
+- <topic-specific questions the investigation must answer>
+
+## Phase 2 — Implementation
+Per the approved plan. Deviations go in the report under "Decisions made".
+
+## Phase 3 — Revalidation (after implementing, before calling it done)
+- Walk the plan line by line against the code: every decision, endpoint,
+  constraint and test in the matrix exists. List any gap.
+- Re-prove every guard by removal on the final code, not an earlier commit.
+- Fresh clone of the branch, npm ci, npm run build, npm run verify,
+  npm run test:int, then a real docker compose run of every changed endpoint
+  with psql checks of stored state.
+
+## Phase 4 — Re-review (after revalidation)
+- Review the whole PR diff yourself, line by line, as a hostile reviewer
+  against AGENTS.md: security, concurrency, error paths, naming, dead code,
+  stale comments, docs/http/openapi drift. Fix or justify each finding.
+- After the last push, wait for Codex on the head SHA (a review with that
+  commit_id, or its 👍 reaction dated after the push). Verify, fix or push
+  back, reply on every thread. Any fix push restarts Phase 3's checks that
+  it affects and this wait.
+
 ## Stop points
 - After writing docs/mN-plan.md: stop and report. Do not implement until the
   plan is approved.
@@ -60,8 +89,19 @@ done | blocked | plan ready for approval
 ## Pull requests
 - #<n> <title> — <url> — CI: <green/red per job> — review threads: <open/total>
 
+## Investigation
+<key findings and sources; what each changed in the plan or tests>
+
 ## What changed
 <3–8 lines: behaviour, not file lists>
+
+## Revalidation
+- Plan vs code: <gaps found, and fixed or not>
+- Fresh clone run: <commands and results>
+
+## Re-review
+- Self-review findings: <fixed n, justified n — one line each>
+- Codex: reviewed SHA <sha>, <review | 👍> at <time>
 
 ## Decisions made
 <anything not already in the plan, with the reason>
