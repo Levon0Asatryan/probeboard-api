@@ -52,9 +52,11 @@ function describe(err: unknown): string {
           : cause.message
             ? cause.message
             : (causeCode ?? cause.name)
-        : typeof cause === 'string'
-          ? cause
-          : safeTypeOf(cause);
+        : cause === null
+          ? 'null'
+          : typeof cause === 'string'
+            ? cause
+            : safeTypeOf(cause);
     return `${base} (cause: ${causeText})`;
   }
 

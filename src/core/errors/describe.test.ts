@@ -58,6 +58,12 @@ describe('describeError', () => {
     expect(describeError(err)).toBe('outer (cause: a plain string cause)');
   });
 
+  it('renders an explicit null cause as "null", not its object tag', () => {
+    const err = new Error('outer');
+    (err as Error & { cause?: unknown }).cause = null;
+    expect(describeError(err)).toBe('outer (cause: null)');
+  });
+
   it('handles an AggregateError that wraps nothing', () => {
     expect(describeError(new AggregateError([], ''))).toBe('AggregateError');
     expect(describeError(new AggregateError([], 'all attempts failed'))).toBe(
