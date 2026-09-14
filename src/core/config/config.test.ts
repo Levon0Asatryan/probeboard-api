@@ -37,6 +37,33 @@ describe('loadConfig', () => {
   });
 });
 
+describe('SSRF_BLOCKED_PORTS', () => {
+  it('parses the default list into numbers', () => {
+    const ports = loadConfig(valid).SSRF_BLOCKED_PORTS;
+    expect(ports).toContain(6379);
+    expect(ports).toContain(3306);
+    expect(ports.every((p) => typeof p === 'number')).toBe(true);
+  });
+
+  it('parses a custom comma-separated list, trimming whitespace', () => {
+    const ports = loadConfig({ ...valid, SSRF_BLOCKED_PORTS: '80, 443,8080' }).SSRF_BLOCKED_PORTS;
+    expect(ports).toEqual([80, 443, 8080]);
+  });
+
+  it('refuses a non-numeric entry rather than silently dropping it', () => {
+    expect(() => loadConfig({ ...valid, SSRF_BLOCKED_PORTS: '80,abc' })).toThrow(
+      /SSRF_BLOCKED_PORTS/,
+    );
+  });
+
+  it('refuses a port outside 1-65535', () => {
+    expect(() => loadConfig({ ...valid, SSRF_BLOCKED_PORTS: '0' })).toThrow(/SSRF_BLOCKED_PORTS/);
+    expect(() => loadConfig({ ...valid, SSRF_BLOCKED_PORTS: '70000' })).toThrow(
+      /SSRF_BLOCKED_PORTS/,
+    );
+  });
+});
+
 describe('error reporting', () => {
   it('labels an issue with no path as (root) rather than an empty string', () => {
     // zod reports whole-object problems with an empty path; the message must

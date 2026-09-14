@@ -29,8 +29,35 @@ function describe(err: unknown): string {
 
   if (err instanceof Error) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (err.message) return code ? `${code}: ${err.message}` : err.message;
-    return code ?? err.name;
+    const base = err.message
+      ? code
+        ? `${code}: ${err.message}`
+        : err.message
+      : (code ?? err.name);
+
+    // The standard ES2022 `cause` chain, e.g. a resolver failure attached to
+    // an SsrfValidationError so it reaches the log without ever being
+    // serialized into the client-facing response (`AppError.details` is
+    // what toErrorResponse exposes; `cause` deliberately is not). One level
+    // only, not recursive: a pathological circular cause chain must not
+    // recurse forever inside a function whose entire contract is "never
+    // throws".
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause === undefined) return base;
+    const causeCode = cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined;
+    const causeText =
+      cause instanceof Error
+        ? causeCode && cause.message !== causeCode
+          ? `${causeCode}: ${cause.message}`
+          : cause.message
+            ? cause.message
+            : (causeCode ?? cause.name)
+        : cause === null
+          ? 'null'
+          : typeof cause === 'string'
+            ? cause
+            : safeTypeOf(cause);
+    return `${base} (cause: ${causeText})`;
   }
 
   if (typeof err === 'string') return err;

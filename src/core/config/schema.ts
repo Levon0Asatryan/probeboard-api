@@ -215,7 +215,39 @@ const oauth = {
   OAUTH_HTTP_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
 };
 
-/** Probe execution limits (NFR-13, FR-8). */
+/**
+ * A comma-separated list of TCP ports, parsed and bounds-checked at boot.
+ *
+ * A typo here (a stray letter, an out-of-range number) must fail the process
+ * at boot, the same rule `API_BODY_LIMIT` follows -- not silently parse to an
+ * empty or partial list and quietly stop blocking a port.
+ */
+function portList(defaultValue: string) {
+  return z
+    .string()
+    .default(defaultValue)
+    .transform((v, ctx) => {
+      const ports = v.split(',').map((p) => p.trim());
+      const parsed = ports.map((p) => {
+        const n = Number(p);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `"${p}" is not a valid TCP port (1-65535)`,
+          });
+          return z.NEVER;
+        }
+        return n;
+      });
+      return parsed;
+    });
+}
+
+/**
+ * Probe execution limits (NFR-13, FR-8), and the SSRF guard both the api
+ * (save-time, M2) and the worker (connect-time, M3) enforce -- one policy,
+ * shared, rather than two flags that can drift apart (docs/m2-plan.md §4 D2).
+ */
 const probing = {
   PROBE_MAX_BODY_BYTES: z.coerce
     .number()
@@ -230,6 +262,15 @@ const probing = {
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Rejected even on an otherwise-public address at save time
+  // (docs/m2-plan.md §5.1 rule 1): a fully public IP can still front a
+  // database, cache or container-management port that answers exploitably to
+  // a garbage HTTP request. Not an allowlist -- an unlisted port is accepted,
+  // 80/443 included, because the set of legitimate API ports is unbounded and
+  // the set of dangerous well-known ones is not.
+  SSRF_BLOCKED_PORTS: portList(
+    '25,111,135,139,445,1433,1521,2375,2376,3306,3389,5432,5984,6379,7000,9200,9300,11211,27017',
+  ),
 };
 
 /** Claim-based scheduling (NFR-2, NFR-3, NFR-4). */
