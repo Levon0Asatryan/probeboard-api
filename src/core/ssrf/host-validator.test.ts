@@ -130,6 +130,7 @@ describe('IPv6 forms', () => {
 describe('0.0.0.0 and cloud/CGNAT/benchmark/multicast literals', () => {
   it.each([
     ['unspecified IPv4', 'http://0.0.0.0/'],
+    ['"this network" 0.0.0.0/8, not just the single address', 'http://0.0.0.1/'],
     ['AWS/Azure metadata', 'http://169.254.169.254/'],
     ['Alibaba Cloud metadata', 'http://100.100.100.200/'],
     ['CGNAT', 'http://100.64.1.1/'],

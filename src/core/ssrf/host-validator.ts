@@ -71,7 +71,8 @@ function getBlockList(): BlockList {
   bl.addSubnet('198.18.0.0', 15, 'ipv4');
   bl.addSubnet('224.0.0.0', 4, 'ipv4');
   bl.addSubnet('240.0.0.0', 4, 'ipv4');
-  bl.addAddress('0.0.0.0', 'ipv4');
+  // "This network" -- 0.0.0.0/8, not just the single address 0.0.0.0.
+  bl.addSubnet('0.0.0.0', 8, 'ipv4');
   // Alibaba Cloud's metadata address -- a separate literal, not covered by
   // any of the ranges above.
   bl.addAddress('100.100.100.200', 'ipv4');
