@@ -121,6 +121,7 @@ describe('IPv6 forms', () => {
       'SIIT extended IPv4-translatable (RFC 6145), embedding loopback',
       'http://[::ffff:0:127.0.0.1]/',
     ],
+    ['6to4 (RFC 3056), embedding a private IPv4 gateway', 'http://[2002:0a00:0001::]/'],
     ["AWS IMDS's IPv6 metadata address", 'http://[fd00:ec2::254]/'],
   ])('%s rejected as ADDRESS_NOT_ALLOWED', async (_label, url) => {
     await rejects(url, 'ADDRESS_NOT_ALLOWED');

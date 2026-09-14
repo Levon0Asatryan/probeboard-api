@@ -118,6 +118,11 @@ function getBlockList(): BlockList {
   // extra zero group (::ffff:0:7f00:1 for 127.0.0.1) and matches none of
   // the rules above, so it needs its own explicit range.
   bl.addSubnet('::ffff:0:0:0', 96, 'ipv6');
+  // 6to4 (RFC 3056, deprecated): 2002::/16 embeds an IPv4 gateway address in
+  // bits 16-48 (2002:0a00:0001:: embeds 10.0.0.1) and a 6to4 relay routes to
+  // it, private ranges included. Same posture as the NAT64/SIIT rules above
+  // -- blocked wholesale rather than decoding the embedded address.
+  bl.addSubnet('2002::', 16, 'ipv6');
 
   blockList = bl;
   return bl;
