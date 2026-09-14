@@ -10,6 +10,26 @@ and validates; **worker** chats implement one milestone or one plan step from a
 handoff prompt (`docs/handoff-template.md`). `docs/tracker.md` is the status of
 record — read it first. Levon approves plans and merges; no chat merges.
 
+### Every task runs four phases — not optional
+
+Applies to every chat, with or without a handoff prompt. The report
+(`docs/handoff-template.md`, part 2) has a section for each.
+
+1. **Investigation**, before any plan or code. Requirements and stories in
+   scope, the code on `main` it touches, how comparable systems solve it
+   (`../references/`), and published vulnerabilities and bug reports in that
+   area — each becomes a test or a decision. Findings go in the plan, with
+   sources.
+2. **Implementation**, only after the plan is approved.
+3. **Revalidation**, after implementing. Walk the plan line by line against
+   the code and close every gap. Re-prove every guard by removal on the final
+   code. Fresh clone: `npm ci`, `npm run build`, `npm run verify`,
+   `npm run test:int`. Real `docker compose` run with `psql` checks.
+4. **Re-review**, after revalidation. Review the whole diff yourself as a
+   hostile reviewer against `AGENTS.md`. Then wait for Codex on the head SHA
+   (see "Before calling it done", step 4), and answer every thread. A fix push
+   repeats the checks it affects.
+
 ### Before writing code
 
 - Plan first: `docs/mN-plan.md` (investigation, decisions, data model, HTTP
