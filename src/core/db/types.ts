@@ -137,8 +137,10 @@ export interface EndpointsTable {
   user_id: string;
   method: Generated<string>;
   path: Generated<string>;
-  interval_s: Generated<number>;
-  timeout_ms: Generated<number>;
+  /** No database default -- the caller supplies it from validated config (docs/m2-plan.md, FR-7). */
+  interval_s: number;
+  /** No database default -- the caller supplies it from validated config (docs/m2-plan.md, FR-8). */
+  timeout_ms: number;
   /**
    * Stringified JSON on insert/update (Kysely's `JSONColumnType`), parsed on
    * select. Optional on insert/update -- both have a database default.

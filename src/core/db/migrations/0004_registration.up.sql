@@ -42,8 +42,13 @@ CREATE TABLE endpoints (
     user_id            uuid           NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     method             text           NOT NULL DEFAULT 'GET',
     path               text           NOT NULL DEFAULT '/',
-    interval_s         integer        NOT NULL DEFAULT 60,
-    timeout_ms         integer        NOT NULL DEFAULT 10000,
+    -- No DEFAULT: FR-7/FR-8 make these system-configurable (a bounded set
+    -- of intervals, a system-maximum timeout), so the default value has to
+    -- come from validated config, applied by the create path (PR4), not
+    -- from a number baked into the schema that no boot-time check can see
+    -- or a deployment can change.
+    interval_s         integer        NOT NULL,
+    timeout_ms         integer        NOT NULL,
     -- [{"min":200,"max":299}, ...]. Validated at the DTO layer (PR4);
     -- M2 stores it opaquely -- M3's assertion evaluator is its first reader.
     expected_status    jsonb          NOT NULL DEFAULT '[{"min":200,"max":299}]',

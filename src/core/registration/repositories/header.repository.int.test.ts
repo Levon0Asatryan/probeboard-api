@@ -42,6 +42,8 @@ beforeEach(async () => {
   const endpoint = await endpoints.create({
     service_id: serviceId,
     user_id: userId,
+    interval_s: 60,
+    timeout_ms: 10000,
     method: 'GET',
     path: '/orders',
   });
