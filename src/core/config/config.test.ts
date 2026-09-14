@@ -90,6 +90,25 @@ describe('HEADER_ENCRYPTION_KEY', () => {
     const key = Buffer.alloc(32, 7).toString('base64');
     expect(loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: key }).HEADER_ENCRYPTION_KEY).toBe(key);
   });
+
+  it('refuses a value with a stray trailing character, even though it still decodes to 32 bytes', () => {
+    // Buffer.from(..., 'base64') silently drops invalid characters rather
+    // than rejecting them, so a valid-looking prefix plus junk (a copy-paste
+    // artifact, a templating suffix) can still decode to exactly 32 bytes --
+    // just not the 32 bytes the string visually represents.
+    const key = Buffer.alloc(32, 7).toString('base64');
+    expect(() => loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: key + '!!!extra' })).toThrow(
+      /HEADER_ENCRYPTION_KEY/,
+    );
+  });
+
+  it('refuses a value with junk embedded in the middle', () => {
+    const key = Buffer.alloc(32, 7).toString('base64');
+    const withEmbeddedJunk = key.slice(0, 10) + '@#$' + key.slice(10);
+    expect(() => loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: withEmbeddedJunk })).toThrow(
+      /HEADER_ENCRYPTION_KEY/,
+    );
+  });
 });
 
 describe('error reporting', () => {

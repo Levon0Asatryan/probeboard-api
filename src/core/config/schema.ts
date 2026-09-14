@@ -290,7 +290,13 @@ const registration = {
   HEADER_ENCRYPTION_KEY: z.string().refine(
     (v) => {
       try {
-        return Buffer.from(v, 'base64').length === 32;
+        const decoded = Buffer.from(v, 'base64');
+        // Buffer.from(..., 'base64') silently drops characters that are not
+        // valid base64 instead of rejecting them -- a value with a stray
+        // trailing or embedded character can still decode to exactly 32
+        // bytes, differing from what was intended. Re-encoding and comparing
+        // catches that: only a canonical encoding round-trips to itself.
+        return decoded.length === 32 && decoded.toString('base64') === v;
       } catch {
         return false;
       }
