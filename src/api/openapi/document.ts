@@ -349,6 +349,7 @@ export function buildOpenApiDocument(
               '`NO_PASSWORD_SET`: this account signs in through a provider and has no password ' +
                 'to change.',
             ),
+            '413': errorResponse('Body larger than the configured limit.'),
             '429': errorResponse('Too many attempts from this address.'),
           },
         },

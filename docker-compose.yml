@@ -37,18 +37,24 @@ services:
       COOKIE_SECURE: 'false'
       # Browsable API documentation at http://127.0.0.1:3000/docs
       API_DOCS_ENABLED: 'true'
-      # Placeholder credentials: a real Google OAuth client is registered at
-      # final testing (tracker.md), not here. These are enough to exercise
-      # /start (redirect-building, PKCE, the state cookie and its pending row)
-      # and every callback refusal path (missing cookie, foreign state,
-      # replay, expired) without reaching Google at all -- the full round
-      # trip is proved instead by the integration suite against the local
-      # stub (src/api/auth/e2e/oauth-*.int.test.ts). Actually completing a
-      # sign-in against this compose stack will fail at Google with
-      # invalid_client, which is expected.
+      # Read from the gitignored .env next to this file (docker compose's own
+      # interpolation, separate from the app's --env-file-if-exists loading)
+      # so real credentials never need a committed edit here. With no .env,
+      # every value falls back to a placeholder: enough to exercise /start
+      # (redirect-building, PKCE, the state cookie and its pending row) and
+      # every callback refusal path (missing cookie, foreign state, replay,
+      # expired) without reaching a provider at all -- the full round trip is
+      # proved instead by the integration suite against the local stub
+      # (src/api/auth/e2e/oauth-*.int.test.ts). Actually completing a sign-in
+      # against this compose stack with placeholders will fail at the
+      # provider with invalid_client, which is expected. A real .env with
+      # real values makes the redirect actually reach Google or GitHub, per
+      # docs/tracker.md F1.
       OAUTH_ENABLED: 'true'
-      GOOGLE_CLIENT_ID: 'placeholder-client-id'
-      GOOGLE_CLIENT_SECRET: 'placeholder-client-secret'
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-placeholder-client-id}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-placeholder-client-secret}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-placeholder-client-id}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-placeholder-client-secret}
       OAUTH_REDIRECT_BASE_URL: 'http://127.0.0.1:3000'
       WEB_BASE_URL: 'http://127.0.0.1:5173'
     ports:

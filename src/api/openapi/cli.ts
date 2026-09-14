@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { stringify } from 'yaml';
 import { buildOpenApiDocument } from './document.js';
 
@@ -26,11 +27,26 @@ function render(): string {
   });
 }
 
+/**
+ * The committed file's content, or `undefined` if it does not exist.
+ *
+ * Only a missing file reads as "missing". Anything else -- permission
+ * denied, an I/O error -- is a real failure and must surface with its cause,
+ * not be reported as an absent file that a plain `npm run openapi` would
+ * silently "fix" by writing over whatever is actually wrong.
+ */
+export async function readCommitted(path: string): Promise<string | undefined> {
+  return readFile(path, 'utf8').catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return undefined;
+    throw err;
+  });
+}
+
 async function main(): Promise<void> {
   const generated = render();
 
   if (process.argv.includes('--check')) {
-    const committed = await readFile(OUTPUT, 'utf8').catch(() => undefined);
+    const committed = await readCommitted(OUTPUT);
 
     if (committed === generated) {
       process.stdout.write(`${OUTPUT}: up to date\n`);
@@ -50,4 +66,8 @@ async function main(): Promise<void> {
   process.stdout.write(`${OUTPUT}: written\n`);
 }
 
-await main();
+// Only run as the CLI entrypoint, never as a side effect of import -- this
+// module is imported directly by its own test for `readCommitted`.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main();
+}
