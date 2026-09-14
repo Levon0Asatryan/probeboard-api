@@ -57,10 +57,30 @@ describe('the headers_secret_shape CHECK', () => {
     ).rejects.toThrow();
   });
 
-  it('rejects a secret row with a plaintext value', async () => {
+  it('rejects a secret row with a plaintext value and no ciphertext at all', async () => {
     await expect(
       headers.replaceForService(serviceId, [
         { name: 'Authorization', is_secret: true, value: 'leaked' },
+      ]),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a secret row carrying both a plaintext value and otherwise-complete ciphertext', async () => {
+    // The row above is rejected because ciphertext is missing -- it says
+    // nothing about whether `value` itself is checked. This proves the
+    // other half: a value alongside fully valid ciphertext metadata must
+    // still be rejected, or a secret could persist its plaintext right next
+    // to its own encrypted form.
+    await expect(
+      headers.replaceForService(serviceId, [
+        {
+          name: 'Authorization',
+          is_secret: true,
+          value: 'leaked',
+          secret_ciphertext: Buffer.from('ct'),
+          secret_iv: Buffer.from('iv12'),
+          secret_auth_tag: Buffer.from('tag'),
+        },
       ]),
     ).rejects.toThrow();
   });
