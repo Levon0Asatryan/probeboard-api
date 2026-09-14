@@ -27,13 +27,23 @@ export class TagRepository {
       .execute();
   }
 
-  /** Same replace-atomically shape as `HeaderRepository` -- see its comment. */
+  /**
+   * Same replace-atomically shape as `HeaderRepository`, including the
+   * owner-row lock that serializes two concurrent full-set replacements --
+   * see its comment.
+   */
   async replaceForService(
     serviceId: string,
     rows: NewOwnedTag[],
     executor?: Kysely<Database>,
   ): Promise<Tag[]> {
     const run = async (trx: Kysely<Database>): Promise<Tag[]> => {
+      await trx
+        .selectFrom('services')
+        .select('id')
+        .where('id', '=', serviceId)
+        .forUpdate()
+        .execute();
       await trx.deleteFrom('tags').where('service_id', '=', serviceId).execute();
       if (rows.length === 0) return [];
       return trx
@@ -53,6 +63,12 @@ export class TagRepository {
     executor?: Kysely<Database>,
   ): Promise<Tag[]> {
     const run = async (trx: Kysely<Database>): Promise<Tag[]> => {
+      await trx
+        .selectFrom('endpoints')
+        .select('id')
+        .where('id', '=', endpointId)
+        .forUpdate()
+        .execute();
       await trx.deleteFrom('tags').where('endpoint_id', '=', endpointId).execute();
       if (rows.length === 0) return [];
       return trx

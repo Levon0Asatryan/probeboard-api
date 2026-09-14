@@ -133,6 +133,44 @@ describe('case-insensitive uniqueness per owner', () => {
   });
 });
 
+describe('replaceForService serializes against a concurrent replacement', () => {
+  it('blocks until a competing transaction holding the service row releases it', async () => {
+    // The barrier: a second real connection takes FOR SHARE on the service
+    // row and holds it open. FOR SHARE, not FOR UPDATE: inserting a header
+    // row already takes a FOR KEY SHARE lock on the service it references
+    // (Postgres's own foreign-key check), and FOR KEY SHARE does not
+    // conflict with another FOR KEY SHARE -- so a FOR UPDATE holder here
+    // would make this test pass even with replaceForService's own
+    // `.forUpdate()` removed, by relying on the FK check's incidental lock
+    // instead of the one this test means to prove. FOR SHARE conflicts only
+    // with FOR UPDATE / FOR NO KEY UPDATE, so it blocks replaceForService's
+    // explicit lock specifically and nothing else -- confirmed by removing
+    // `.forUpdate()` from replaceForService and re-running this test: it
+    // then fails, because the call resolves immediately instead of blocking.
+    const client = await ctx.pool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM services WHERE id = $1 FOR SHARE', [serviceId]);
+
+    let settled = false;
+    const replaced = headers
+      .replaceForService(serviceId, [{ name: 'X-After-Lock', is_secret: false, value: '1' }])
+      .then((r) => {
+        settled = true;
+        return r;
+      });
+
+    await new Promise((r) => setTimeout(r, 200));
+    // Still blocked: the competing transaction has not released the row yet.
+    expect(settled).toBe(false);
+
+    await client.query('COMMIT');
+    client.release();
+
+    await replaced;
+    expect(settled).toBe(true);
+  });
+});
+
 describe('cascade delete', () => {
   it('deleting the endpoint deletes its headers', async () => {
     await headers.replaceForEndpoint(endpointId, [{ name: 'X-A', is_secret: false, value: '1' }]);

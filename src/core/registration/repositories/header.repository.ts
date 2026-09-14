@@ -33,9 +33,20 @@ export class HeaderRepository {
    *
    * The API surface (PR4) always sends a full list -- "keep / replace /
    * clear" (docs/m2-plan.md §5.4) is expressed entirely in what that list
-   * contains, so the repository never needs a partial-update path. Delete
-   * then insert, in one transaction: a reader mid-write sees either the old
-   * set or the new one, never a gap.
+   * contains, so the repository never needs a partial-update path.
+   *
+   * Locks the service row first, before the delete. Without it two
+   * concurrent replacements of the same owner's headers -- most visibly
+   * when the current set is empty -- can each run their DELETE before
+   * either INSERT commits, and the stored result becomes the union of both
+   * requested sets (or a spurious unique-index failure when the two sets
+   * share a name), neither of which is what either caller asked for.
+   * Locking serializes the two full replacements the same way
+   * `UserRepository.lockForUpdate` already serializes a create against a
+   * count elsewhere in this milestone (docs/m2-plan.md §5.3) -- a
+   * transaction that also needs to lock the owning user's row must take
+   * that lock first, per the users-then-other-rows order `SessionRepository`
+   * already documents.
    */
   async replaceForService(
     serviceId: string,
@@ -43,6 +54,12 @@ export class HeaderRepository {
     executor?: Kysely<Database>,
   ): Promise<Header[]> {
     const run = async (trx: Kysely<Database>): Promise<Header[]> => {
+      await trx
+        .selectFrom('services')
+        .select('id')
+        .where('id', '=', serviceId)
+        .forUpdate()
+        .execute();
       await trx.deleteFrom('headers').where('service_id', '=', serviceId).execute();
       if (rows.length === 0) return [];
       return trx
@@ -63,6 +80,12 @@ export class HeaderRepository {
     executor?: Kysely<Database>,
   ): Promise<Header[]> {
     const run = async (trx: Kysely<Database>): Promise<Header[]> => {
+      await trx
+        .selectFrom('endpoints')
+        .select('id')
+        .where('id', '=', endpointId)
+        .forUpdate()
+        .execute();
       await trx.deleteFrom('headers').where('endpoint_id', '=', endpointId).execute();
       if (rows.length === 0) return [];
       return trx

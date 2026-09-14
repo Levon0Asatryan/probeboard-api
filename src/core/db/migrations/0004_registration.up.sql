@@ -10,7 +10,12 @@ CREATE TABLE services (
     name        text        NOT NULL,
     base_url    text        NOT NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at  timestamptz NOT NULL DEFAULT now()
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    -- Lets endpoints below reference (id, user_id) together as one composite
+    -- foreign key, so an endpoint's own user_id cannot disagree with its
+    -- service's owner -- enforced by Postgres, not only by callers
+    -- remembering to pass the same value twice.
+    CONSTRAINT services_id_user_id_key UNIQUE (id, user_id)
 );
 CREATE INDEX services_user_id_idx ON services (user_id);
 -- B-3: "a service already exists for this user at this origin" is this index.
@@ -22,12 +27,18 @@ CREATE UNIQUE INDEX services_user_base_url_key ON services (user_id, base_url);
 -- validation.
 CREATE TABLE endpoints (
     id                 uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
-    service_id         uuid           NOT NULL REFERENCES services (id) ON DELETE CASCADE,
     -- Denormalized from services.user_id. Every ownership and quota query
     -- would otherwise need a join through services; the quota lock
     -- (docs/m2-plan.md §5.3) reads this column directly, inside a
     -- transaction that already holds the users row lock. Written once at
     -- insert -- an endpoint never changes service.
+    --
+    -- (service_id, user_id) together, not service_id alone, reference
+    -- services (id, user_id): an insert whose user_id disagrees with the
+    -- named service's actual owner has no matching row to reference and is
+    -- rejected by Postgres, not merely by a caller remembering to keep the
+    -- two in step.
+    service_id         uuid           NOT NULL,
     user_id            uuid           NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     method             text           NOT NULL DEFAULT 'GET',
     path               text           NOT NULL DEFAULT '/',
@@ -47,7 +58,9 @@ CREATE TABLE endpoints (
     -- reads this column, from M4 on; inert until then.
     enabled            boolean        NOT NULL DEFAULT true,
     created_at         timestamptz    NOT NULL DEFAULT now(),
-    updated_at         timestamptz    NOT NULL DEFAULT now()
+    updated_at         timestamptz    NOT NULL DEFAULT now(),
+    CONSTRAINT endpoints_service_owner_fkey
+        FOREIGN KEY (service_id, user_id) REFERENCES services (id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX endpoints_service_id_idx ON endpoints (service_id);
 -- The quota count filters on this directly (docs/m2-plan.md §5.3).

@@ -123,10 +123,15 @@ describe('countForUser', () => {
       name: 'API 2',
       base_url: 'https://api2.example.com',
     });
+    const otherService = await services.create({
+      user_id: otherUserId,
+      name: 'Other API',
+      base_url: 'https://other.example.com',
+    });
     await endpoints.create({ service_id: serviceId, user_id: userId, method: 'GET', path: '/a' });
     await endpoints.create({ service_id: service2.id, user_id: userId, method: 'GET', path: '/b' });
     await endpoints.create({
-      service_id: serviceId,
+      service_id: otherService.id,
       user_id: otherUserId,
       method: 'GET',
       path: '/c',
@@ -134,6 +139,14 @@ describe('countForUser', () => {
 
     await expect(endpoints.countForUser(userId)).resolves.toBe(2);
     await expect(endpoints.countForUser(otherUserId)).resolves.toBe(1);
+  });
+});
+
+describe('the endpoints_service_owner_fkey composite constraint', () => {
+  it("rejects an endpoint whose user_id disagrees with its service's owner", async () => {
+    await expect(
+      endpoints.create({ service_id: serviceId, user_id: otherUserId, method: 'GET', path: '/z' }),
+    ).rejects.toThrow();
   });
 });
 
