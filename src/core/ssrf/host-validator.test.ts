@@ -32,8 +32,8 @@ function publicOnly(v4: string[] = ['93.184.216.34'], v6: string[] = []) {
   }
 }
 
-async function rejects(url: string, code: string) {
-  await expect(assertSaveableUrl(url, cfg)).rejects.toMatchObject({ code });
+async function rejects(url: string, code: string, config = cfg) {
+  await expect(assertSaveableUrl(url, config)).rejects.toMatchObject({ code });
 }
 
 describe('scheme, credentials, port -- checked before any DNS lookup', () => {
@@ -63,6 +63,25 @@ describe('scheme, credentials, port -- checked before any DNS lookup', () => {
     await expect(
       assertSaveableUrl('http://public-host.example.com:8080/', cfg),
     ).resolves.toBeDefined();
+  });
+
+  it('rejects a blocked default port even with no explicit port in the URL', async () => {
+    // URL normalizes `http://host` and `http://host:80` identically -- both
+    // leave url.port empty -- so the denylist has to be checked against the
+    // scheme's effective port, not only an explicit one.
+    publicOnly();
+    await rejects('http://public-host.example.com/', 'PORT_NOT_ALLOWED', {
+      ...cfg,
+      blockedPorts: [80],
+    });
+  });
+
+  it('rejects a blocked default HTTPS port with no explicit port in the URL', async () => {
+    publicOnly();
+    await rejects('https://public-host.example.com/', 'PORT_NOT_ALLOWED', {
+      ...cfg,
+      blockedPorts: [443],
+    });
   });
 });
 
@@ -156,6 +175,30 @@ describe('DNS-resolved hostnames', () => {
     publicOnly(['93.184.216.34']);
     await assertSaveableUrl('http://Public-API.EXAMPLE.com/', cfg);
     expect(resolve4).toHaveBeenCalledWith('public-api.example.com');
+  });
+
+  it('fails closed when one family definitively has no record and the other resolves public', async () => {
+    // ENOTFOUND/ENODATA are a trustworthy negative -- this is the ordinary
+    // "no AAAA record" case for a v4-only host, and must still succeed.
+    resolve4.mockResolvedValue(['93.184.216.34']);
+    resolve6.mockRejectedValue(enotfound);
+    const result = await assertSaveableUrl('http://v4-only.example.com/', cfg);
+    expect(result.addresses).toEqual(['93.184.216.34']);
+  });
+
+  it.each(['SERVFAIL', 'ETIMEOUT', 'ECONNREFUSED', 'EREFUSED'])(
+    'fails closed on a %s resolving one family, even when the other family is public -- does not fail open',
+    async (code) => {
+      resolve4.mockResolvedValue(['93.184.216.34']);
+      resolve6.mockRejectedValue(Object.assign(new Error(code), { code }));
+      await rejects('http://half-broken.example.com/', 'URL_UNRESOLVABLE');
+    },
+  );
+
+  it('does not silently accept a hostname whose only working family errored unexpectedly', async () => {
+    resolve4.mockRejectedValue(Object.assign(new Error('SERVFAIL'), { code: 'SERVFAIL' }));
+    resolve6.mockRejectedValue(enotfound);
+    await rejects('http://broken.example.com/', 'URL_UNRESOLVABLE');
   });
 });
 

@@ -140,8 +140,14 @@ export async function assertSaveableUrl(
   }
 
   const port = url.port === '' ? null : Number(url.port);
-  if (port !== null && cfg.blockedPorts.includes(port)) {
-    throw new SsrfValidationError('PORT_NOT_ALLOWED', `port ${port} is not allowed`);
+  // The denylist is checked against the *effective* port. `URL` normalizes
+  // `http://host` and `http://host:80` identically -- both leave `url.port`
+  // empty -- so checking only an explicit port would let an operator add 80
+  // or 443 to SSRF_BLOCKED_PORTS and have every default-port URL sail past
+  // it silently.
+  const effectivePort = port ?? (url.protocol === 'https:' ? 443 : 80);
+  if (cfg.blockedPorts.includes(effectivePort)) {
+    throw new SsrfValidationError('PORT_NOT_ALLOWED', `port ${effectivePort} is not allowed`);
   }
 
   // `URL.hostname` keeps an IPv6 literal bracketed ("[::1]"); every other
@@ -180,16 +186,40 @@ export async function assertSaveableUrl(
   return { hostname, addresses, port };
 }
 
+/** No record of this type exists -- a definitive, trustworthy negative. */
+const NO_RECORD_CODES = new Set(['ENOTFOUND', 'ENODATA']);
+
 /**
  * Every A and AAAA record, not `dns.lookup`'s single address -- a hostname
  * with a mixed public/private record set must be rejected if any one of
  * them is private (docs/m2-plan.md §2.4, corpus item 22), which a function
  * that only ever sees one address cannot detect.
+ *
+ * A failure resolving one family is only ever treated as "no addresses of
+ * that family" when the failure itself says so (ENOTFOUND, ENODATA). Any
+ * other resolver error -- SERVFAIL, a timeout, a refused query -- means this
+ * function does not actually know what that family would have resolved to,
+ * and folding that unknown into "no addresses" would let the other family's
+ * public record wave the whole URL through while a private one could have
+ * been sitting behind the very failure that got silently discarded. Fails
+ * closed instead: the whole validation fails, not just that family.
  */
 async function resolveAll(hostname: string): Promise<string[]> {
   const [v4, v6] = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
   const addresses: string[] = [];
-  if (v4.status === 'fulfilled') addresses.push(...v4.value);
-  if (v6.status === 'fulfilled') addresses.push(...v6.value);
+
+  for (const result of [v4, v6]) {
+    if (result.status === 'fulfilled') {
+      addresses.push(...result.value);
+      continue;
+    }
+    const code = (result.reason as NodeJS.ErrnoException).code;
+    if (!code || !NO_RECORD_CODES.has(code)) {
+      throw new SsrfValidationError('URL_UNRESOLVABLE', 'the hostname could not be resolved', {
+        code,
+      });
+    }
+  }
+
   return addresses;
 }
