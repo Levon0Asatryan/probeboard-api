@@ -44,6 +44,8 @@ describe('create and findById', () => {
     const created = await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });
@@ -59,6 +61,8 @@ describe('create and findById', () => {
     const created = await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });
@@ -72,12 +76,21 @@ describe('the (service_id, method, path) unique index', () => {
     await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });
 
     await expect(
-      endpoints.create({ service_id: serviceId, user_id: userId, method: 'GET', path: '/orders' }),
+      endpoints.create({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        method: 'GET',
+        path: '/orders',
+      }),
     ).rejects.toThrow();
   });
 
@@ -85,13 +98,35 @@ describe('the (service_id, method, path) unique index', () => {
     await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });
 
     await expect(
-      endpoints.create({ service_id: serviceId, user_id: userId, method: 'POST', path: '/orders' }),
+      endpoints.create({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        method: 'POST',
+        path: '/orders',
+      }),
     ).resolves.toBeDefined();
+  });
+});
+
+describe('the patch type excludes ownership columns', () => {
+  it('user_id and service_id are not valid EndpointUpdate fields, so a caller cannot reassign ownership through update()', async () => {
+    // Compile-time proof: EndpointUpdate is Omit<..., 'user_id' | 'service_id'>.
+    // The call itself is a harmless no-op (no row with this id exists).
+    await endpoints.update(
+      '00000000-0000-0000-0000-000000000000',
+      userId,
+      // @ts-expect-error -- user_id/service_id are not valid EndpointUpdate fields
+      { user_id: otherUserId, service_id: serviceId },
+    );
   });
 });
 
@@ -100,6 +135,8 @@ describe('pause and resume', () => {
     const created = await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });
@@ -128,11 +165,27 @@ describe('countForUser', () => {
       name: 'Other API',
       base_url: 'https://other.example.com',
     });
-    await endpoints.create({ service_id: serviceId, user_id: userId, method: 'GET', path: '/a' });
-    await endpoints.create({ service_id: service2.id, user_id: userId, method: 'GET', path: '/b' });
+    await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/a',
+    });
+    await endpoints.create({
+      service_id: service2.id,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/b',
+    });
     await endpoints.create({
       service_id: otherService.id,
       user_id: otherUserId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/c',
     });
@@ -145,7 +198,14 @@ describe('countForUser', () => {
 describe('the endpoints_service_owner_fkey composite constraint', () => {
   it("rejects an endpoint whose user_id disagrees with its service's owner", async () => {
     await expect(
-      endpoints.create({ service_id: serviceId, user_id: otherUserId, method: 'GET', path: '/z' }),
+      endpoints.create({
+        service_id: serviceId,
+        user_id: otherUserId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        method: 'GET',
+        path: '/z',
+      }),
     ).rejects.toThrow();
   });
 });
@@ -155,6 +215,8 @@ describe('cascade delete via service', () => {
     const created = await endpoints.create({
       service_id: serviceId,
       user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
       method: 'GET',
       path: '/orders',
     });

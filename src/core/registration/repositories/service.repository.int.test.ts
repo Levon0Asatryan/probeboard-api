@@ -131,6 +131,18 @@ describe('update', () => {
     const still = await services.findById(created.id, userId);
     expect(still?.name).toBe('API');
   });
+
+  it('the patch type excludes user_id, so a caller cannot reassign ownership through it', async () => {
+    // Compile-time proof: ServiceUpdate is Omit<..., 'user_id'>, so this
+    // would only type-check if the exclusion were ever removed. The call
+    // itself is a harmless no-op (no row with id 'no-such-id' exists).
+    await services.update(
+      '00000000-0000-0000-0000-000000000000',
+      userId,
+      // @ts-expect-error -- user_id is not a valid ServiceUpdate field
+      { user_id: otherUserId },
+    );
+  });
 });
 
 describe('delete', () => {

@@ -210,11 +210,27 @@ export type NewOAuthAuthorization = Insertable<OAuthAuthorizationsTable>;
 
 export type Service = Selectable<ServicesTable>;
 export type NewService = Insertable<ServicesTable>;
-export type ServiceUpdate = Updateable<ServicesTable>;
+/**
+ * `user_id` excluded: it is how `update()`'s own `WHERE` establishes
+ * ownership, and Kysely's generated `Updateable` would otherwise happily
+ * type-check `{user_id: someoneElses}` as a valid patch. That combined with
+ * `ServiceRepository.update`'s `WHERE id = ? AND user_id = ?` matching the
+ * row's *old* owner would let a caller reassign a service to another
+ * tenant's account in the same statement that is supposed to be scoped to
+ * this one.
+ */
+export type ServiceUpdate = Omit<Updateable<ServicesTable>, 'user_id'>;
 
 export type Endpoint = Selectable<EndpointsTable>;
 export type NewEndpoint = Insertable<EndpointsTable>;
-export type EndpointUpdate = Updateable<EndpointsTable>;
+/**
+ * `user_id` and `service_id` excluded, same reasoning as `ServiceUpdate`:
+ * an endpoint patch that could rewrite either would transfer the endpoint
+ * (and its headers and tags) to a different service or tenant, satisfying
+ * the composite (service_id, user_id) foreign key at the *destination*
+ * while `update()`'s `WHERE` only ever checked the row's *original* owner.
+ */
+export type EndpointUpdate = Omit<Updateable<EndpointsTable>, 'user_id' | 'service_id'>;
 
 export type Header = Selectable<HeadersTable>;
 export type NewHeader = Insertable<HeadersTable>;
