@@ -81,6 +81,10 @@ function getBlockList(): BlockList {
   bl.addAddress('::', 'ipv6');
   bl.addSubnet('fc00::', 7, 'ipv6');
   bl.addSubnet('fe80::', 10, 'ipv6');
+  // Deprecated by RFC 3879, but "deprecated" is not "gone": some networks
+  // still route site-local IPv6, and fec0::/10 falls outside every other
+  // range above (it shares no prefix with fc00::/7 or fe80::/10).
+  bl.addSubnet('fec0::', 10, 'ipv6');
   // The deprecated "IPv4-compatible" IPv6 form, ::a.b.c.d -- e.g. ::127.0.0.1,
   // which re-serializes as ::7f00:1 and is NOT covered by BlockList's
   // IPv4-mapped (::ffff:a.b.c.d) cross-family matching, confirmed by test:

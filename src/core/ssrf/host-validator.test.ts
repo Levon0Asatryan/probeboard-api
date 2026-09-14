@@ -113,6 +113,7 @@ describe('IPv6 forms', () => {
     ['IPv4-compatible (deprecated)', 'http://[::127.0.0.1]/'],
     ['unique local', 'http://[fd12:3456:789a::1]/'],
     ['link-local', 'http://[fe80::1]/'],
+    ['site-local (deprecated by RFC 3879, still routed on some networks)', 'http://[fec0::1]/'],
     ["AWS IMDS's IPv6 metadata address", 'http://[fd00:ec2::254]/'],
   ])('%s rejected as ADDRESS_NOT_ALLOWED', async (_label, url) => {
     await rejects(url, 'ADDRESS_NOT_ALLOWED');
