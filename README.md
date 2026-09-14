@@ -74,7 +74,10 @@ validated by a zod schema **before anything else is constructed**. An invalid or
 missing value stops the process at boot with a message naming every offending
 key, rather than surfacing as a confusing failure later.
 
-`DATABASE_URL` is the only variable without a default. See
+`DATABASE_URL` and `HEADER_ENCRYPTION_KEY` are the only variables without a
+default -- both must be set, or the process refuses to boot. `.env.example`
+ships a local-dev-only value for `HEADER_ENCRYPTION_KEY`; generate your own
+for anything beyond a laptop with `openssl rand -base64 32`. See
 [`.env.example`](.env.example) for the full list.
 
 Two worth understanding:
