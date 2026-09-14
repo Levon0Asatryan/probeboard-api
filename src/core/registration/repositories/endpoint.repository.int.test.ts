@@ -153,6 +153,73 @@ describe('pause and resume', () => {
   });
 });
 
+describe('listForService excludes another user’s endpoints', () => {
+  it('does not return an endpoint belonging to another user, even under the same-looking service id', async () => {
+    await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/mine',
+    });
+
+    // Another user's own service and endpoint -- a different service_id, so
+    // this alone would not prove the user_id predicate does anything; the
+    // real proof is calling listForService with *this* user's serviceId but
+    // *the other user's* id and getting nothing back.
+    const otherService = await services.create({
+      user_id: otherUserId,
+      name: 'Other API',
+      base_url: 'https://other.example.com',
+    });
+    await endpoints.create({
+      service_id: otherService.id,
+      user_id: otherUserId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/theirs',
+    });
+
+    await expect(endpoints.listForService(serviceId, otherUserId)).resolves.toEqual([]);
+    const mine = await endpoints.listForService(serviceId, userId);
+    expect(mine.map((e) => e.path)).toEqual(['/mine']);
+  });
+});
+
+describe('list excludes another user’s endpoints', () => {
+  it('only returns endpoints owned by the requesting user', async () => {
+    await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/mine',
+    });
+    const otherService = await services.create({
+      user_id: otherUserId,
+      name: 'Other API',
+      base_url: 'https://other.example.com',
+    });
+    await endpoints.create({
+      service_id: otherService.id,
+      user_id: otherUserId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      method: 'GET',
+      path: '/theirs',
+    });
+
+    const mine = await endpoints.list(userId, { limit: 10 });
+    expect(mine.map((e) => e.path)).toEqual(['/mine']);
+
+    const theirs = await endpoints.list(otherUserId, { limit: 10 });
+    expect(theirs.map((e) => e.path)).toEqual(['/theirs']);
+  });
+});
+
 describe('countForUser', () => {
   it('counts only endpoints belonging to this user, across services', async () => {
     const service2 = await services.create({
