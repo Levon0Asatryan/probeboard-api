@@ -13,6 +13,7 @@ let endpoints: EndpointRepository;
 let headers: HeaderRepository;
 let users: UserRepository;
 let userId: string;
+let otherUserId: string;
 let serviceId: string;
 let endpointId: string;
 
@@ -32,7 +33,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(ctx.pool);
   const user = await users.create('alice@example.com', '$argon2id$hash');
+  const other = await users.create('bob@example.com', '$argon2id$hash');
   userId = user!.id;
+  otherUserId = other!.id;
   const service = await services.create({
     user_id: userId,
     name: 'API',
@@ -54,13 +57,15 @@ beforeEach(async () => {
 describe('the headers_secret_shape CHECK', () => {
   it('rejects a non-secret row with no value', async () => {
     await expect(
-      headers.replaceForService(serviceId, [{ name: 'X-Foo', is_secret: false, value: null }]),
+      headers.replaceForService(serviceId, userId, [
+        { name: 'X-Foo', is_secret: false, value: null },
+      ]),
     ).rejects.toThrow();
   });
 
   it('rejects a secret row with a plaintext value and no ciphertext at all', async () => {
     await expect(
-      headers.replaceForService(serviceId, [
+      headers.replaceForService(serviceId, userId, [
         { name: 'Authorization', is_secret: true, value: 'leaked' },
       ]),
     ).rejects.toThrow();
@@ -73,7 +78,7 @@ describe('the headers_secret_shape CHECK', () => {
     // still be rejected, or a secret could persist its plaintext right next
     // to its own encrypted form.
     await expect(
-      headers.replaceForService(serviceId, [
+      headers.replaceForService(serviceId, userId, [
         {
           name: 'Authorization',
           is_secret: true,
@@ -93,7 +98,7 @@ describe('the headers_secret_shape CHECK', () => {
     // secret_ciphertext/iv/auth-tag "must be null" half of the CHECK would
     // leave those green while letting this row through.
     await expect(
-      headers.replaceForService(serviceId, [
+      headers.replaceForService(serviceId, userId, [
         {
           name: 'X-Foo',
           is_secret: false,
@@ -107,7 +112,7 @@ describe('the headers_secret_shape CHECK', () => {
   });
 
   it('accepts a secret row with ciphertext and no plaintext value', async () => {
-    const result = await headers.replaceForService(serviceId, [
+    const result = await headers.replaceForService(serviceId, userId, [
       {
         name: 'Authorization',
         is_secret: true,
@@ -118,7 +123,7 @@ describe('the headers_secret_shape CHECK', () => {
       },
     ]);
     expect(result).toHaveLength(1);
-    expect(result[0].value).toBeNull();
+    expect(result?.[0].value).toBeNull();
   });
 
   it.each([
@@ -129,12 +134,44 @@ describe('the headers_secret_shape CHECK', () => {
     'rejects a secret row (value null) missing just %s -- a row that could never be decrypted later',
     async (_missing, partial) => {
       await expect(
-        headers.replaceForService(serviceId, [
+        headers.replaceForService(serviceId, userId, [
           { name: 'Authorization', is_secret: true, value: null, ...partial },
         ]),
       ).rejects.toThrow();
     },
   );
+});
+
+describe('ownership scoping -- a foreign parent id behaves as absent', () => {
+  it('replaceForService returns undefined, and writes nothing, for a service owned by someone else', async () => {
+    const result = await headers.replaceForService(serviceId, otherUserId, [
+      { name: 'X-Attacker', is_secret: false, value: 'v' },
+    ]);
+    expect(result).toBeUndefined();
+    await expect(headers.listForService(serviceId, userId)).resolves.toEqual([]);
+  });
+
+  it('replaceForEndpoint returns undefined, and writes nothing, for an endpoint owned by someone else', async () => {
+    const result = await headers.replaceForEndpoint(endpointId, otherUserId, [
+      { name: 'X-Attacker', is_secret: false, value: 'v' },
+    ]);
+    expect(result).toBeUndefined();
+    await expect(headers.listForEndpoint(endpointId, userId)).resolves.toEqual([]);
+  });
+
+  it('listForService returns empty, not the real owner’s headers, for a foreign caller', async () => {
+    await headers.replaceForService(serviceId, userId, [
+      { name: 'X-Real', is_secret: false, value: 'v' },
+    ]);
+    await expect(headers.listForService(serviceId, otherUserId)).resolves.toEqual([]);
+  });
+
+  it('listForEndpoint returns empty, not the real owner’s headers, for a foreign caller', async () => {
+    await headers.replaceForEndpoint(endpointId, userId, [
+      { name: 'X-Real', is_secret: false, value: 'v' },
+    ]);
+    await expect(headers.listForEndpoint(endpointId, otherUserId)).resolves.toEqual([]);
+  });
 });
 
 describe('the headers_one_owner CHECK', () => {
@@ -164,35 +201,41 @@ describe('the headers_one_owner CHECK', () => {
 
 describe('replaceForService', () => {
   it('replaces the full set atomically -- old rows gone, new rows present', async () => {
-    await headers.replaceForService(serviceId, [{ name: 'X-A', is_secret: false, value: '1' }]);
-    await headers.replaceForService(serviceId, [{ name: 'X-B', is_secret: false, value: '2' }]);
+    await headers.replaceForService(serviceId, userId, [
+      { name: 'X-A', is_secret: false, value: '1' },
+    ]);
+    await headers.replaceForService(serviceId, userId, [
+      { name: 'X-B', is_secret: false, value: '2' },
+    ]);
 
-    const list = await headers.listForService(serviceId);
+    const list = await headers.listForService(serviceId, userId);
     expect(list.map((h) => h.name)).toEqual(['X-B']);
   });
 
   it('clears every header when given an empty list', async () => {
-    await headers.replaceForService(serviceId, [{ name: 'X-A', is_secret: false, value: '1' }]);
-    await headers.replaceForService(serviceId, []);
+    await headers.replaceForService(serviceId, userId, [
+      { name: 'X-A', is_secret: false, value: '1' },
+    ]);
+    await headers.replaceForService(serviceId, userId, []);
 
-    await expect(headers.listForService(serviceId)).resolves.toEqual([]);
+    await expect(headers.listForService(serviceId, userId)).resolves.toEqual([]);
   });
 });
 
 describe('replaceForEndpoint', () => {
   it('is independent of the service’s own headers', async () => {
-    await headers.replaceForService(serviceId, [
+    await headers.replaceForService(serviceId, userId, [
       { name: 'X-Service', is_secret: false, value: 's' },
     ]);
-    await headers.replaceForEndpoint(endpointId, [
+    await headers.replaceForEndpoint(endpointId, userId, [
       { name: 'X-Endpoint', is_secret: false, value: 'e' },
     ]);
 
     await expect(
-      headers.listForService(serviceId).then((l) => l.map((h) => h.name)),
+      headers.listForService(serviceId, userId).then((l) => l.map((h) => h.name)),
     ).resolves.toEqual(['X-Service']);
     await expect(
-      headers.listForEndpoint(endpointId).then((l) => l.map((h) => h.name)),
+      headers.listForEndpoint(endpointId, userId).then((l) => l.map((h) => h.name)),
     ).resolves.toEqual(['X-Endpoint']);
   });
 });
@@ -200,7 +243,7 @@ describe('replaceForEndpoint', () => {
 describe('case-insensitive uniqueness per owner', () => {
   it('rejects two headers differing only in case, under the same service', async () => {
     await expect(
-      headers.replaceForService(serviceId, [
+      headers.replaceForService(serviceId, userId, [
         { name: 'X-Api-Key', is_secret: false, value: '1' },
         { name: 'x-api-key', is_secret: false, value: '2' },
       ]),
@@ -211,7 +254,7 @@ describe('case-insensitive uniqueness per owner', () => {
     // headers_endpoint_name_key is a separate index from
     // headers_service_name_key -- this row alone proves it exists.
     await expect(
-      headers.replaceForEndpoint(endpointId, [
+      headers.replaceForEndpoint(endpointId, userId, [
         { name: 'X-Api-Key', is_secret: false, value: '1' },
         { name: 'x-api-key', is_secret: false, value: '2' },
       ]),
@@ -283,10 +326,12 @@ describe('replaceForService and replaceForEndpoint serialize against a concurren
         );
       },
       () =>
-        headers.replaceForService(serviceId, [{ name: 'X-Later', is_secret: false, value: '2' }]),
+        headers.replaceForService(serviceId, userId, [
+          { name: 'X-Later', is_secret: false, value: '2' },
+        ]),
     );
 
-    const list = await headers.listForService(serviceId);
+    const list = await headers.listForService(serviceId, userId);
     expect(list.map((h) => h.name)).toEqual(['X-Later']);
   });
 
@@ -302,30 +347,38 @@ describe('replaceForService and replaceForEndpoint serialize against a concurren
         );
       },
       () =>
-        headers.replaceForEndpoint(endpointId, [{ name: 'X-Later', is_secret: false, value: '2' }]),
+        headers.replaceForEndpoint(endpointId, userId, [
+          { name: 'X-Later', is_secret: false, value: '2' },
+        ]),
     );
 
-    const list = await headers.listForEndpoint(endpointId);
+    const list = await headers.listForEndpoint(endpointId, userId);
     expect(list.map((h) => h.name)).toEqual(['X-Later']);
   });
 });
 
 describe('cascade delete', () => {
   it('deleting the endpoint deletes its headers', async () => {
-    await headers.replaceForEndpoint(endpointId, [{ name: 'X-A', is_secret: false, value: '1' }]);
+    await headers.replaceForEndpoint(endpointId, userId, [
+      { name: 'X-A', is_secret: false, value: '1' },
+    ]);
 
     await endpoints.delete(endpointId, userId);
 
-    await expect(headers.listForEndpoint(endpointId)).resolves.toEqual([]);
+    await expect(headers.listForEndpoint(endpointId, userId)).resolves.toEqual([]);
   });
 
   it('deleting the service deletes its own headers, not the endpoint’s', async () => {
-    await headers.replaceForService(serviceId, [{ name: 'X-S', is_secret: false, value: '1' }]);
-    await headers.replaceForEndpoint(endpointId, [{ name: 'X-E', is_secret: false, value: '2' }]);
+    await headers.replaceForService(serviceId, userId, [
+      { name: 'X-S', is_secret: false, value: '1' },
+    ]);
+    await headers.replaceForEndpoint(endpointId, userId, [
+      { name: 'X-E', is_secret: false, value: '2' },
+    ]);
 
     await services.delete(serviceId, userId);
 
-    await expect(headers.listForService(serviceId)).resolves.toEqual([]);
-    await expect(headers.listForEndpoint(endpointId)).resolves.toEqual([]);
+    await expect(headers.listForService(serviceId, userId)).resolves.toEqual([]);
+    await expect(headers.listForEndpoint(endpointId, userId)).resolves.toEqual([]);
   });
 });

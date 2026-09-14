@@ -54,6 +54,34 @@ beforeEach(async () => {
   endpointId = endpoint.id;
 });
 
+describe('ownership scoping -- a foreign parent id behaves as absent', () => {
+  it('replaceForService returns undefined, and writes nothing, for a service owned by someone else', async () => {
+    const result = await tags.replaceForService(serviceId, otherUserId, [
+      { key: 'attacker', value: 'v' },
+    ]);
+    expect(result).toBeUndefined();
+    await expect(tags.listForService(serviceId, userId)).resolves.toEqual([]);
+  });
+
+  it('replaceForEndpoint returns undefined, and writes nothing, for an endpoint owned by someone else', async () => {
+    const result = await tags.replaceForEndpoint(endpointId, otherUserId, [
+      { key: 'attacker', value: 'v' },
+    ]);
+    expect(result).toBeUndefined();
+    await expect(tags.listForEndpoint(endpointId, userId)).resolves.toEqual([]);
+  });
+
+  it('listForService returns empty, not the real owner’s tags, for a foreign caller', async () => {
+    await tags.replaceForService(serviceId, userId, [{ key: 'real', value: 'v' }]);
+    await expect(tags.listForService(serviceId, otherUserId)).resolves.toEqual([]);
+  });
+
+  it('listForEndpoint returns empty, not the real owner’s tags, for a foreign caller', async () => {
+    await tags.replaceForEndpoint(endpointId, userId, [{ key: 'real', value: 'v' }]);
+    await expect(tags.listForEndpoint(endpointId, otherUserId)).resolves.toEqual([]);
+  });
+});
+
 describe('the tags_one_owner CHECK', () => {
   it('rejects a row with neither owner', async () => {
     await expect(
@@ -73,13 +101,13 @@ describe('the tags_one_owner CHECK', () => {
 
 describe('replaceForService', () => {
   it('sets and replaces key:value tags atomically', async () => {
-    await tags.replaceForService(serviceId, [{ key: 'env', value: 'prod' }]);
-    await tags.replaceForService(serviceId, [
+    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(serviceId, userId, [
       { key: 'env', value: 'staging' },
       { key: 'team', value: 'payments' },
     ]);
 
-    const list = await tags.listForService(serviceId);
+    const list = await tags.listForService(serviceId, userId);
     expect(list.map((t) => [t.key, t.value]).sort()).toEqual([
       ['env', 'staging'],
       ['team', 'payments'],
@@ -88,7 +116,7 @@ describe('replaceForService', () => {
 
   it('rejects two rows with the same key on the same owner', async () => {
     await expect(
-      tags.replaceForService(serviceId, [
+      tags.replaceForService(serviceId, userId, [
         { key: 'env', value: 'prod' },
         { key: 'env', value: 'staging' },
       ]),
@@ -99,7 +127,7 @@ describe('replaceForService', () => {
     // tags_endpoint_key_key is a separate index from tags_service_key_key --
     // this row alone proves it exists.
     await expect(
-      tags.replaceForEndpoint(endpointId, [
+      tags.replaceForEndpoint(endpointId, userId, [
         { key: 'env', value: 'prod' },
         { key: 'env', value: 'staging' },
       ]),
@@ -114,15 +142,15 @@ describe('filterServiceIdsByTag', () => {
       name: 'Other',
       base_url: 'https://other.example.com',
     });
-    await tags.replaceForService(serviceId, [{ key: 'env', value: 'prod' }]);
-    await tags.replaceForService(otherService.id, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(otherService.id, otherUserId, [{ key: 'env', value: 'prod' }]);
 
     const found = await tags.filterServiceIdsByTag(userId, 'env', 'prod');
     expect(found).toEqual([serviceId]);
   });
 
   it('does not match a different value for the same key', async () => {
-    await tags.replaceForService(serviceId, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
 
     await expect(tags.filterServiceIdsByTag(userId, 'env', 'staging')).resolves.toEqual([]);
   });
@@ -130,11 +158,11 @@ describe('filterServiceIdsByTag', () => {
 
 describe('cascade delete', () => {
   it('deleting the service deletes its tags', async () => {
-    await tags.replaceForService(serviceId, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
 
     await services.delete(serviceId, userId);
 
-    await expect(tags.listForService(serviceId)).resolves.toEqual([]);
+    await expect(tags.listForService(serviceId, userId)).resolves.toEqual([]);
   });
 });
 
@@ -183,10 +211,10 @@ describe('replaceForService and replaceForEndpoint serialize against a concurren
           [serviceId],
         );
       },
-      () => tags.replaceForService(serviceId, [{ key: 'env', value: 'later' }]),
+      () => tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'later' }]),
     );
 
-    const list = await tags.listForService(serviceId);
+    const list = await tags.listForService(serviceId, userId);
     expect(list.map((t) => [t.key, t.value])).toEqual([['env', 'later']]);
   });
 
@@ -201,10 +229,10 @@ describe('replaceForService and replaceForEndpoint serialize against a concurren
           [endpointId],
         );
       },
-      () => tags.replaceForEndpoint(endpointId, [{ key: 'env', value: 'later' }]),
+      () => tags.replaceForEndpoint(endpointId, userId, [{ key: 'env', value: 'later' }]),
     );
 
-    const list = await tags.listForEndpoint(endpointId);
+    const list = await tags.listForEndpoint(endpointId, userId);
     expect(list.map((t) => [t.key, t.value])).toEqual([['env', 'later']]);
   });
 });

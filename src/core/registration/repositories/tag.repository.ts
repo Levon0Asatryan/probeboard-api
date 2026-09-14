@@ -9,41 +9,55 @@ export type NewOwnedTag = Omit<NewTag, 'service_id' | 'endpoint_id'>;
 export class TagRepository {
   constructor(private readonly db: DbService) {}
 
-  async listForService(serviceId: string): Promise<Tag[]> {
+  /**
+   * Scoped by owner in the query itself, matching `HeaderRepository`'s own
+   * version of this method -- see its comment.
+   */
+  async listForService(serviceId: string, userId: string): Promise<Tag[]> {
     return this.db.kysely
       .selectFrom('tags')
-      .selectAll()
-      .where('service_id', '=', serviceId)
-      .orderBy('key', 'asc')
+      .innerJoin('services', 'services.id', 'tags.service_id')
+      .select(['tags.id', 'tags.service_id', 'tags.endpoint_id', 'tags.key', 'tags.value'])
+      .where('tags.service_id', '=', serviceId)
+      .where('services.user_id', '=', userId)
+      .orderBy('tags.key', 'asc')
       .execute();
   }
 
-  async listForEndpoint(endpointId: string): Promise<Tag[]> {
+  async listForEndpoint(endpointId: string, userId: string): Promise<Tag[]> {
     return this.db.kysely
       .selectFrom('tags')
-      .selectAll()
-      .where('endpoint_id', '=', endpointId)
-      .orderBy('key', 'asc')
+      .innerJoin('endpoints', 'endpoints.id', 'tags.endpoint_id')
+      .select(['tags.id', 'tags.service_id', 'tags.endpoint_id', 'tags.key', 'tags.value'])
+      .where('tags.endpoint_id', '=', endpointId)
+      .where('endpoints.user_id', '=', userId)
+      .orderBy('tags.key', 'asc')
       .execute();
   }
 
   /**
-   * Same replace-atomically shape as `HeaderRepository`, including the
-   * owner-row lock that serializes two concurrent full-set replacements --
-   * see its comment.
+   * Same replace-atomically-and-owner-scoped shape as `HeaderRepository`,
+   * including the owner-row lock that serializes two concurrent full-set
+   * replacements and the ownership check folded into it -- see its comment.
+   * Returns `undefined`, not an empty replace, when `serviceId` does not
+   * belong to `userId`.
    */
   async replaceForService(
     serviceId: string,
+    userId: string,
     rows: NewOwnedTag[],
     executor?: Kysely<Database>,
-  ): Promise<Tag[]> {
-    const run = async (trx: Kysely<Database>): Promise<Tag[]> => {
-      await trx
+  ): Promise<Tag[] | undefined> {
+    const run = async (trx: Kysely<Database>): Promise<Tag[] | undefined> => {
+      const owned = await trx
         .selectFrom('services')
         .select('id')
         .where('id', '=', serviceId)
+        .where('user_id', '=', userId)
         .forUpdate()
-        .execute();
+        .executeTakeFirst();
+      if (!owned) return undefined;
+
       await trx.deleteFrom('tags').where('service_id', '=', serviceId).execute();
       if (rows.length === 0) return [];
       return trx
@@ -59,16 +73,20 @@ export class TagRepository {
 
   async replaceForEndpoint(
     endpointId: string,
+    userId: string,
     rows: NewOwnedTag[],
     executor?: Kysely<Database>,
-  ): Promise<Tag[]> {
-    const run = async (trx: Kysely<Database>): Promise<Tag[]> => {
-      await trx
+  ): Promise<Tag[] | undefined> {
+    const run = async (trx: Kysely<Database>): Promise<Tag[] | undefined> => {
+      const owned = await trx
         .selectFrom('endpoints')
         .select('id')
         .where('id', '=', endpointId)
+        .where('user_id', '=', userId)
         .forUpdate()
-        .execute();
+        .executeTakeFirst();
+      if (!owned) return undefined;
+
       await trx.deleteFrom('tags').where('endpoint_id', '=', endpointId).execute();
       if (rows.length === 0) return [];
       return trx
