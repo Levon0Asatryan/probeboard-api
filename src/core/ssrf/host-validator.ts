@@ -107,6 +107,10 @@ function getBlockList(): BlockList {
   // lengths correctly is complexity this guard does not need to take on.
   bl.addSubnet('64:ff9b::', 96, 'ipv6'); // RFC 6052 well-known prefix
   bl.addSubnet('64:ff9b:1::', 48, 'ipv6'); // RFC 8215 local-use prefix
+  // IPv6 multicast, the counterpart to the IPv4 224.0.0.0/4 rule above --
+  // site-scoped multicast (e.g. ff05::1) is not "a public address", it is
+  // network-scoped, and net.isIP recognizes it fine without this rule.
+  bl.addSubnet('ff00::', 8, 'ipv6');
 
   blockList = bl;
   return bl;
