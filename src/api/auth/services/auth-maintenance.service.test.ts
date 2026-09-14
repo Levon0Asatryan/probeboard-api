@@ -7,6 +7,7 @@ import type { SessionRepository } from '../repositories/session.repository.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   AUTH_ATTEMPT_RETENTION_MS: '3600000',
   AUTH_SWEEP_INTERVAL_MS: '900000',
   SESSION_RETENTION_DAYS: '7',

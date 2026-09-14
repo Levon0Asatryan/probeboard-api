@@ -273,6 +273,38 @@ const probing = {
   ),
 };
 
+/**
+ * Registration (M2): secret request-header storage. Only the api reads this.
+ *
+ * No default, unlike almost everything else here -- a default key would mean
+ * every deployment that forgets to set one shares the same key, which is
+ * worse than refusing to boot. Required, like DATABASE_URL, validated for
+ * shape rather than merely presence: 32 raw bytes, base64-encoded, the exact
+ * width AES-256-GCM needs. Generate one with `openssl rand -base64 32`.
+ *
+ * No rotation support in M2 -- a single active key. Rotating it means
+ * re-encrypting every stored secret header, which is future work, not a
+ * config concern; recorded as a limitation in docs/m2-plan.md §10.
+ */
+const registration = {
+  HEADER_ENCRYPTION_KEY: z.string().refine(
+    (v) => {
+      try {
+        const decoded = Buffer.from(v, 'base64');
+        // Buffer.from(..., 'base64') silently drops characters that are not
+        // valid base64 instead of rejecting them -- a value with a stray
+        // trailing or embedded character can still decode to exactly 32
+        // bytes, differing from what was intended. Re-encoding and comparing
+        // catches that: only a canonical encoding round-trips to itself.
+        return decoded.length === 32 && decoded.toString('base64') === v;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'must be 32 bytes, base64-encoded -- generate one with `openssl rand -base64 32`' },
+  ),
+};
+
 /** Claim-based scheduling (NFR-2, NFR-3, NFR-4). */
 const scheduler = {
   // Must be unique per running instance: it is written to `leased_by`, so an
@@ -295,6 +327,7 @@ const baseSchema = z.object({
   ...database,
   ...oauth,
   ...probing,
+  ...registration,
   ...scheduler,
 });
 

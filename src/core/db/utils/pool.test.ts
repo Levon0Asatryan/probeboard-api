@@ -5,6 +5,7 @@ import { createPool } from './pool.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@127.0.0.1:1/none',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
 });
 
 describe('createDb', () => {

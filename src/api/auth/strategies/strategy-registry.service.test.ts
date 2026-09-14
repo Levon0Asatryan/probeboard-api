@@ -6,7 +6,11 @@ import { GoogleStrategy } from './google.strategy.js';
 import { OAuthStrategyRegistry } from './strategy-registry.service.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
-  loadConfig({ DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard', ...env });
+  loadConfig({
+    DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+    HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
+    ...env,
+  });
 
 const enabled = (env: Partial<NodeJS.ProcessEnv> = {}) =>
   cfg({

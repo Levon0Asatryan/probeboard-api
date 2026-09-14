@@ -33,6 +33,7 @@ const NO_SESSION = '00000000-0000-0000-0000-000000000000';
 
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  process.env.HEADER_ENCRYPTION_KEY = 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=';
   // Production Argon2 cost, unlike the other suites, which turn it down for
   // speed. The timing assertion below needs the hash to dominate the
   // measurement: at 8 MiB and one pass the verification is faster than the

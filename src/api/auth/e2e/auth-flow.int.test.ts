@@ -35,6 +35,7 @@ const IP = '203.0.113.10';
 
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  process.env.HEADER_ENCRYPTION_KEY = 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=';
   process.env.ARGON2_MEMORY_KIB = '8192';
   process.env.ARGON2_TIME_COST = '1';
   process.env.AUTH_MAX_FAILURES_PER_EMAIL = '3';

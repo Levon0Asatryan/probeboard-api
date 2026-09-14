@@ -70,6 +70,9 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       DATABASE_URL: postgres://probeboard:probeboard@localhost:5432/probeboard
+      # The migrator loads the full app config just for DATABASE_URL, so
+      # every required key needs a value here too.
+      HEADER_ENCRYPTION_KEY: dqLhOBUQykRUIXmfvJzR5v52vAm8SpLNIPreseVmKfo=
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

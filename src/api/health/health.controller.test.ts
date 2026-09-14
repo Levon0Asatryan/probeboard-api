@@ -36,6 +36,7 @@ function dbThat(outcome: 'answers' | 'fails', err: Error = DEFAULT_FAILURE) {
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   HEALTH_TIMEOUT_MS: '200',
 });
 

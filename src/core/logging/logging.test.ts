@@ -9,6 +9,7 @@ import { loggerOptions } from './index.js';
 function cfg(env: Partial<NodeJS.ProcessEnv> = {}) {
   return loadConfig({
     DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+    HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
     ...env,
   });
 }

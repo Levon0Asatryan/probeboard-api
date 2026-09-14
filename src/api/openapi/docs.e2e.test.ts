@@ -32,7 +32,10 @@ class MonitorsController {
 })
 class HarnessModule {}
 
-const base = { DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard' };
+const base = {
+  DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
+};
 
 async function serve(
   env: Record<string, string>,

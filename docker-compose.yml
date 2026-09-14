@@ -22,6 +22,12 @@ services:
     command: ['node', 'dist/core/db/migrator/cli.js', 'up']
     environment:
       DATABASE_URL: postgres://probeboard:probeboard@postgres:5432/probeboard
+      # The migrator loads the full app config just for DATABASE_URL, so
+      # every required key -- this one included -- has to be set here too.
+      # Fixed, like the Postgres password above: this stack is a local demo,
+      # not a place real secrets belong. `openssl rand -base64 32` for a real
+      # deployment.
+      HEADER_ENCRYPTION_KEY: 'dqLhOBUQykRUIXmfvJzR5v52vAm8SpLNIPreseVmKfo='
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +39,9 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://probeboard:probeboard@postgres:5432/probeboard
+      # Same fixed value as the migrate and worker services: a secret header
+      # encrypted by one process must be decryptable by the other two.
+      HEADER_ENCRYPTION_KEY: 'dqLhOBUQykRUIXmfvJzR5v52vAm8SpLNIPreseVmKfo='
       API_PORT: '3000'
       COOKIE_SECURE: 'false'
       # Browsable API documentation at http://127.0.0.1:3000/docs
@@ -84,6 +93,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://probeboard:probeboard@postgres:5432/probeboard
+      HEADER_ENCRYPTION_KEY: 'dqLhOBUQykRUIXmfvJzR5v52vAm8SpLNIPreseVmKfo='
     restart: unless-stopped
     depends_on:
       migrate:
