@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
@@ -133,41 +134,94 @@ describe('case-insensitive uniqueness per owner', () => {
   });
 });
 
-describe('replaceForService serializes against a concurrent replacement', () => {
-  it('blocks until a competing transaction holding the service row releases it', async () => {
-    // The barrier: a second real connection takes FOR SHARE on the service
-    // row and holds it open. FOR SHARE, not FOR UPDATE: inserting a header
-    // row already takes a FOR KEY SHARE lock on the service it references
-    // (Postgres's own foreign-key check), and FOR KEY SHARE does not
-    // conflict with another FOR KEY SHARE -- so a FOR UPDATE holder here
-    // would make this test pass even with replaceForService's own
-    // `.forUpdate()` removed, by relying on the FK check's incidental lock
-    // instead of the one this test means to prove. FOR SHARE conflicts only
-    // with FOR UPDATE / FOR NO KEY UPDATE, so it blocks replaceForService's
-    // explicit lock specifically and nothing else -- confirmed by removing
-    // `.forUpdate()` from replaceForService and re-running this test: it
-    // then fails, because the call resolves immediately instead of blocking.
-    const client = await ctx.pool.connect();
-    await client.query('BEGIN');
-    await client.query('SELECT id FROM services WHERE id = $1 FOR SHARE', [serviceId]);
+/**
+ * Forces a genuine two-writer race on `ownerTable`'s row and proves the
+ * result behaviorally: not merely that `run` blocks, but that after a real
+ * competing full replacement lands, `run`'s own full set is what survives --
+ * never a union of both, never a rejection.
+ *
+ * FOR SHARE, not FOR UPDATE, for the barrier itself: inserting a header or
+ * tag row already takes an incidental FOR KEY SHARE lock on the service or
+ * endpoint it references (Postgres's own foreign-key check), and FOR KEY
+ * SHARE does not conflict with another FOR KEY SHARE -- so a FOR UPDATE
+ * barrier would make every test below pass even with a method's own
+ * `.forUpdate()` removed, by relying on the FK check's incidental lock
+ * instead of the one under test. FOR SHARE conflicts only with FOR UPDATE /
+ * FOR NO KEY UPDATE, so it isolates each method's own explicit lock and
+ * nothing else. Confirmed per-call by removing that method's `.forUpdate()`
+ * and re-running: the assertion after `settled` then fails, because the
+ * call proceeds immediately instead of blocking.
+ *
+ * `competingWrite` runs the *other* full replacement directly as SQL, using
+ * the same barrier connection, standing in for a second concurrent call to
+ * the same repository method -- deterministic, where two real JS calls
+ * racing via Promise.all would only sometimes interleave into the bug.
+ */
+async function raceAgainstCompetingReplacement<T>(
+  ownerTable: 'services' | 'endpoints',
+  ownerId: string,
+  competingWrite: (client: PoolClient) => Promise<void>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const client = await ctx.pool.connect();
+  await client.query('BEGIN');
+  await client.query(`SELECT id FROM ${ownerTable} WHERE id = $1 FOR SHARE`, [ownerId]);
 
-    let settled = false;
-    const replaced = headers
-      .replaceForService(serviceId, [{ name: 'X-After-Lock', is_secret: false, value: '1' }])
-      .then((r) => {
-        settled = true;
-        return r;
-      });
+  let settled = false;
+  const result = run().then((r) => {
+    settled = true;
+    return r;
+  });
 
-    await new Promise((r) => setTimeout(r, 200));
-    // Still blocked: the competing transaction has not released the row yet.
-    expect(settled).toBe(false);
+  await new Promise((r) => setTimeout(r, 150));
+  expect(settled).toBe(false);
 
-    await client.query('COMMIT');
-    client.release();
+  await competingWrite(client);
+  await client.query('COMMIT');
+  client.release();
 
-    await replaced;
-    expect(settled).toBe(true);
+  const awaited = await result;
+  expect(settled).toBe(true);
+  return awaited;
+}
+
+describe('replaceForService and replaceForEndpoint serialize against a concurrent replacement', () => {
+  it('replaceForService: the final set is exactly the later call’s, never a union', async () => {
+    await raceAgainstCompetingReplacement(
+      'services',
+      serviceId,
+      async (client) => {
+        await client.query('DELETE FROM headers WHERE service_id = $1', [serviceId]);
+        await client.query(
+          "INSERT INTO headers (service_id, name, is_secret, value) VALUES ($1, 'X-Earlier', false, '1')",
+          [serviceId],
+        );
+      },
+      () =>
+        headers.replaceForService(serviceId, [{ name: 'X-Later', is_secret: false, value: '2' }]),
+    );
+
+    const list = await headers.listForService(serviceId);
+    expect(list.map((h) => h.name)).toEqual(['X-Later']);
+  });
+
+  it('replaceForEndpoint: the final set is exactly the later call’s, never a union', async () => {
+    await raceAgainstCompetingReplacement(
+      'endpoints',
+      endpointId,
+      async (client) => {
+        await client.query('DELETE FROM headers WHERE endpoint_id = $1', [endpointId]);
+        await client.query(
+          "INSERT INTO headers (endpoint_id, name, is_secret, value) VALUES ($1, 'X-Earlier', false, '1')",
+          [endpointId],
+        );
+      },
+      () =>
+        headers.replaceForEndpoint(endpointId, [{ name: 'X-Later', is_secret: false, value: '2' }]),
+    );
+
+    const list = await headers.listForEndpoint(endpointId);
+    expect(list.map((h) => h.name)).toEqual(['X-Later']);
   });
 });
 
