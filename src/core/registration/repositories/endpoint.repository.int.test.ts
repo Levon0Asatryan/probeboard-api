@@ -73,6 +73,30 @@ describe('create and findById', () => {
   });
 });
 
+describe('the config-owned columns have no database default', () => {
+  it.each(['interval_s', 'timeout_ms', 'max_redirects'] as const)(
+    'rejects an insert omitting %s -- restoring a hard-coded DEFAULT would silently let this through',
+    async (omit) => {
+      const full = { interval_s: 60, timeout_ms: 10000, max_redirects: 5 };
+      const { [omit]: _omitted, ...rest } = full;
+      const values = { service_id: serviceId, user_id: userId, ...rest };
+      const db = ctx.db;
+      // Bypasses Kysely's own type check on purpose: it already refuses this
+      // object at compile time now that these columns are required, which is
+      // itself evidence the fix holds. The cast reaches the same shape a raw
+      // insert (or a caller working around the type) would produce, to prove
+      // the database -- not just the type checker -- refuses it too.
+      await expect(
+        db
+          .insertInto('endpoints')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .values(values as any)
+          .execute(),
+      ).rejects.toThrow();
+    },
+  );
+});
+
 describe('the (service_id, method, path) unique index', () => {
   it('rejects a duplicate method+path under the same service', async () => {
     await endpoints.create({
