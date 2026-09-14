@@ -34,6 +34,30 @@ describe('describeError', () => {
     expect(describeError(new RangeError(''))).toBe('RangeError');
   });
 
+  it('includes the standard `cause` chain when present', () => {
+    const dnsFailure = Object.assign(new Error('the resolver refused the query'), {
+      code: 'SERVFAIL',
+    });
+    const err = new Error('the hostname could not be resolved');
+    (err as Error & { cause?: unknown }).cause = dnsFailure;
+    expect(describeError(err)).toBe(
+      'the hostname could not be resolved (cause: SERVFAIL: the resolver refused the query)',
+    );
+  });
+
+  it('does not duplicate the code when the cause message already is the code', () => {
+    const dnsFailure = Object.assign(new Error('SERVFAIL'), { code: 'SERVFAIL' });
+    const err = new Error('outer');
+    (err as Error & { cause?: unknown }).cause = dnsFailure;
+    expect(describeError(err)).toBe('outer (cause: SERVFAIL)');
+  });
+
+  it('renders a non-Error cause safely', () => {
+    const err = new Error('outer');
+    (err as Error & { cause?: unknown }).cause = 'a plain string cause';
+    expect(describeError(err)).toBe('outer (cause: a plain string cause)');
+  });
+
   it('handles an AggregateError that wraps nothing', () => {
     expect(describeError(new AggregateError([], ''))).toBe('AggregateError');
     expect(describeError(new AggregateError([], 'all attempts failed'))).toBe(
@@ -113,6 +137,15 @@ describe('describeError never throws', () => {
     );
     expect(() => describeError(hostile)).not.toThrow();
     expect(describeError(hostile)).toBe('[unrepresentable]');
+  });
+
+  it('handles a circular `cause` chain without recursing forever', () => {
+    // The traversal is deliberately one level deep, not recursive, so this
+    // cannot infinite-loop -- but prove it rather than assume it.
+    const a = new Error('a');
+    (a as Error & { cause?: unknown }).cause = a;
+    expect(() => describeError(a)).not.toThrow();
+    expect(describeError(a)).toBe('a (cause: a)');
   });
 
   it('handles an AggregateError whose members are hostile', () => {
