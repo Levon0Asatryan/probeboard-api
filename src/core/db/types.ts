@@ -150,7 +150,8 @@ export interface EndpointsTable {
   failure_threshold: Generated<number>;
   success_threshold: Generated<number>;
   follow_redirects: Generated<boolean>;
-  max_redirects: Generated<number>;
+  /** No database default -- the caller supplies it from validated config (docs/m2-plan.md, FR-21). */
+  max_redirects: number;
   assertions: JSONColumnType<EndpointAssertion[], string | undefined, string | undefined>;
   /** Pause/resume (FR-9). Inert until M4's scheduler reads it. */
   enabled: Generated<boolean>;

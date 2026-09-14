@@ -44,6 +44,7 @@ beforeEach(async () => {
     user_id: userId,
     interval_s: 60,
     timeout_ms: 10000,
+    max_redirects: 5,
     method: 'GET',
     path: '/orders',
   });

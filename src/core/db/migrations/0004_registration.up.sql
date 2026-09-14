@@ -56,7 +56,11 @@ CREATE TABLE endpoints (
     failure_threshold  smallint       NOT NULL DEFAULT 3,
     success_threshold  smallint       NOT NULL DEFAULT 2,
     follow_redirects   boolean        NOT NULL DEFAULT true,
-    max_redirects      smallint       NOT NULL DEFAULT 5,
+    -- No DEFAULT, same reasoning as interval_s/timeout_ms above: FR-21
+    -- makes the redirect count itself a bounded, per-endpoint value, so
+    -- the default when omitted belongs in validated config (PR4), not
+    -- baked into the schema.
+    max_redirects      smallint       NOT NULL,
     -- Structured, versioned (architecture §7.11 ADR-5), not a string DSL.
     assertions         jsonb          NOT NULL DEFAULT '[]',
     -- Pause/resume (FR-9). A paused endpoint is excluded once a scheduler

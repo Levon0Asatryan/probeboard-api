@@ -46,6 +46,7 @@ describe('create and findById', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
@@ -63,6 +64,7 @@ describe('create and findById', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
@@ -78,6 +80,7 @@ describe('the (service_id, method, path) unique index', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
@@ -88,6 +91,7 @@ describe('the (service_id, method, path) unique index', () => {
         user_id: userId,
         interval_s: 60,
         timeout_ms: 10000,
+        max_redirects: 5,
         method: 'GET',
         path: '/orders',
       }),
@@ -100,6 +104,7 @@ describe('the (service_id, method, path) unique index', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
@@ -110,6 +115,7 @@ describe('the (service_id, method, path) unique index', () => {
         user_id: userId,
         interval_s: 60,
         timeout_ms: 10000,
+        max_redirects: 5,
         method: 'POST',
         path: '/orders',
       }),
@@ -137,6 +143,7 @@ describe('pause and resume', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
@@ -160,6 +167,7 @@ describe('listForService excludes another user’s endpoints', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/mine',
     });
@@ -178,6 +186,7 @@ describe('listForService excludes another user’s endpoints', () => {
       user_id: otherUserId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/theirs',
     });
@@ -195,6 +204,7 @@ describe('list excludes another user’s endpoints', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/mine',
     });
@@ -208,6 +218,7 @@ describe('list excludes another user’s endpoints', () => {
       user_id: otherUserId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/theirs',
     });
@@ -237,6 +248,7 @@ describe('countForUser', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/a',
     });
@@ -245,6 +257,7 @@ describe('countForUser', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/b',
     });
@@ -253,6 +266,7 @@ describe('countForUser', () => {
       user_id: otherUserId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/c',
     });
@@ -270,6 +284,7 @@ describe('the endpoints_service_owner_fkey composite constraint', () => {
         user_id: otherUserId,
         interval_s: 60,
         timeout_ms: 10000,
+        max_redirects: 5,
         method: 'GET',
         path: '/z',
       }),
@@ -284,6 +299,7 @@ describe('cascade delete via service', () => {
       user_id: userId,
       interval_s: 60,
       timeout_ms: 10000,
+      max_redirects: 5,
       method: 'GET',
       path: '/orders',
     });
