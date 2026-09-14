@@ -53,6 +53,23 @@ beforeEach(async () => {
   endpointId = endpoint.id;
 });
 
+describe('the tags_one_owner CHECK', () => {
+  it('rejects a row with neither owner', async () => {
+    await expect(
+      ctx.db.insertInto('tags').values({ key: 'env', value: 'prod' }).execute(),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a row with both owners -- the XOR, not just "at least one"', async () => {
+    await expect(
+      ctx.db
+        .insertInto('tags')
+        .values({ service_id: serviceId, endpoint_id: endpointId, key: 'env', value: 'prod' })
+        .execute(),
+    ).rejects.toThrow();
+  });
+});
+
 describe('replaceForService', () => {
   it('sets and replaces key:value tags atomically', async () => {
     await tags.replaceForService(serviceId, [{ key: 'env', value: 'prod' }]);

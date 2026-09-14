@@ -88,6 +88,22 @@ describe('the headers_one_owner CHECK', () => {
       db.insertInto('headers').values({ name: 'X-Foo', is_secret: false, value: 'v' }).execute(),
     ).rejects.toThrow();
   });
+
+  it('rejects a row with both owners -- the XOR, not just "at least one"', async () => {
+    const db = ctx.db;
+    await expect(
+      db
+        .insertInto('headers')
+        .values({
+          service_id: serviceId,
+          endpoint_id: endpointId,
+          name: 'X-Foo',
+          is_secret: false,
+          value: 'v',
+        })
+        .execute(),
+    ).rejects.toThrow();
+  });
 });
 
 describe('replaceForService', () => {
