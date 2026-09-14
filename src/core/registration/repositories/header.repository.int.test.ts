@@ -119,6 +119,21 @@ describe('the headers_secret_shape CHECK', () => {
     expect(result).toHaveLength(1);
     expect(result[0].value).toBeNull();
   });
+
+  it.each([
+    ['secret_ciphertext', { secret_iv: Buffer.from('iv12'), secret_auth_tag: Buffer.from('tag') }],
+    ['secret_iv', { secret_ciphertext: Buffer.from('ct'), secret_auth_tag: Buffer.from('tag') }],
+    ['secret_auth_tag', { secret_ciphertext: Buffer.from('ct'), secret_iv: Buffer.from('iv12') }],
+  ])(
+    'rejects a secret row (value null) missing just %s -- a row that could never be decrypted later',
+    async (_missing, partial) => {
+      await expect(
+        headers.replaceForService(serviceId, [
+          { name: 'Authorization', is_secret: true, value: null, ...partial },
+        ]),
+      ).rejects.toThrow();
+    },
+  );
 });
 
 describe('the headers_one_owner CHECK', () => {
@@ -185,6 +200,17 @@ describe('case-insensitive uniqueness per owner', () => {
   it('rejects two headers differing only in case, under the same service', async () => {
     await expect(
       headers.replaceForService(serviceId, [
+        { name: 'X-Api-Key', is_secret: false, value: '1' },
+        { name: 'x-api-key', is_secret: false, value: '2' },
+      ]),
+    ).rejects.toThrow();
+  });
+
+  it('rejects two headers differing only in case, under the same endpoint', async () => {
+    // headers_endpoint_name_key is a separate index from
+    // headers_service_name_key -- this row alone proves it exists.
+    await expect(
+      headers.replaceForEndpoint(endpointId, [
         { name: 'X-Api-Key', is_secret: false, value: '1' },
         { name: 'x-api-key', is_secret: false, value: '2' },
       ]),

@@ -93,6 +93,17 @@ describe('replaceForService', () => {
       ]),
     ).rejects.toThrow();
   });
+
+  it('rejects two rows with the same key on the same endpoint', async () => {
+    // tags_endpoint_key_key is a separate index from tags_service_key_key --
+    // this row alone proves it exists.
+    await expect(
+      tags.replaceForEndpoint(endpointId, [
+        { key: 'env', value: 'prod' },
+        { key: 'env', value: 'staging' },
+      ]),
+    ).rejects.toThrow();
+  });
 });
 
 describe('filterServiceIdsByTag', () => {
