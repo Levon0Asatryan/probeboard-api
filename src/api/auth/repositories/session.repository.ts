@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { type Kysely, sql } from 'kysely';
 import { DbService } from '../../../core/db/db.service.js';
 import type { Database, Session } from '../../../core/db/types.js';
+import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 
 /** A session joined to the user it authenticates. */
 export interface ActiveSession {
@@ -13,7 +14,10 @@ export interface ActiveSession {
 
 @Injectable()
 export class SessionRepository {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly users: UserRepository,
+  ) {}
 
   async create(
     userId: string,
@@ -154,23 +158,43 @@ export class SessionRepository {
    *
    * `except` is how changing a password logs out everywhere else without
    * logging out the person doing it (A-5).
+   *
+   * Locks the user row first (`UserRepository.lockForUpdate`), in whatever
+   * transaction this runs in -- its own, if the caller passed no `executor`,
+   * or the caller's, if it did. This is the other half of the users-before-
+   * sessions order `OAuthService.completeLink` also follows: without a lock
+   * in common, a session `completeLink` inserts *after* this statement's own
+   * read of "which sessions currently exist" is not part of what this UPDATE
+   * touches, under READ COMMITTED, no matter how the two transactions
+   * interleave or which one a row-level lock happens to block -- a fresh
+   * session from a link that should have been killed by this call survives
+   * it. Locking the same row first forces one call to run only after the
+   * other has fully committed, so whichever runs second sees everything the
+   * first one did.
    */
   async revokeAllForUser(
     userId: string,
     except?: string,
     now: Date = new Date(),
-    executor: Kysely<Database> = this.db.kysely,
+    executor?: Kysely<Database>,
   ): Promise<number> {
-    let query = executor
-      .updateTable('sessions')
-      .set({ revoked_at: now })
-      .where('user_id', '=', userId)
-      .where('revoked_at', 'is', null);
+    const run = async (trx: Kysely<Database>): Promise<number> => {
+      await this.users.lockForUpdate(userId, trx);
 
-    if (except) query = query.where('id', '!=', except);
+      let query = trx
+        .updateTable('sessions')
+        .set({ revoked_at: now })
+        .where('user_id', '=', userId)
+        .where('revoked_at', 'is', null);
 
-    const result = await query.executeTakeFirst();
-    return Number(result.numUpdatedRows);
+      if (except) query = query.where('id', '!=', except);
+
+      const result = await query.executeTakeFirst();
+      return Number(result.numUpdatedRows);
+    };
+
+    if (executor) return run(executor);
+    return this.db.kysely.transaction().execute(run);
   }
 
   /**
