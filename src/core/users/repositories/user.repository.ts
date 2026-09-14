@@ -124,4 +124,29 @@ export class UserRepository {
       .returningAll()
       .executeTakeFirst();
   }
+
+  /**
+   * Locks the user row for the rest of the caller's transaction, without
+   * changing it.
+   *
+   * The one shared mutex every credential of an account hangs off, so two
+   * writes that must not interleave -- issuing a session while revoking every
+   * session, say -- serialize against each other by both taking this lock
+   * first, rather than by locking whichever row each happens to touch. Must
+   * be called before any lock this transaction takes on that user's other
+   * rows (`sessions`, `oauth_identities`): a consistent users-first order is
+   * what keeps two transactions that both need both locks from deadlocking.
+   *
+   * Returns whether the user still exists, so a caller does not have to make
+   * a second trip to find out.
+   */
+  async lockForUpdate(id: string, executor: Kysely<Database> = this.db.kysely): Promise<boolean> {
+    const row = await executor
+      .selectFrom('users')
+      .select('id')
+      .where('id', '=', id)
+      .forUpdate()
+      .executeTakeFirst();
+    return row !== undefined;
+  }
 }

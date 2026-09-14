@@ -12,6 +12,7 @@ import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
 import type { Database, OAuthProvider } from '../../../core/db/types.js';
 import { describeError } from '../../../core/errors/describe.js';
+import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import { AuthService, RateLimitedError, type IssuedSession } from '../auth.service.js';
 import { OAuthProviderError } from '../interfaces/oauth-provider.js';
 import type { ProviderAccount } from '../repositories/oauth-identity.repository.js';
@@ -51,6 +52,7 @@ export class OAuthService {
   constructor(
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     private readonly db: DbService,
+    private readonly users: UserRepository,
     private readonly strategies: OAuthStrategyRegistry,
     private readonly authorizations: OAuthAuthorizationRepository,
     private readonly identities: OAuthIdentityService,
@@ -188,13 +190,23 @@ export class OAuthService {
    * A check-then-write with no lock leaves a window: `logout-all` commits
    * between the check and the write, and the write -- which the slow
    * provider round trip has already delayed by however long that took --
-   * proceeds anyway. `FOR UPDATE` on the session row inside the same
-   * transaction as the link and the issue closes it: a concurrent
-   * `revokeAllForUser` either committed before this transaction started (the
-   * lookup below then correctly finds nothing) or blocks until this one
-   * commits or rolls back (in which case the link already happened, which is
-   * correct -- the session really was live for the whole time this
-   * transaction held it).
+   * proceeds anyway. Locking the session row (`FOR UPDATE`) closes the
+   * window for the *check*, but not by itself for the *write*: this
+   * transaction's own `sessions.create` (inside `authService.issue`, via
+   * `toResult`) inserts a session that did not exist when `revokeAllForUser`
+   * took its row-level lock, so under READ COMMITTED that UPDATE's row set
+   * never includes it, however the two transactions interleave or block on
+   * each other. A revoke-all that should have caught this exact link's
+   * result would not.
+   *
+   * The fix is the same lock, on the row every credential of the account
+   * shares: the user row itself, taken first (before the session lock),
+   * matching the order `SessionRepository.revokeAllForUser` and
+   * `OAuthIdentityRepository.unlink` also use. With both sides locking users
+   * before sessions, one call fully commits before the other's lock
+   * acquisition unblocks -- so whichever runs second sees everything the
+   * first one did, including a session inserted after the first one's own
+   * scan would otherwise have missed it.
    */
   private async completeLink(
     linkUserId: string,
@@ -204,6 +216,8 @@ export class OAuthService {
     now: Date,
   ): Promise<CallbackResult> {
     return this.db.kysely.transaction().execute(async (trx) => {
+      await this.users.lockForUpdate(linkUserId, trx);
+
       const currentUserId = await this.currentSessionUserId(sessionToken, now, trx);
       if (currentUserId !== linkUserId) {
         this.logger.warn(

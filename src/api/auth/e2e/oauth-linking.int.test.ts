@@ -16,6 +16,7 @@ import type {
 import { GoogleStrategy } from '../strategies/google.strategy.js';
 import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
 import { OAuthIdentityRepository } from '../repositories/oauth-identity.repository.js';
+import { SessionRepository } from '../repositories/session.repository.js';
 import { oauthCookieName } from '../utils/oauth-cookie.js';
 import { sessionCookieName } from '../utils/session-cookie.js';
 
@@ -68,6 +69,7 @@ let base: string;
 let pool: Pool;
 let googleStub: OAuthProviderStub;
 let identities: OAuthIdentityRepository;
+let sessions: SessionRepository;
 
 const WEB_BASE_URL = 'http://127.0.0.1:5173';
 let OAUTH_COOKIE: string;
@@ -122,6 +124,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${addr.port}/v1`;
   pool = createTestPool();
   identities = app.get(OAuthIdentityRepository);
+  sessions = app.get(SessionRepository);
 
   const cfg = loadConfig();
   OAUTH_COOKIE = oauthCookieName(cfg);
@@ -324,6 +327,52 @@ describe('completing a link', () => {
 
     expect(callback.location).toBe(`${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`);
     expect(await identities.findOwner('google', 'barrier-1')).toBeUndefined();
+  });
+
+  it('leaves the account with zero active sessions when logout-all races the link write itself', async () => {
+    // A different window than the TOCTOU test above: here the revocation is
+    // not sequenced before completeLink's transaction at all -- it is fired
+    // and left unawaited, so it genuinely races the transaction's own writes
+    // at the database rather than landing in a gap between two of this
+    // process's own steps. Session locking alone (the earlier fix) does not
+    // close this: completeLink's own sessions.create() inserts a session
+    // that did not exist when a concurrent revokeAllForUser scanned for rows
+    // to update, so under READ COMMITTED that UPDATE's row set never
+    // includes it, however the two transactions' locks interleave. Locking
+    // the user row first, on both sides, is what forces one to fully commit
+    // before the other's lock unblocks -- so whichever runs second sees
+    // everything the first one did, new session included.
+    const session = await registerAndLogin('atomic@example.com');
+    const me = await call('/auth/me', { cookie: session });
+    const userId = (me.body as { id: string }).id;
+
+    const start = await call('/auth/oauth/google/link', { method: 'POST', cookie: session });
+    const authUrl = new URL((start.body as { redirectUrl: string }).redirectUrl);
+    const query = googleStub.approve(authUrl, { id: 'atomic-1', email: 'atomic@example.com' });
+
+    let logoutAll: Promise<Res> | undefined;
+    linkBarrier = () => {
+      // Not awaited: dispatched and left in flight, so it genuinely
+      // contends for the user-row lock against completeLink's own
+      // transaction rather than being ordered relative to it.
+      logoutAll = call('/auth/logout-all', { method: 'POST', cookie: session });
+      return Promise.resolve();
+    };
+
+    const callback = await call(`/auth/oauth/google/callback?${query.toString()}`, {
+      cookie: `${cookieHeader(start.cookies, OAUTH_COOKIE)}; ${session}`,
+    });
+    await logoutAll;
+
+    // Either the link lost the race for the lock and was refused (the
+    // session was already gone by the time completeLink checked it), or it
+    // won the race, completed, and the session it issued was then caught by
+    // the logout-all that ran second. Both are correct; what must never
+    // happen is a third outcome where a session survives.
+    expect([`${WEB_BASE_URL}/`, `${WEB_BASE_URL}/login?error=OAUTH_SESSION_REVOKED`]).toContain(
+      callback.location,
+    );
+    expect(await sessions.countActive(userId)).toBe(0);
   });
 
   it('refuses a link callback with no session at all', async () => {

@@ -15,8 +15,8 @@ const inDays = (n: number) => new Date(Date.now() + n * 86_400_000);
 beforeAll(() => {
   ctx = connectTestDb();
   const db = { kysely: ctx.db } as DbService;
-  sessions = new SessionRepository(db);
   users = new UserRepository(db);
+  sessions = new SessionRepository(db, users);
 });
 
 afterAll(async () => {

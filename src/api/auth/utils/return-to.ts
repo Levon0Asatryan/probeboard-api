@@ -30,6 +30,17 @@ const DUMMY_ORIGIN = 'https://return-to.invalid';
  * parsed origin catches every variant of both at once, including ones this
  * comment does not enumerate, instead of a blacklist that only ever grows by
  * one confirmed bypass at a time.
+ *
+ * The origin comparison alone is not sufficient, though: dot-segment
+ * resolution happens on the *path*, before the origin is fixed, and can
+ * produce a resolved path that itself begins with `//` or `/\` even though
+ * the parse-time origin never moved -- `/.//evil.com`, `/%2e//evil.com` and
+ * `/a/..//evil.com` all resolve to a pathname of `//evil.com` while
+ * `url.origin` stays `DUMMY_ORIGIN` the whole time. That pathname is exactly
+ * as dangerous as the inputs above once the caller does its own
+ * `new URL(returnTo, WEB_BASE_URL)`: a leading `//` there is protocol-relative
+ * again, one level down. So the *result*, not only the input, is checked for
+ * the same leading pattern before it is accepted.
  */
 export function validateReturnTo(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return DEFAULT_RETURN_TO;
@@ -43,6 +54,7 @@ export function validateReturnTo(value: unknown): string {
   }
 
   if (url.origin !== DUMMY_ORIGIN) return DEFAULT_RETURN_TO;
+  if (url.pathname.startsWith('//') || url.pathname.startsWith('/\\')) return DEFAULT_RETURN_TO;
 
   // Never the parsed href: that would carry DUMMY_ORIGIN itself. Path, query
   // and fragment are the only parts a same-origin return target needs.
