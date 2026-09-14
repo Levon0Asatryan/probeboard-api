@@ -46,8 +46,15 @@ Applies to every chat, with or without a handoff prompt. The report
 
 ### While writing
 
-- Never push to `main`. One PR per coherent step; split commits by logical
-  change. Commit messages end with
+- Never push to `main`. One PR per coherent step.
+- **Split commits by logical change — never one commit for a whole PR.** A PR
+  with several parts is several commits, for example: migration + `types.ts`;
+  repository + its tests; service + its tests; controller + `http/` +
+  `openapi.yaml`; docs. Tests travel with the code they test. Each commit
+  builds and passes the pre-commit hook on its own. Review fixes are their own
+  commits, named for the finding, never squashed into the feature commit. A
+  single-commit PR for multi-part work is sent back at validation.
+- Commit messages end with
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`; PR bodies end with
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - **Prove every guard by removing it** and watching its test fail. A passing
