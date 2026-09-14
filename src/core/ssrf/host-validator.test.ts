@@ -122,6 +122,7 @@ describe('IPv6 forms', () => {
       'http://[::ffff:0:127.0.0.1]/',
     ],
     ['6to4 (RFC 3056), embedding a private IPv4 gateway', 'http://[2002:0a00:0001::]/'],
+    ['Teredo (RFC 4380), embedding an obfuscated private IPv4', 'http://[2001:0:1234::1]/'],
     ["AWS IMDS's IPv6 metadata address", 'http://[fd00:ec2::254]/'],
   ])('%s rejected as ADDRESS_NOT_ALLOWED', async (_label, url) => {
     await rejects(url, 'ADDRESS_NOT_ALLOWED');
@@ -147,13 +148,16 @@ describe('0.0.0.0 and cloud/CGNAT/benchmark/multicast literals', () => {
 });
 
 describe('named metadata hosts, rejected before DNS runs', () => {
-  it.each(['http://metadata.google.internal/', 'http://METADATA.GOOGLE.INTERNAL/'])(
-    '%s rejected without a DNS query',
-    async (url) => {
-      await rejects(url, 'ADDRESS_NOT_ALLOWED');
-      expect(resolve4).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    'http://metadata.google.internal/',
+    'http://METADATA.GOOGLE.INTERNAL/',
+    // A trailing dot marks an absolute FQDN and resolves identically to the
+    // same name without one -- it must not sidestep the denylist fast path.
+    'http://metadata.google.internal./',
+  ])('%s rejected without a DNS query', async (url) => {
+    await rejects(url, 'ADDRESS_NOT_ALLOWED');
+    expect(resolve4).not.toHaveBeenCalled();
+  });
 });
 
 describe('DNS-resolved hostnames', () => {

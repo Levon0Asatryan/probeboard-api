@@ -123,6 +123,12 @@ function getBlockList(): BlockList {
   // it, private ranges included. Same posture as the NAT64/SIIT rules above
   // -- blocked wholesale rather than decoding the embedded address.
   bl.addSubnet('2002::', 16, 'ipv6');
+  // Teredo (RFC 4380, deprecated): 2001::/32 embeds an obfuscated IPv4
+  // address (client and server addresses, each XORed with 0xffffffff) that
+  // a Teredo relay decodes and routes to -- the same embedding property
+  // that justifies blocking 6to4 and NAT64 wholesale above, so it gets the
+  // same treatment rather than being decoded and classified per-address.
+  bl.addSubnet('2001::', 32, 'ipv6');
 
   blockList = bl;
   return bl;
@@ -183,8 +189,16 @@ export async function assertSaveableUrl(
   // check below -- the hostname denylist, net.isIP, dns.resolve, BlockList --
   // needs the bare address.
   const bracketed = url.hostname.toLowerCase();
-  const hostname =
+  const unbracketed =
     bracketed.startsWith('[') && bracketed.endsWith(']') ? bracketed.slice(1, -1) : bracketed;
+  // A trailing dot marks an absolute FQDN ("metadata.google.internal.") and
+  // resolves identically to the same name without one, but is a different
+  // string -- stripped here so the denylist fast-path below cannot be
+  // sidestepped by it. Not itself a bypass either way: DNS still resolves
+  // the dotted form and the address check below would still catch it, but
+  // an unstripped miss here would silently skip the "reject by name before
+  // DNS runs" fast path this set exists for.
+  const hostname = unbracketed.endsWith('.') ? unbracketed.slice(0, -1) : unbracketed;
 
   if (BLOCKED_HOSTNAMES.has(hostname)) {
     throw new SsrfValidationError('ADDRESS_NOT_ALLOWED', 'resolves to a disallowed address');
