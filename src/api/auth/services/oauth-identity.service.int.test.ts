@@ -25,6 +25,7 @@ let identities: OAuthIdentityRepository;
 
 const BASE = {
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
 };
 
 function makeService(env: Record<string, string> = {}): OAuthIdentityService {

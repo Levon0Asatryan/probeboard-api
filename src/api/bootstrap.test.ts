@@ -5,6 +5,7 @@ import { API_VERSION_PREFIX, UNVERSIONED_PATHS, configureApp } from './bootstrap
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   API_BODY_LIMIT: '32kb',
 });
 

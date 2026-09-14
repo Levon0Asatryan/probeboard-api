@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from './index.js';
 
-const valid = { DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard' };
+const valid = {
+  DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
+};
 
 describe('loadConfig', () => {
   it('applies defaults when only required values are present', () => {
@@ -61,6 +64,31 @@ describe('SSRF_BLOCKED_PORTS', () => {
     expect(() => loadConfig({ ...valid, SSRF_BLOCKED_PORTS: '70000' })).toThrow(
       /SSRF_BLOCKED_PORTS/,
     );
+  });
+});
+
+describe('HEADER_ENCRYPTION_KEY', () => {
+  it('refuses to start with no key set', () => {
+    const { HEADER_ENCRYPTION_KEY: _omit, ...withoutKey } = valid;
+    expect(() => loadConfig(withoutKey)).toThrow(/HEADER_ENCRYPTION_KEY/);
+  });
+
+  it('refuses a key that decodes to the wrong length', () => {
+    // 16 bytes, not 32 -- AES-128 width, not AES-256.
+    expect(() =>
+      loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: Buffer.alloc(16).toString('base64') }),
+    ).toThrow(/HEADER_ENCRYPTION_KEY/);
+  });
+
+  it('refuses text that is not valid base64 at all', () => {
+    expect(() => loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: 'not base64!!' })).toThrow(
+      /HEADER_ENCRYPTION_KEY/,
+    );
+  });
+
+  it('accepts a correctly-sized key', () => {
+    const key = Buffer.alloc(32, 7).toString('base64');
+    expect(loadConfig({ ...valid, HEADER_ENCRYPTION_KEY: key }).HEADER_ENCRYPTION_KEY).toBe(key);
   });
 });
 

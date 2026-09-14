@@ -3,7 +3,11 @@ import { loadConfig } from '../../../core/config/index.js';
 import { clearOauthCookieOptions, oauthCookieName, oauthCookieOptions } from './oauth-cookie.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
-  loadConfig({ DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard', ...env });
+  loadConfig({
+    DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+    HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
+    ...env,
+  });
 
 describe('oauthCookieOptions', () => {
   it('is httpOnly', () => {

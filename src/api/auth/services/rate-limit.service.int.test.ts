@@ -7,6 +7,7 @@ import { AuthRateLimitService } from '../services/rate-limit.service.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   AUTH_WINDOW_MS: '60000',
   AUTH_MAX_PER_IP: '5',
   AUTH_MAX_FAILURES_PER_EMAIL: '3',

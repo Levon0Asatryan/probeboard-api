@@ -77,6 +77,7 @@ let SESSION_COOKIE: string;
 
 beforeAll(async () => {
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  process.env.HEADER_ENCRYPTION_KEY = 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=';
   process.env.LOG_LEVEL = 'fatal';
   process.env.COOKIE_SECURE = 'false';
   process.env.OAUTH_ENABLED = 'true';

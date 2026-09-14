@@ -6,6 +6,7 @@ import { PasswordService } from '../services/password.service.js';
 // configuration precisely so it can differ between a test run and production.
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
+  HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   ARGON2_MEMORY_KIB: '8192',
   ARGON2_TIME_COST: '1',
 });
