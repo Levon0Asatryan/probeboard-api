@@ -114,6 +114,8 @@ describe('IPv6 forms', () => {
     ['unique local', 'http://[fd12:3456:789a::1]/'],
     ['link-local', 'http://[fe80::1]/'],
     ['site-local (deprecated by RFC 3879, still routed on some networks)', 'http://[fec0::1]/'],
+    ['NAT64 well-known prefix, embedding a private IPv4', 'http://[64:ff9b::a00:1]/'],
+    ['NAT64 local-use prefix (RFC 8215)', 'http://[64:ff9b:1::1]/'],
     ["AWS IMDS's IPv6 metadata address", 'http://[fd00:ec2::254]/'],
   ])('%s rejected as ADDRESS_NOT_ALLOWED', async (_label, url) => {
     await rejects(url, 'ADDRESS_NOT_ALLOWED');

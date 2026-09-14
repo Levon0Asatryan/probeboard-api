@@ -98,6 +98,15 @@ function getBlockList(): BlockList {
   // above's coverage, since AWS assigns it out of that same fc00::/7 space
   // but it is worth naming explicitly for what it is.
   bl.addAddress('fd00:ec2::254', 'ipv6');
+  // NAT64: an IPv6 address that embeds an IPv4 destination in its low bits
+  // and gets translated to that IPv4 address on the way out. Blocked
+  // wholesale rather than decoded and classified per-address -- a NAT64
+  // gateway can translate to any IPv4, private ranges included, so treating
+  // every address in either prefix as unsafe is the same posture already
+  // taken for ::/96 above, and decoding RFC 8215's variable embedding
+  // lengths correctly is complexity this guard does not need to take on.
+  bl.addSubnet('64:ff9b::', 96, 'ipv6'); // RFC 6052 well-known prefix
+  bl.addSubnet('64:ff9b:1::', 48, 'ipv6'); // RFC 8215 local-use prefix
 
   blockList = bl;
   return bl;
