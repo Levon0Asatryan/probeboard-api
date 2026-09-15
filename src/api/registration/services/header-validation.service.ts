@@ -44,15 +44,15 @@ const FORBIDDEN_HEADER_NAMES = new Set([
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /**
- * RFC 7230 §3.2 `field-value`: VCHAR (0x21-0x7E), SP, HTAB, or obs-text
- * (0x80-0xFF). Excludes every C0 control character (CR/LF included) and
- * DEL -- a secret value is encrypted before storage, so CRLF-only checking
- * would let a NUL byte or other control character through to ciphertext
- * and only surface as a probe-time Node rejection, the same class of gap
- * as the name check above.
+ * RFC 7230 §3.2 `field-value`: HTAB, SP, VCHAR (0x21-0x7E), or obs-text
+ * (0x80-0xFF) only -- a positive allow-list, not a control-character
+ * deny-list, because Node's outbound client accepts obs-text strictly
+ * through U+00FF and throws `ERR_INVALID_CHAR` above it: a deny-list of
+ * control characters alone would still let a value with e.g. an emoji or
+ * a CJK character (both far above U+00FF) through validation only to fail
+ * every probe once M3 tries to send it.
  */
-// eslint-disable-next-line no-control-regex -- the control characters are exactly what this rejects.
-const HEADER_VALUE_INVALID = /[\x00-\x08\x0a-\x1f\x7f]/;
+const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
 /**
  * Validates a full header list against static and configured rules, at
@@ -99,8 +99,11 @@ export class HeaderValidationService {
       // ciphertext it keeps was already validated when it was written.
       if (header.value === undefined) continue;
 
-      if (HEADER_VALUE_INVALID.test(header.value)) {
-        throw new HeaderInvalidError(header.name, 'value contains a disallowed control character');
+      if (!HEADER_VALUE.test(header.value)) {
+        throw new HeaderInvalidError(
+          header.name,
+          'value contains a disallowed or non-Latin-1 character',
+        );
       }
       if (Buffer.byteLength(header.value, 'utf8') > this.cfg.MAX_HEADER_VALUE_BYTES) {
         throw new HeaderInvalidError(
