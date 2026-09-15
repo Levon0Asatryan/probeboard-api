@@ -21,7 +21,7 @@ import type { ListQuery } from '../dto/list-query.dto.js';
 import type { UpdateEndpointRequest } from '../dto/update-endpoint.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
 import { HeaderValidationService } from './header-validation.service.js';
-import { effectiveUrl } from './url.js';
+import { canonicalPath, effectiveUrl } from './url.js';
 
 @Injectable()
 export class EndpointsService {
@@ -91,8 +91,12 @@ export class EndpointsService {
       const service = await this.services.findById(serviceId, userId, trx);
       if (!service) throw new NotFoundError('service');
 
+      // Canonical before anything else touches it: `orders`, `/orders` and
+      // `/a/../orders` all resolve to the same target, and the unique index
+      // below only catches duplicates that are byte-identical strings.
+      const path = canonicalPath(service.base_url, dto.path);
       // D10: re-validated on every save, using the joined base+path.
-      await assertSaveableUrl(effectiveUrl(service.base_url, dto.path), this.ssrfConfig);
+      await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
 
       const count = await this.endpoints.countForUser(userId, trx);
       if (count >= this.cfg.ENDPOINT_QUOTA_PER_USER) {
@@ -108,7 +112,7 @@ export class EndpointsService {
             service_id: serviceId,
             user_id: userId,
             method: dto.method,
-            path: dto.path,
+            path,
             interval_s: intervalS,
             timeout_ms: timeoutMs,
             max_redirects: maxRedirects,
@@ -166,7 +170,10 @@ export class EndpointsService {
   }
 
   async list(userId: string, query: ListQuery): Promise<EndpointDto[]> {
-    const rows = await this.endpoints.list(userId, query);
+    // The DTO's own bound is a generous structural ceiling, not the real
+    // cap -- MAX_LIST_LIMIT is configured (§5.5).
+    const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
+    const rows = await this.endpoints.list(userId, { ...query, limit });
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }
 
@@ -204,7 +211,10 @@ export class EndpointsService {
         .executeTakeFirst();
       if (!service) throw new NotFoundError('endpoint');
 
-      const path = dto.path ?? existing.path;
+      // existing.path is already canonical (stored that way at create/last
+      // update); only a newly-supplied path needs canonicalizing here.
+      const path =
+        dto.path !== undefined ? canonicalPath(service.base_url, dto.path) : existing.path;
       // D10: unconditional re-validation, even if neither method nor path changed.
       await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
 
@@ -218,7 +228,7 @@ export class EndpointsService {
           userId,
           {
             ...(dto.method !== undefined ? { method: dto.method } : {}),
-            ...(dto.path !== undefined ? { path: dto.path } : {}),
+            ...(dto.path !== undefined ? { path } : {}),
             ...(dto.intervalS !== undefined ? { interval_s: dto.intervalS } : {}),
             ...(dto.timeoutMs !== undefined ? { timeout_ms: dto.timeoutMs } : {}),
             ...(dto.expectedStatus ? { expected_status: JSON.stringify(dto.expectedStatus) } : {}),

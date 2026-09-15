@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveUrl, toOrigin } from './url.js';
+import { canonicalPath, effectiveUrl, toOrigin } from './url.js';
 
 describe('toOrigin', () => {
   it('strips a path down to scheme + host', () => {
@@ -31,5 +31,24 @@ describe('effectiveUrl', () => {
 
   it('rejects a path with a different scheme via a schema-relative form', () => {
     expect(() => effectiveUrl('https://example.com', '//evil.example.net/x')).toThrow();
+  });
+});
+
+describe('canonicalPath', () => {
+  it('adds a leading slash to a path missing one', () => {
+    expect(canonicalPath('https://example.com', 'orders')).toBe('/orders');
+  });
+
+  it('resolves dot-segments to the same canonical form', () => {
+    expect(canonicalPath('https://example.com', '/a/../orders')).toBe('/orders');
+    expect(canonicalPath('https://example.com', '/orders')).toBe('/orders');
+  });
+
+  it('keeps the query string', () => {
+    expect(canonicalPath('https://example.com', '/orders?status=open')).toBe('/orders?status=open');
+  });
+
+  it('propagates the off-origin rejection effectiveUrl already enforces', () => {
+    expect(() => canonicalPath('https://example.com', 'http://169.254.169.254/')).toThrow();
   });
 });

@@ -26,3 +26,17 @@ export function effectiveUrl(baseUrl: string, path: string): string {
   }
   return joined.toString();
 }
+
+/**
+ * The canonical form of `path`, derived from the same parse `effectiveUrl`
+ * validates -- `orders`, `/orders`, and `/a/../orders` all resolve to the
+ * same target, but the unique index on `(service_id, method, path)`
+ * compares the raw stored string, so storing `path` verbatim would let
+ * these variants each register their own duplicate, independently
+ * scheduled endpoint for the one HTTP resource. Storing the canonical form
+ * instead makes the constraint mean what it says.
+ */
+export function canonicalPath(baseUrl: string, path: string): string {
+  const url = new URL(effectiveUrl(baseUrl, path));
+  return url.pathname + url.search;
+}
