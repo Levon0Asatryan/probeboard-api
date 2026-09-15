@@ -33,6 +33,10 @@ tags:
     description: Accounts and sessions.
   - name: oauth
     description: Sign in with Google or GitHub, and linked identities.
+  - name: services
+    description: "Monitored services: their origin, headers and tags."
+  - name: endpoints
+    description: Monitored endpoints under a service.
 components:
   schemas:
     Error:
@@ -56,6 +60,14 @@ components:
             - RATE_LIMITED
             - DATABASE_UNAVAILABLE
             - INTERNAL_ERROR
+            - SCHEME_NOT_ALLOWED
+            - CREDENTIALS_IN_URL
+            - PORT_NOT_ALLOWED
+            - URL_UNRESOLVABLE
+            - ADDRESS_NOT_ALLOWED
+            - HEADER_NOT_ALLOWED
+            - HEADER_INVALID
+            - QUOTA_EXCEEDED
           description: Stable machine-readable code. Branch on this, never on `message`.
         message:
           type: string
@@ -188,6 +200,557 @@ components:
           nullable: true
           description: Display text from the provider. Never the lookup key.
         linkedAt:
+          type: string
+          format: date-time
+    CreateServiceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        baseUrl:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          minLength: 1
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                minLength: 1
+              value:
+                type: string
+              isSecret:
+                default: false
+                type: boolean
+            required:
+              - name
+              - isSecret
+            additionalProperties: false
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              value:
+                type: string
+                minLength: 1
+                maxLength: 256
+            required:
+              - key
+              - value
+            additionalProperties: false
+      additionalProperties: false
+    UpdateServiceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        baseUrl:
+          type: string
+          minLength: 1
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                minLength: 1
+              value:
+                type: string
+              isSecret:
+                default: false
+                type: boolean
+            required:
+              - name
+              - isSecret
+            additionalProperties: false
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              value:
+                type: string
+                minLength: 1
+                maxLength: 256
+            required:
+              - key
+              - value
+            additionalProperties: false
+      additionalProperties: false
+    CreateEndpointRequest:
+      type: object
+      properties:
+        method:
+          default: GET
+          type: string
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - HEAD
+            - OPTIONS
+        path:
+          default: /
+          type: string
+          minLength: 1
+          maxLength: 2048
+        intervalS:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        timeoutMs:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        expectedStatus:
+          minItems: 1
+          type: array
+          items:
+            type: object
+            properties:
+              min:
+                type: integer
+                minimum: 100
+                maximum: 599
+              max:
+                type: integer
+                minimum: 100
+                maximum: 599
+            required:
+              - min
+              - max
+            additionalProperties: false
+        latencyWarnMs:
+          nullable: true
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        failureThreshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        successThreshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        followRedirects:
+          type: boolean
+        maxRedirects:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        assertions:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - body_contains
+                  value:
+                    type: string
+                    minLength: 1
+                required:
+                  - type
+                  - value
+                additionalProperties: false
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - body_not_contains
+                  value:
+                    type: string
+                    minLength: 1
+                required:
+                  - type
+                  - value
+                additionalProperties: false
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - json_path
+                  path:
+                    type: string
+                    minLength: 1
+                  equals: {}
+                required:
+                  - type
+                  - path
+                  - equals
+                additionalProperties: false
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                minLength: 1
+              value:
+                type: string
+              isSecret:
+                default: false
+                type: boolean
+            required:
+              - name
+              - isSecret
+            additionalProperties: false
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              value:
+                type: string
+                minLength: 1
+                maxLength: 256
+            required:
+              - key
+              - value
+            additionalProperties: false
+      required:
+        - method
+        - path
+      additionalProperties: false
+    UpdateEndpointRequest:
+      type: object
+      properties:
+        method:
+          type: string
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - HEAD
+            - OPTIONS
+        path:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        intervalS:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        timeoutMs:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        expectedStatus:
+          minItems: 1
+          type: array
+          items:
+            type: object
+            properties:
+              min:
+                type: integer
+                minimum: 100
+                maximum: 599
+              max:
+                type: integer
+                minimum: 100
+                maximum: 599
+            required:
+              - min
+              - max
+            additionalProperties: false
+        latencyWarnMs:
+          nullable: true
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 9007199254740991
+        failureThreshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        successThreshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        followRedirects:
+          type: boolean
+        maxRedirects:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        assertions:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - body_contains
+                  value:
+                    type: string
+                    minLength: 1
+                required:
+                  - type
+                  - value
+                additionalProperties: false
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - body_not_contains
+                  value:
+                    type: string
+                    minLength: 1
+                required:
+                  - type
+                  - value
+                additionalProperties: false
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - json_path
+                  path:
+                    type: string
+                    minLength: 1
+                  equals: {}
+                required:
+                  - type
+                  - path
+                  - equals
+                additionalProperties: false
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                minLength: 1
+              value:
+                type: string
+              isSecret:
+                default: false
+                type: boolean
+            required:
+              - name
+              - isSecret
+            additionalProperties: false
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              value:
+                type: string
+                minLength: 1
+                maxLength: 256
+            required:
+              - key
+              - value
+            additionalProperties: false
+      additionalProperties: false
+    Header:
+      type: object
+      required:
+        - name
+        - isSecret
+      description: "A secret header never carries `value` in any response -- write-only (docs/m2-plan.md §5.4). The only way to keep one unchanged on a PATCH is `{name, isSecret: true}` with no `value` key at all."
+      properties:
+        name:
+          type: string
+        isSecret:
+          type: boolean
+        value:
+          type: string
+          description: Absent when isSecret is true.
+    Tag:
+      type: object
+      required:
+        - key
+        - value
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+    Service:
+      type: object
+      required:
+        - id
+        - name
+        - baseUrl
+        - headers
+        - tags
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        baseUrl:
+          type: string
+          format: uri
+          description: "Origin only: scheme + host [+ port]."
+        headers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Header"
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateServiceResponse:
+      type: object
+      required:
+        - service
+      properties:
+        service:
+          $ref: "#/components/schemas/Service"
+        endpointId:
+          type: string
+          format: uuid
+          description: "Only present for the implicit form (B-3, `url` in the request): the endpoint that was attached to an existing service, or created with it."
+    StatusRange:
+      type: object
+      required:
+        - min
+        - max
+      properties:
+        min:
+          type: integer
+          minimum: 100
+          maximum: 599
+        max:
+          type: integer
+          minimum: 100
+          maximum: 599
+    Endpoint:
+      type: object
+      required:
+        - id
+        - serviceId
+        - method
+        - path
+        - intervalS
+        - timeoutMs
+        - expectedStatus
+        - latencyWarnMs
+        - failureThreshold
+        - successThreshold
+        - followRedirects
+        - maxRedirects
+        - assertions
+        - enabled
+        - headers
+        - effectiveHeaders
+        - tags
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        method:
+          type: string
+        path:
+          type: string
+        intervalS:
+          type: integer
+          description: One of the configured PROBE_ALLOWED_INTERVALS_S.
+        timeoutMs:
+          type: integer
+        expectedStatus:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusRange"
+        latencyWarnMs:
+          type: integer
+          nullable: true
+        failureThreshold:
+          type: integer
+        successThreshold:
+          type: integer
+        followRedirects:
+          type: boolean
+        maxRedirects:
+          type: integer
+        assertions:
+          type: array
+          items: {}
+          description: Structured, versioned (architecture ADR-5). Opaque to M2; M3 is the first reader.
+        enabled:
+          type: boolean
+          description: Pause/resume (FR-9). Inert until M4.
+        headers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Header"
+          description: This endpoint's own headers only.
+        effectiveHeaders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Header"
+          description: "`{...serviceHeaders, ...endpointHeaders}` by name, case-insensitively, endpoint wins (B-4)."
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
           type: string
           format: date-time
   securitySchemes:
@@ -585,6 +1148,380 @@ paths:
                 items:
                   $ref: "#/components/schemas/OAuthIdentity"
         "401": *a1
+        "429": *a2
+  /v1/services:
+    post:
+      tags:
+        - services
+      operationId: createService
+      summary: Register a service, explicitly or from a URL (B-3)
+      description: |-
+        Two forms, discriminated by which of `baseUrl`/`url` is present. Explicit: `{name, baseUrl}` creates a service at that origin. Implicit (B-3): `{url}` finds-or-creates a service at the URL's origin and attaches one endpoint at its path, in one transaction -- "a service with exactly one endpoint is the degenerate case."
+
+        The URL is validated by the SSRF guard before anything is stored (§5.1): scheme, credentials, port, DNS resolution, then every resolved address classified against a private/loopback/link-local/metadata denylist. Not a complete defense against DNS rebinding -- see docs/m2-plan.md §6.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceRequest"
+      responses:
+        "201":
+          description: Created (or attached to, in the implicit form).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateServiceResponse"
+        "400":
+          description: "`VALIDATION_FAILED`, or one of the SSRF codes: `SCHEME_NOT_ALLOWED`, `CREDENTIALS_IN_URL`, `PORT_NOT_ALLOWED`, `URL_UNRESOLVABLE`, `ADDRESS_NOT_ALLOWED`; or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a1
+        "409":
+          description: "`CONFLICT`: a service already exists at this base URL (explicit form only). `QUOTA_EXCEEDED`: the endpoint quota is reached (implicit form only)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    get:
+      tags:
+        - services
+      operationId: listServices
+      summary: List services owned by the signed-in account
+      parameters:
+        - &a4
+          name: cursor
+          in: query
+          required: false
+          description: "Opaque: the `id` of the last row of the previous page."
+          schema:
+            type: string
+        - &a5
+          name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: One page, oldest id first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Service"
+        "401": *a1
+        "429": *a2
+  /v1/services/{id}:
+    get:
+      tags:
+        - services
+      operationId: getService
+      summary: Fetch a service
+      parameters:
+        - &a3
+          name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The service.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+        "401": *a1
+        "404":
+          description: Not found, or it belongs to someone else -- indistinguishable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    patch:
+      tags:
+        - services
+      operationId: updateService
+      summary: Update a service
+      description: Every field optional; only what is present is changed. `headers`/`tags`, if present, fully replace the existing set (docs/m2-plan.md §5.4) -- a secret entry with no `value` keeps its current ciphertext. `baseUrl`, if present, is re-validated by the SSRF guard even if unchanged (D10).
+      parameters:
+        - *a3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceRequest"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+        "400":
+          description: "`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`CONFLICT`: another service already uses this base URL."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    delete:
+      tags:
+        - services
+      operationId: deleteService
+      summary: Delete a service
+      description: Cascades to its endpoints, headers and tags. Unconditional hard delete (D9).
+      parameters:
+        - *a3
+      responses:
+        "204":
+          description: Deleted.
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+  /v1/services/{id}/endpoints:
+    get:
+      tags:
+        - endpoints
+      operationId: listServiceEndpoints
+      summary: A service's endpoints
+      parameters:
+        - *a3
+      responses:
+        "200":
+          description: Every endpoint under this service.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Endpoint"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    post:
+      tags:
+        - endpoints
+      operationId: createEndpoint
+      summary: Add an endpoint to a service
+      description: "Quota-checked (§5.3: locks the user row, counts, then inserts, inside one transaction -- closes the check-then-act race a separate COUNT would leave open). The joined base URL + path is re-validated by the SSRF guard (D10)."
+      parameters:
+        - *a3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEndpointRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a1
+        "404":
+          description: Service not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`CONFLICT`: duplicate method+path on this service. `QUOTA_EXCEEDED`: the endpoint quota is reached."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+  /v1/endpoints:
+    get:
+      tags:
+        - endpoints
+      operationId: listEndpoints
+      summary: List every endpoint owned by the signed-in account, across services
+      parameters:
+        - *a4
+        - *a5
+      responses:
+        "200":
+          description: One page, oldest id first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Endpoint"
+        "401": *a1
+        "429": *a2
+  /v1/endpoints/{id}:
+    get:
+      tags:
+        - endpoints
+      operationId: getEndpoint
+      summary: Fetch an endpoint
+      parameters:
+        - *a3
+      responses:
+        "200":
+          description: The endpoint, with its own headers and the merged effective set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    patch:
+      tags:
+        - endpoints
+      operationId: updateEndpoint
+      summary: Update an endpoint
+      description: Every field optional. The joined base URL + path is re-validated by the SSRF guard unconditionally, even when neither changed (D10).
+      parameters:
+        - *a3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEndpointRequest"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`CONFLICT`: another endpoint on this service uses this method+path."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+    delete:
+      tags:
+        - endpoints
+      operationId: deleteEndpoint
+      summary: Delete an endpoint
+      parameters:
+        - *a3
+      responses:
+        "204":
+          description: Deleted.
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+  /v1/endpoints/{id}/pause:
+    post:
+      tags:
+        - endpoints
+      operationId: pauseEndpoint
+      summary: Set enabled = false
+      description: Inert until M4's scheduler reads `enabled` (FR-9).
+      parameters:
+        - *a3
+      responses:
+        "200":
+          description: Paused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": *a2
+  /v1/endpoints/{id}/resume:
+    post:
+      tags:
+        - endpoints
+      operationId: resumeEndpoint
+      summary: Set enabled = true
+      parameters:
+        - *a3
+      responses:
+        "200":
+          description: Resumed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "401": *a1
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "429": *a2
 security:
   - sessionCookie: []
