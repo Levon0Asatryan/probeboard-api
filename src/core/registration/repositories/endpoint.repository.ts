@@ -10,18 +10,25 @@ export interface ListEndpointsOptions {
   tag?: { key: string; value: string };
 }
 
-function tagExists(
+/**
+ * `LATERAL`, not `WHERE EXISTS`: a correlated subquery can only be the
+ * inner side of a nested loop, so Postgres has no plan where it starts
+ * from `tags` and materializes every match before `limit` ever applies --
+ * see the longer comment on `ServiceRepository.listQuery` for the full
+ * reasoning and the EXPLAIN evidence (docs/m2-verification.md).
+ */
+function tagLateral(
   eb: ExpressionBuilder<Database, 'endpoints'>,
   tag: { key: string; value: string },
 ) {
-  return eb.exists(
-    eb
-      .selectFrom('tags')
-      .select('tags.id')
-      .whereRef('tags.endpoint_id', '=', 'endpoints.id')
-      .where('tags.key', '=', tag.key)
-      .where('tags.value', '=', tag.value),
-  );
+  return eb
+    .selectFrom('tags')
+    .select('tags.id')
+    .whereRef('tags.endpoint_id', '=', 'endpoints.id')
+    .where('tags.key', '=', tag.key)
+    .where('tags.value', '=', tag.value)
+    .limit(1)
+    .as('matching_tag');
 }
 
 @Injectable()
@@ -49,13 +56,12 @@ export class EndpointRepository {
   }
 
   /**
-   * The tag filter (B-5) is a `WHERE EXISTS` subquery, not a materialized
-   * id list joined in as `id IN (...)`: ENDPOINT_QUOTA_PER_USER permits up
-   * to 100,000 endpoints, and an id-list join over a large match set would
-   * bind one parameter per match before `limit` ever trims the result,
-   * eventually exceeding Postgres's bind-parameter ceiling instead of
-   * returning a page. `EXISTS` lets the planner filter and paginate in one
-   * query, with cursor/limit applied exactly as without a tag.
+   * The tag filter (B-5) is a `LATERAL` join (`tagLateral` above), not a
+   * materialized id list joined in as `id IN (...)`: ENDPOINT_QUOTA_PER_USER
+   * permits up to 100,000 endpoints, and an id-list join over a large
+   * match set would bind one parameter per match before `limit` ever
+   * trims the result, eventually exceeding Postgres's bind-parameter
+   * ceiling instead of returning a page.
    *
    * `listForServiceQuery`/`listQuery` are split out, unexecuted, so
    * `endpoint.repository.test.ts` can `.compile()` them and assert on
@@ -70,17 +76,25 @@ export class EndpointRepository {
   ) {
     let query = this.db.kysely
       .selectFrom('endpoints')
-      .selectAll()
+      .selectAll('endpoints')
       .where('service_id', '=', serviceId)
       .where('user_id', '=', userId)
-      .orderBy('id', 'asc')
+      .orderBy('endpoints.id', 'asc')
       .limit(options.limit);
 
     if (options.cursor) {
-      query = query.where('id', '>', options.cursor);
+      // Qualified, not bare `id`: once the tag branch below joins in
+      // `matching_tag` (itself selecting `tags.id`), an unqualified `id`
+      // is ambiguous between the two -- confirmed by removal, Postgres
+      // rejects it outright rather than silently picking one.
+      query = query.where('endpoints.id', '>', options.cursor);
     }
     if (options.tag) {
-      query = query.where((eb) => tagExists(eb, options.tag!));
+      const tag = options.tag;
+      query = query.innerJoinLateral(
+        (eb: ExpressionBuilder<Database, 'endpoints'>) => tagLateral(eb, tag),
+        (join) => join.onTrue(),
+      );
     }
 
     return query;
@@ -97,16 +111,24 @@ export class EndpointRepository {
   listQuery(userId: string, options: ListEndpointsOptions) {
     let query = this.db.kysely
       .selectFrom('endpoints')
-      .selectAll()
+      .selectAll('endpoints')
       .where('user_id', '=', userId)
-      .orderBy('id', 'asc')
+      .orderBy('endpoints.id', 'asc')
       .limit(options.limit);
 
     if (options.cursor) {
-      query = query.where('id', '>', options.cursor);
+      // Qualified, not bare `id`: once the tag branch below joins in
+      // `matching_tag` (itself selecting `tags.id`), an unqualified `id`
+      // is ambiguous between the two -- confirmed by removal, Postgres
+      // rejects it outright rather than silently picking one.
+      query = query.where('endpoints.id', '>', options.cursor);
     }
     if (options.tag) {
-      query = query.where((eb) => tagExists(eb, options.tag!));
+      const tag = options.tag;
+      query = query.innerJoinLateral(
+        (eb: ExpressionBuilder<Database, 'endpoints'>) => tagLateral(eb, tag),
+        (join) => join.onTrue(),
+      );
     }
 
     return query;
