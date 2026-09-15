@@ -112,4 +112,17 @@ export class TagRepository {
       .execute();
     return rows.map((r) => r.id).filter((id): id is string => id !== null);
   }
+
+  /** Same as filterServiceIdsByTag, for endpoints owned by userId. */
+  async filterEndpointIdsByTag(userId: string, key: string, value: string): Promise<string[]> {
+    const rows = await this.db.kysely
+      .selectFrom('tags')
+      .innerJoin('endpoints', 'endpoints.id', 'tags.endpoint_id')
+      .select('tags.endpoint_id as id')
+      .where('endpoints.user_id', '=', userId)
+      .where('tags.key', '=', key)
+      .where('tags.value', '=', value)
+      .execute();
+    return rows.map((r) => r.id).filter((id): id is string => id !== null);
+  }
 }

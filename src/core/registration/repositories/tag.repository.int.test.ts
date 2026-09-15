@@ -156,6 +156,38 @@ describe('filterServiceIdsByTag', () => {
   });
 });
 
+describe('filterEndpointIdsByTag', () => {
+  it('finds only this user’s endpoints carrying the tag', async () => {
+    const otherService = await services.create({
+      user_id: otherUserId,
+      name: 'Other',
+      base_url: 'https://other.example.com',
+    });
+    const otherEndpoint = await endpoints.create({
+      service_id: otherService.id,
+      user_id: otherUserId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/other',
+    });
+    await tags.replaceForEndpoint(endpointId, userId, [{ key: 'critical', value: 'true' }]);
+    await tags.replaceForEndpoint(otherEndpoint.id, otherUserId, [
+      { key: 'critical', value: 'true' },
+    ]);
+
+    const found = await tags.filterEndpointIdsByTag(userId, 'critical', 'true');
+    expect(found).toEqual([endpointId]);
+  });
+
+  it('does not match a different value for the same key', async () => {
+    await tags.replaceForEndpoint(endpointId, userId, [{ key: 'critical', value: 'true' }]);
+
+    await expect(tags.filterEndpointIdsByTag(userId, 'critical', 'false')).resolves.toEqual([]);
+  });
+});
+
 describe('cascade delete', () => {
   it('deleting the service deletes its tags', async () => {
     await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);

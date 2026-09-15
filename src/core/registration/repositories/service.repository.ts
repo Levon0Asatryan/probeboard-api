@@ -7,6 +7,8 @@ export interface ListServicesOptions {
   /** Opaque cursor: the `id` of the last row of the previous page. */
   cursor?: string;
   limit: number;
+  /** Restricts to these ids, e.g. a tag filter's match set (B-5). Omitted means no restriction. */
+  ids?: string[];
 }
 
 @Injectable()
@@ -63,6 +65,9 @@ export class ServiceRepository {
 
     if (options.cursor) {
       query = query.where('id', '>', options.cursor);
+    }
+    if (options.ids) {
+      query = query.where('id', 'in', options.ids);
     }
 
     return query.execute();

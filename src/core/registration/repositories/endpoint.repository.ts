@@ -6,6 +6,8 @@ import type { Database, Endpoint, EndpointUpdate, NewEndpoint } from '../../db/t
 export interface ListEndpointsOptions {
   cursor?: string;
   limit: number;
+  /** Restricts to these ids, e.g. a tag filter's match set (B-5). Omitted means no restriction. */
+  ids?: string[];
 }
 
 @Injectable()
@@ -65,6 +67,9 @@ export class EndpointRepository {
 
     if (options.cursor) {
       query = query.where('id', '>', options.cursor);
+    }
+    if (options.ids) {
+      query = query.where('id', 'in', options.ids);
     }
 
     return query.execute();
