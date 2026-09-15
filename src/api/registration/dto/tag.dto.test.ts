@@ -20,6 +20,17 @@ describe('tagInputSchema', () => {
   it('rejects unknown fields', () => {
     expect(tagInputSchema.safeParse({ key: 'env', value: 'prod', extra: 1 }).success).toBe(false);
   });
+
+  it('rejects a colon in the key -- the ?tag=key:value filter splits on the first one', () => {
+    // {key: "team:region", value: "west"} would be stored but the filter
+    // always parses "team:region:west" as key "team", value "region:west",
+    // so this tag could never be matched again.
+    expect(tagInputSchema.safeParse({ key: 'team:region', value: 'west' }).success).toBe(false);
+  });
+
+  it('still allows a colon in the value', () => {
+    expect(tagInputSchema.safeParse({ key: 'region', value: 'us-east:1' }).success).toBe(true);
+  });
 });
 
 describe('tagListSchema', () => {
