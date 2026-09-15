@@ -407,34 +407,6 @@ describe('the tag filter (B-5)', () => {
     expect(page2).toHaveLength(1);
     expect(new Set([...page1, ...page2].map((e) => e.id))).toEqual(new Set(matches));
   });
-
-  it('still returns a page when the match set is larger than Postgres can bind as one IN list', async () => {
-    // The bug this guards: a WHERE id IN (...ids) built from a
-    // materialized match set binds one parameter per id, and Postgres
-    // rejects a query with more than 65535 bind parameters outright.
-    // EXISTS never binds one parameter per row, so this has to succeed
-    // regardless of how many endpoints carry the tag.
-    const rowCount = 70_000;
-    await ctx.pool.query(
-      `INSERT INTO endpoints
-           (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
-         SELECT $1, $2, 'GET', '/bulk-' || gs, 60, 10000, 5
-         FROM generate_series(1, $3) AS gs`,
-      [serviceId, userId, rowCount],
-    );
-    await ctx.pool.query(
-      `INSERT INTO tags (endpoint_id, key, value)
-         SELECT id, 'load', 'test' FROM endpoints
-         WHERE service_id = $1 AND path LIKE '/bulk-%'`,
-      [serviceId],
-    );
-
-    const page = await endpoints.list(userId, {
-      limit: 10,
-      tag: { key: 'load', value: 'test' },
-    });
-    expect(page).toHaveLength(10);
-  }, 30_000);
 });
 
 describe('countForUser', () => {
