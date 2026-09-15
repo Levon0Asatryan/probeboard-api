@@ -21,7 +21,7 @@ import type { ListQuery } from '../dto/list-query.dto.js';
 import type { UpdateEndpointRequest } from '../dto/update-endpoint.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
 import { HeaderValidationService } from './header-validation.service.js';
-import { assertPathBytes, canonicalPath, effectiveUrl } from './url.js';
+import { assertPathBytes, canonicalPath, effectiveUrl } from '../utils/url.js';
 
 @Injectable()
 export class EndpointsService {

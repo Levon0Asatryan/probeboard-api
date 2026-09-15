@@ -20,7 +20,7 @@ import type { UpdateServiceRequest } from '../dto/update-service.dto.js';
 import type { ListQuery } from '../dto/list-query.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
 import { HeaderValidationService } from './header-validation.service.js';
-import { assertPathBytes } from './url.js';
+import { assertPathBytes } from '../utils/url.js';
 
 export interface CreateServiceResult {
   service: ServiceDto;
