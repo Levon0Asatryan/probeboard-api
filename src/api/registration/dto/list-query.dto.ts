@@ -41,8 +41,3 @@ export const listQuerySchema = z
   .strict();
 
 export type ListQuery = z.infer<typeof listQuerySchema>;
-
-/** `GET /v1/services/:id/endpoints` -- unpaginated, so only the tag filter applies. */
-export const tagQuerySchema = z.object({ tag: tagFilterSchema.optional() }).strict();
-
-export type TagQuery = z.infer<typeof tagQuerySchema>;

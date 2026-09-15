@@ -196,21 +196,34 @@ export class EndpointsService {
     const service = await this.services.findById(serviceId, userId);
     if (!service) throw new NotFoundError('service');
 
+    let ids: string[] | undefined;
+    if (query.tag) {
+      ids = await this.tags.filterEndpointIdsByTag(userId, query.tag.key, query.tag.value);
+      if (ids.length === 0) return [];
+    }
+
     // The DTO's own bound is a generous structural ceiling, not the real
     // cap -- MAX_LIST_LIMIT is configured (§5.5).
     const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
     const rows = await this.endpoints.listForService(serviceId, userId, {
       cursor: query.cursor,
       limit,
+      ids,
     });
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }
 
   async list(userId: string, query: ListQuery): Promise<EndpointDto[]> {
+    let ids: string[] | undefined;
+    if (query.tag) {
+      ids = await this.tags.filterEndpointIdsByTag(userId, query.tag.key, query.tag.value);
+      if (ids.length === 0) return [];
+    }
+
     // The DTO's own bound is a generous structural ceiling, not the real
     // cap -- MAX_LIST_LIMIT is configured (§5.5).
     const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
-    const rows = await this.endpoints.list(userId, { ...query, limit });
+    const rows = await this.endpoints.list(userId, { ...query, limit, ids });
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }
 
