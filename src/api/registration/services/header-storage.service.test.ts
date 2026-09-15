@@ -101,17 +101,6 @@ describe('HeaderStorageService.toStorageRows', () => {
   });
 });
 
-describe('HeaderStorageService round trip', () => {
-  it('decryptValue recovers the original plaintext', () => {
-    const rows = service.toStorageRows(
-      [{ name: 'X-Api-Key', value: 'round-trip-me', isSecret: true }],
-      [],
-    );
-    const header = toRow(rows[0]);
-    expect(service.decryptValue(header)).toBe('round-trip-me');
-  });
-});
-
 describe('toHeaderDto', () => {
   it('never includes a value for a secret header', () => {
     const secret = existingSecret('X-Api-Key');

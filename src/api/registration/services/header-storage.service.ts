@@ -2,11 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { AppError } from '../../../core/errors/app-error.js';
-import {
-  decryptSecret,
-  encryptSecret,
-  parseHeaderEncryptionKey,
-} from '../../../core/crypto/header-cipher.js';
+import { encryptSecret, parseHeaderEncryptionKey } from '../../../core/crypto/header-cipher.js';
 import type { Header } from '../../../core/db/types.js';
 import type { NewOwnedHeader } from '../../../core/registration/repositories/header.repository.js';
 import type { HeaderInput } from '../dto/header.dto.js';
@@ -91,26 +87,6 @@ export class HeaderStorageService {
         secret_auth_tag: current.secret_auth_tag,
       };
     });
-  }
-
-  /** For M3's probe executor only -- decrypts a secret header back to its plaintext value. */
-  decryptValue(header: Header): string {
-    if (
-      !header.is_secret ||
-      !header.secret_ciphertext ||
-      !header.secret_iv ||
-      !header.secret_auth_tag
-    ) {
-      throw new AppError('INTERNAL_ERROR', 'header is not a secret header', 500);
-    }
-    return decryptSecret(
-      {
-        ciphertext: header.secret_ciphertext,
-        iv: header.secret_iv,
-        authTag: header.secret_auth_tag,
-      },
-      this.key,
-    );
   }
 }
 
