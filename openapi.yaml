@@ -73,19 +73,31 @@ components:
           type: string
           description: Human-readable prose. Safe to display; never contains internal detail.
         details:
-          type: array
-          description: "Present only on VALIDATION_FAILED: one entry per rejected field."
-          items:
-            type: object
-            required:
-              - path
-              - message
-            properties:
-              path:
-                type: string
-                description: Dotted path to the field, or "(root)" when the body itself was wrong.
-              message:
-                type: string
+          description: "Shape depends on `code`: an array of field issues on VALIDATION_FAILED, `{limit, count}` on QUOTA_EXCEEDED, absent on every other code."
+          oneOf:
+            - type: array
+              description: "VALIDATION_FAILED: one entry per rejected field."
+              items:
+                type: object
+                required:
+                  - path
+                  - message
+                properties:
+                  path:
+                    type: string
+                    description: Dotted path to the field, or "(root)" when the body itself was wrong.
+                  message:
+                    type: string
+            - type: object
+              description: "QUOTA_EXCEEDED: the configured cap and the count that reached it (B-8)."
+              required:
+                - limit
+                - count
+              properties:
+                limit:
+                  type: integer
+                count:
+                  type: integer
     RegisterRequest:
       type: object
       properties:
@@ -203,53 +215,101 @@ components:
           type: string
           format: date-time
     CreateServiceRequest:
-      type: object
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 200
-        baseUrl:
-          type: string
-          minLength: 1
-        url:
-          type: string
-          minLength: 1
-        headers:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-                minLength: 1
-              value:
-                type: string
-              isSecret:
-                default: false
-                type: boolean
-            required:
-              - name
-              - isSecret
-            additionalProperties: false
-        tags:
-          type: array
-          items:
-            type: object
-            properties:
-              key:
-                type: string
-                minLength: 1
-                maxLength: 128
-              value:
-                type: string
-                minLength: 1
-                maxLength: 256
-            required:
-              - key
-              - value
-            additionalProperties: false
-      additionalProperties: false
+      description: "Exactly one of the two forms below. Explicit: {name, baseUrl}. Implicit (B-3): {url}, with name optional."
+      oneOf:
+        - type: object
+          required:
+            - name
+            - baseUrl
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 200
+            baseUrl:
+              type: string
+              minLength: 1
+            headers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    minLength: 1
+                  value:
+                    type: string
+                  isSecret:
+                    default: false
+                    type: boolean
+                required:
+                  - name
+                  - isSecret
+                additionalProperties: false
+            tags:
+              type: array
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  value:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                required:
+                  - key
+                  - value
+                additionalProperties: false
+          additionalProperties: false
+        - type: object
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              minLength: 1
+            name:
+              type: string
+              minLength: 1
+              maxLength: 200
+            headers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    minLength: 1
+                  value:
+                    type: string
+                  isSecret:
+                    default: false
+                    type: boolean
+                required:
+                  - name
+                  - isSecret
+                additionalProperties: false
+            tags:
+              type: array
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  value:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                required:
+                  - key
+                  - value
+                additionalProperties: false
+          additionalProperties: false
     UpdateServiceRequest:
       type: object
       properties:

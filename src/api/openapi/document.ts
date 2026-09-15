@@ -6,10 +6,11 @@ import { registerSchema } from '../auth/dto/register.dto.js';
 import { sessionCookieName } from '../auth/utils/session-cookie.js';
 import { LIVENESS_PATH, READINESS_PATH } from '../health/constants.js';
 import type { AppConfig } from '../../core/config/schema.js';
-import { createServiceSchema } from '../registration/dto/create-service.dto.js';
 import { updateServiceSchema } from '../registration/dto/update-service.dto.js';
 import { createEndpointSchema } from '../registration/dto/create-endpoint.dto.js';
 import { updateEndpointSchema } from '../registration/dto/update-endpoint.dto.js';
+import { headerListSchema } from '../registration/dto/header.dto.js';
+import { tagListSchema } from '../registration/dto/tag.dto.js';
 
 /**
  * The OpenAPI description of what this service serves.
@@ -77,19 +78,36 @@ const errorSchema = {
       description: 'Human-readable prose. Safe to display; never contains internal detail.',
     },
     details: {
-      type: 'array',
-      description: 'Present only on VALIDATION_FAILED: one entry per rejected field.',
-      items: {
-        type: 'object',
-        required: ['path', 'message'],
-        properties: {
-          path: {
-            type: 'string',
-            description: 'Dotted path to the field, or "(root)" when the body itself was wrong.',
+      description:
+        'Shape depends on `code`: an array of field issues on VALIDATION_FAILED, ' +
+        '`{limit, count}` on QUOTA_EXCEEDED, absent on every other code.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'VALIDATION_FAILED: one entry per rejected field.',
+          items: {
+            type: 'object',
+            required: ['path', 'message'],
+            properties: {
+              path: {
+                type: 'string',
+                description:
+                  'Dotted path to the field, or "(root)" when the body itself was wrong.',
+              },
+              message: { type: 'string' },
+            },
           },
-          message: { type: 'string' },
         },
-      },
+        {
+          type: 'object',
+          description: 'QUOTA_EXCEEDED: the configured cap and the count that reached it (B-8).',
+          required: ['limit', 'count'],
+          properties: {
+            limit: { type: 'integer' },
+            count: { type: 'integer' },
+          },
+        },
+      ],
     },
   },
 } as const;
@@ -235,7 +253,39 @@ export function buildOpenApiDocument(
             linkedAt: { type: 'string', format: 'date-time' },
           },
         },
-        CreateServiceRequest: schemaOf(createServiceSchema),
+        // Hand-written, not schemaOf(createServiceSchema): z.toJSONSchema
+        // does not encode a zod .refine(), so the generated form would mark
+        // name/baseUrl/url all optional and let a generated client send a
+        // body (e.g. {}) the server actually rejects.
+        CreateServiceRequest: {
+          description:
+            'Exactly one of the two forms below. Explicit: {name, baseUrl}. ' +
+            'Implicit (B-3): {url}, with name optional.',
+          oneOf: [
+            {
+              type: 'object',
+              required: ['name', 'baseUrl'],
+              properties: {
+                name: { type: 'string', minLength: 1, maxLength: 200 },
+                baseUrl: { type: 'string', minLength: 1 },
+                headers: schemaOf(headerListSchema),
+                tags: schemaOf(tagListSchema),
+              },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['url'],
+              properties: {
+                url: { type: 'string', minLength: 1 },
+                name: { type: 'string', minLength: 1, maxLength: 200 },
+                headers: schemaOf(headerListSchema),
+                tags: schemaOf(tagListSchema),
+              },
+              additionalProperties: false,
+            },
+          ],
+        },
         UpdateServiceRequest: schemaOf(updateServiceSchema),
         CreateEndpointRequest: schemaOf(createEndpointSchema),
         UpdateEndpointRequest: schemaOf(updateEndpointSchema),
