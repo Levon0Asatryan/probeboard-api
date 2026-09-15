@@ -28,6 +28,7 @@ beforeAll(async () => {
   process.env.LOG_LEVEL = 'fatal';
   process.env.ENDPOINT_QUOTA_PER_USER = '2';
   process.env.MAX_LIST_LIMIT = '2';
+  process.env.MAX_ENDPOINT_PATH_BYTES = '16';
 
   app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
   configureApp(app, (await import('../../../core/config/index.js')).loadConfig());
@@ -154,6 +155,28 @@ describe('services: create, read, list, update, delete', () => {
     const list = await call('/services?limit=50', { method: 'GET', cookie: alice });
     expect(list.status).toBe(200);
     expect(list.body).toHaveLength(2);
+  });
+
+  it('GET /services/:id/endpoints is paginated, not an unbounded fan-out', async () => {
+    // ENDPOINT_QUOTA_PER_USER=2 for this test file, so two is the most
+    // this user can ever have -- ?limit=1 is what proves pagination is
+    // actually applied here (this route previously loaded every row with
+    // no cursor or limit at all).
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const id = (created.body as { service: { id: string } }).service.id;
+    for (const path of ['/a', '/b']) {
+      await call(`/services/${id}/endpoints`, { cookie: alice, body: { path } });
+    }
+
+    const list = await call(`/services/${id}/endpoints?limit=1`, {
+      method: 'GET',
+      cookie: alice,
+    });
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(1);
   });
 
   it('deletes a service, cascading to its endpoints', async () => {
@@ -462,6 +485,24 @@ describe('endpoint path canonicalization', () => {
       body: { path: '/a/../orders' },
     });
     expect(dup.status).toBe(409);
+  });
+
+  it('enforces the configured path byte cap (16 for this test file) in bytes, not JS string length', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const id = (created.body as { service: { id: string } }).service.id;
+
+    // 8 é characters: 8 UTF-16 code units (under the DTO's own structural
+    // bound and under 16 by JS .length), but each is 2 UTF-8 bytes --
+    // 17 bytes total with the leading slash, over the configured cap.
+    const res = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: `/${'é'.repeat(8)}` },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 });
 
