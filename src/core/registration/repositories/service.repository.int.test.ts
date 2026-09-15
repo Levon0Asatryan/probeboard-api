@@ -226,6 +226,22 @@ describe('list', () => {
         tag: { key: 'load', value: 'test' },
       });
       expect(page).toHaveLength(10);
+
+      // MAX_LIST_LIMIT permits up to 1,000, not just this suite's usual 10:
+      // at 10, the LATERAL's per-iteration tag lookup runs few enough times
+      // that a wrong per-iteration index choice stayed cheap by accident.
+      // At 1,000 it doesn't -- tags_key_value_idx let the planner rescan
+      // this tag's ~35,000 non-matching-service rows on every one of the
+      // outer loop's iterations instead of using the unique (owner, key)
+      // index, reproducing the same class of hang this test already guards
+      // (81s locally, 24.9M buffer hits) at a limit production actually
+      // allows. Fixed by dropping that index (migration
+      // 0006_drop_tags_key_value_idx); docs/m2-verification.md, defect #12.
+      const largePage = await services.list(userId, {
+        limit: 1000,
+        tag: { key: 'load', value: 'test' },
+      });
+      expect(largePage).toHaveLength(1000);
     } finally {
       await ctx.pool.query(`ALTER TABLE services RESET (autovacuum_enabled)`);
       await ctx.pool.query(`ALTER TABLE tags RESET (autovacuum_enabled)`);

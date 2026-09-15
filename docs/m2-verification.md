@@ -505,19 +505,79 @@ regardless. The timeout is back to the suite's default 20s
 (`vitest.integration.mts`'s `testTimeout`) — the 90s value was never a fix
 and is not needed once the plan does not depend on statistics.
 
+**A methodological trap, found while writing this up.** Re-running the same
+`EXPLAIN` reproduction against a Postgres container that had already run
+other tests did not reproduce the bad plan -- `TRUNCATE` resets
+`pg_class.reltuples`/`relpages` but does not clear `pg_statistic` (it keeps
+the table's OID, only the physical storage is replaced), so a table that
+had ever been `ANALYZE`d before, even with different data, keeps
+old-but-present column statistics across a `TRUNCATE`, and the planner's
+estimate from those stale-but-nonzero statistics happened to be good enough
+to avoid the bad plan. Every reproduction in this defect's writeup was
+re-confirmed against a genuinely fresh container (`docker compose down -v`
+
+- `up -d`, migrated from empty, nothing else run first) -- the condition
+  that actually matches CI, which never reuses a container between runs.
+  This is also why the integration tests disable autovacuum explicitly
+  instead of relying on freshness alone: a long-lived local Postgres (or a
+  CI cache that reused a volume) would silently stop exercising this defect
+  otherwise.
+
+**Codex review follow-up (PR #38).** Review on this PR's head commit
+(`7869d52`) found a real second instance of the same class of bug: the
+regression tests above use `limit: 10`, but `MAX_LIST_LIMIT` permits up to
+1,000. At `limit: 10` the LATERAL's per-iteration tag lookup only ran 10
+times, so a wrong per-iteration index choice stayed cheap by accident; at
+`limit: 1000` it didn't. Confirmed on a fresh container: the same 70,000-row
+setup at `limit: 1000` reproduced a 79.8s hang (`Execution Time:
+79813.811 ms`, `Buffers: shared hit=24966507`) -- `tags_key_value_idx`
+(`key`, `value`), created in migration `0004` and with no caller other than
+this LATERAL lookup, let the planner rescan every tag sharing this test's
+`key`/`value` (about 35,000 of them, per `Rows Removed by Filter`) on each
+of the outer loop's 70,000 iterations, instead of using the unique
+`tags_service_key_key`/`tags_endpoint_key_key` index (`(owner, key)`,
+migration `0004`) that already bounds the lookup to exactly one row per
+iteration regardless of statistics.
+
+Fixed the same way as the outer join, by removing the choice rather than
+biasing it: migration `0006_drop_tags_key_value_idx` drops the index, since
+nothing else in the codebase queries `tags` by `key`/`value` without an
+owner filter (`TagRepository`'s own queries filter by `service_id`/
+`endpoint_id`). Re-verified on the same fresh container after dropping it:
+63ms (`Buffers: shared hit=281609`), using `tags_service_key_key`, 1,268x
+faster and 89x fewer buffer hits than the pre-fix plan at the same
+`limit: 1000`. The residual `Bitmap Heap Scan` on the _outer_ table this
+plan still shows at `limit: 1000` (not present at `limit: 10`, where the
+outer side uses an ordered `Index Scan`) is the same statistics-dependent
+choice as the base fix above, now bounded to `O(match count)` rather than
+`O(match count × non-matching tags)` -- a real but far smaller residual
+that self-heals on the next autoanalyze, not a new instance of the
+unbounded defect.
+
+Both bulk-insert tests now also assert a page at `limit: 1000` in the same
+autovacuum-disabled block, proven by removal on a fresh container the same
+way as the base fix: recreating `tags_key_value_idx` alone (migration
+`0005`'s composite indexes and the `LATERAL` join both still in place)
+made both tests fail with a 20s test timeout and cascading 30s hook
+timeouts in the next file (the hung query kept holding a pool connection
+well past vitest's own timeout, exactly matching the original CI symptom
+of one slow query starving the rest of the run) -- restoring the migration
+made both pass again.
+
 **10x integration run.** `npm run test:int` (18 files, 303 tests) run 10
 consecutive times, each against a freshly recreated Postgres container
-(`docker compose down -v` + `up -d`, migrated from empty), no failures:
+(`docker compose down -v` + `up -d`, migrated from empty), no failures,
+re-run after the `limit: 1000` regression coverage above was added:
 
 | Run | Duration | Run | Duration |
 | --- | -------- | --- | -------- |
-| 1   | 17.96s   | 6   | 17.97s   |
-| 2   | 18.14s   | 7   | 17.80s   |
-| 3   | 17.96s   | 8   | 17.89s   |
-| 4   | 17.85s   | 9   | 17.90s   |
-| 5   | 17.86s   | 10  | 17.76s   |
+| 1   | 17.61s   | 6   | 17.67s   |
+| 2   | 17.83s   | 7   | 17.85s   |
+| 3   | 17.74s   | 8   | 17.68s   |
+| 4   | 17.34s   | 9   | 17.57s   |
+| 5   | 17.85s   | 10  | 17.72s   |
 
-303/303 passed on every run; total suite duration stayed in a 17.76s-18.14s
+303/303 passed on every run; total suite duration stayed in a 17.34s-17.85s
 band, no run approached the 20s default per-test timeout on any single
 test.
 
