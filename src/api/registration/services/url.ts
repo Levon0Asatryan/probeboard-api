@@ -1,30 +1,11 @@
+import { effectiveUrl } from '../../../core/registration/url.js';
 import { ValidationError } from '../../../core/errors/app-error.js';
+
+export { effectiveUrl };
 
 /** Origin only -- scheme + host [+ port], never a path (docs/m2-plan.md §3). */
 export function toOrigin(rawUrl: string): string {
   return new URL(rawUrl).origin;
-}
-
-/**
- * Joins an endpoint's `path` onto its service's `baseUrl` for SSRF
- * re-validation (D10). `new URL(path, base)` ignores `base` entirely when
- * `path` itself parses as an absolute URL (e.g. `http://169.254.169.254/`),
- * which the SSRF guard would still catch on the resulting host -- but
- * silently probing a different origin than the one the endpoint is
- * organized under is a product-correctness bug even when the host is
- * public, so it is rejected outright rather than allowed through.
- */
-export function effectiveUrl(baseUrl: string, path: string): string {
-  const joined = new URL(path, baseUrl);
-  if (joined.origin !== baseUrl) {
-    throw new ValidationError([
-      {
-        path: 'path',
-        message: "must be relative to the endpoint's service, not a different origin",
-      },
-    ]);
-  }
-  return joined.toString();
 }
 
 /**
@@ -39,4 +20,19 @@ export function effectiveUrl(baseUrl: string, path: string): string {
 export function canonicalPath(baseUrl: string, path: string): string {
   const url = new URL(effectiveUrl(baseUrl, path));
   return url.pathname + url.search;
+}
+
+/**
+ * `MAX_ENDPOINT_PATH_BYTES` is a save-time-only bound (no worker reader
+ * needs it), so this stays in `api` -- unlike `effectiveUrl`, checked
+ * identically by every path a stored path can be set through: an
+ * endpoint's own create/update, and B-3's implicit service+endpoint
+ * creation.
+ */
+export function assertPathBytes(path: string, maxBytes: number): void {
+  if (Buffer.byteLength(path, 'utf8') > maxBytes) {
+    throw new ValidationError([
+      { path: 'path', message: `must be at most ${String(maxBytes)} bytes` },
+    ]);
+  }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalPath, effectiveUrl, toOrigin } from './url.js';
+import { assertPathBytes, canonicalPath, toOrigin } from './url.js';
 
 describe('toOrigin', () => {
   it('strips a path down to scheme + host', () => {
@@ -12,25 +12,6 @@ describe('toOrigin', () => {
 
   it('drops query and fragment', () => {
     expect(toOrigin('https://example.com/x?a=1#frag')).toBe('https://example.com');
-  });
-});
-
-describe('effectiveUrl', () => {
-  it('joins a relative path onto the base origin', () => {
-    expect(effectiveUrl('https://example.com', '/orders')).toBe('https://example.com/orders');
-  });
-
-  it('defaults to the base itself when path is just "/"', () => {
-    expect(effectiveUrl('https://example.com', '/')).toBe('https://example.com/');
-  });
-
-  it('rejects a path that resolves to a different origin', () => {
-    // new URL(path, base) ignores base entirely when path is itself absolute.
-    expect(() => effectiveUrl('https://example.com', 'http://169.254.169.254/')).toThrow();
-  });
-
-  it('rejects a path with a different scheme via a schema-relative form', () => {
-    expect(() => effectiveUrl('https://example.com', '//evil.example.net/x')).toThrow();
   });
 });
 
@@ -50,5 +31,17 @@ describe('canonicalPath', () => {
 
   it('propagates the off-origin rejection effectiveUrl already enforces', () => {
     expect(() => canonicalPath('https://example.com', 'http://169.254.169.254/')).toThrow();
+  });
+});
+
+describe('assertPathBytes', () => {
+  it('accepts a path at or under the cap', () => {
+    expect(() => assertPathBytes('/orders', 16)).not.toThrow();
+  });
+
+  it('rejects a path over the cap in bytes, not JS string length', () => {
+    // 8 é characters: 8 UTF-16 code units, but 16 UTF-8 bytes -- plus the
+    // leading slash, 17 bytes, over a 16-byte cap.
+    expect(() => assertPathBytes(`/${'é'.repeat(8)}`, 16)).toThrow();
   });
 });

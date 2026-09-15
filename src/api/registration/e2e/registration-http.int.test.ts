@@ -504,6 +504,15 @@ describe('endpoint path canonicalization', () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
   });
+
+  it('also enforces the path byte cap on B-3 implicit creation', async () => {
+    const res = await call('/services', {
+      cookie: alice,
+      body: { url: `http://93.184.216.34/${'é'.repeat(8)}` },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
 });
 
 describe('atomicity: a failed PATCH changes nothing', () => {

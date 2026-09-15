@@ -21,7 +21,7 @@ import type { ListQuery } from '../dto/list-query.dto.js';
 import type { UpdateEndpointRequest } from '../dto/update-endpoint.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
 import { HeaderValidationService } from './header-validation.service.js';
-import { canonicalPath, effectiveUrl } from './url.js';
+import { assertPathBytes, canonicalPath, effectiveUrl } from './url.js';
 
 @Injectable()
 export class EndpointsService {
@@ -78,14 +78,7 @@ export class EndpointsService {
    * value that is under the cap before parsing land over it after.
    */
   private checkPathBytes(path: string): void {
-    if (Buffer.byteLength(path, 'utf8') > this.cfg.MAX_ENDPOINT_PATH_BYTES) {
-      throw new ValidationError([
-        {
-          path: 'path',
-          message: `must be at most ${String(this.cfg.MAX_ENDPOINT_PATH_BYTES)} bytes`,
-        },
-      ]);
-    }
+    assertPathBytes(path, this.cfg.MAX_ENDPOINT_PATH_BYTES);
   }
 
   async createForService(

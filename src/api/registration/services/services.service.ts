@@ -20,6 +20,7 @@ import type { UpdateServiceRequest } from '../dto/update-service.dto.js';
 import type { ListQuery } from '../dto/list-query.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
 import { HeaderValidationService } from './header-validation.service.js';
+import { assertPathBytes } from './url.js';
 
 export interface CreateServiceResult {
   service: ServiceDto;
@@ -112,6 +113,9 @@ export class ServicesService {
     const parsed = new URL(rawUrl);
     const origin = parsed.origin;
     const path = parsed.pathname + parsed.search || '/';
+    // Same cap createForService/update enforce on an explicit endpoint --
+    // the implicit form creates one too, through the identical column.
+    assertPathBytes(path, this.cfg.MAX_ENDPOINT_PATH_BYTES);
 
     const endpointId = await this.db.kysely.transaction().execute(async (trx) => {
       await this.users.lockForUpdate(userId, trx);

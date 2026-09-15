@@ -98,6 +98,13 @@ components:
                   type: integer
                 count:
                   type: integer
+            - type: object
+              description: "ADDRESS_NOT_ALLOWED: the disallowed address a hostname resolved to (§5.1)."
+              required:
+                - address
+              properties:
+                address:
+                  type: string
     RegisterRequest:
       type: object
       properties:
@@ -407,7 +414,7 @@ components:
           type: integer
           minimum: 0
           exclusiveMinimum: true
-          maximum: 9007199254740991
+          maximum: 2147483647
         failureThreshold:
           type: integer
           minimum: 1
@@ -461,7 +468,8 @@ components:
                   path:
                     type: string
                     minLength: 1
-                  equals: {}
+                  equals:
+                    $ref: "#/definitions/__schema0"
                 required:
                   - type
                   - path
@@ -505,6 +513,22 @@ components:
         - method
         - path
       additionalProperties: false
+      definitions:
+        __schema0:
+          anyOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: string
+              nullable: true
+              enum:
+                - null
+            - type: array
+              items:
+                $ref: "#/definitions/__schema0"
+            - type: object
+              additionalProperties:
+                $ref: "#/definitions/__schema0"
     UpdateEndpointRequest:
       type: object
       properties:
@@ -555,7 +579,7 @@ components:
           type: integer
           minimum: 0
           exclusiveMinimum: true
-          maximum: 9007199254740991
+          maximum: 2147483647
         failureThreshold:
           type: integer
           minimum: 1
@@ -609,7 +633,8 @@ components:
                   path:
                     type: string
                     minLength: 1
-                  equals: {}
+                  equals:
+                    $ref: "#/definitions/__schema0"
                 required:
                   - type
                   - path
@@ -650,6 +675,22 @@ components:
               - value
             additionalProperties: false
       additionalProperties: false
+      definitions:
+        __schema0:
+          anyOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: string
+              nullable: true
+              enum:
+                - null
+            - type: array
+              items:
+                $ref: "#/definitions/__schema0"
+            - type: object
+              additionalProperties:
+                $ref: "#/definitions/__schema0"
     Header:
       type: object
       required:
