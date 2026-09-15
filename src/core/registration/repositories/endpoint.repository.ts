@@ -1,13 +1,27 @@
 import { Injectable } from '@nestjs/common';
-import type { Kysely } from 'kysely';
+import type { ExpressionBuilder, Kysely } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database, Endpoint, EndpointUpdate, NewEndpoint } from '../../db/types.js';
 
 export interface ListEndpointsOptions {
   cursor?: string;
   limit: number;
-  /** Restricts to these ids, e.g. a tag filter's match set (B-5). Omitted means no restriction. */
-  ids?: string[];
+  /** Restricts to endpoints carrying this key:value tag (B-5). Omitted means no restriction. */
+  tag?: { key: string; value: string };
+}
+
+function tagExists(
+  eb: ExpressionBuilder<Database, 'endpoints'>,
+  tag: { key: string; value: string },
+) {
+  return eb.exists(
+    eb
+      .selectFrom('tags')
+      .select('tags.id')
+      .whereRef('tags.endpoint_id', '=', 'endpoints.id')
+      .where('tags.key', '=', tag.key)
+      .where('tags.value', '=', tag.value),
+  );
 }
 
 @Injectable()
@@ -34,10 +48,19 @@ export class EndpointRepository {
       .executeTakeFirst();
   }
 
+  /**
+   * The tag filter (B-5) is a `WHERE EXISTS` subquery, not a materialized
+   * id list joined in as `id IN (...)`: ENDPOINT_QUOTA_PER_USER permits up
+   * to 100,000 endpoints, and an id-list join over a large match set would
+   * bind one parameter per match before `limit` ever trims the result,
+   * eventually exceeding Postgres's bind-parameter ceiling instead of
+   * returning a page. `EXISTS` lets the planner filter and paginate in one
+   * query, with cursor/limit applied exactly as without a tag.
+   */
   async listForService(
     serviceId: string,
     userId: string,
-    options: { cursor?: string; limit: number; ids?: string[] },
+    options: { cursor?: string; limit: number; tag?: { key: string; value: string } },
   ): Promise<Endpoint[]> {
     let query = this.db.kysely
       .selectFrom('endpoints')
@@ -50,8 +73,8 @@ export class EndpointRepository {
     if (options.cursor) {
       query = query.where('id', '>', options.cursor);
     }
-    if (options.ids) {
-      query = query.where('id', 'in', options.ids);
+    if (options.tag) {
+      query = query.where((eb) => tagExists(eb, options.tag!));
     }
 
     return query.execute();
@@ -68,8 +91,8 @@ export class EndpointRepository {
     if (options.cursor) {
       query = query.where('id', '>', options.cursor);
     }
-    if (options.ids) {
-      query = query.where('id', 'in', options.ids);
+    if (options.tag) {
+      query = query.where((eb) => tagExists(eb, options.tag!));
     }
 
     return query.execute();

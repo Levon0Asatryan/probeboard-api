@@ -7,8 +7,8 @@ export interface ListServicesOptions {
   /** Opaque cursor: the `id` of the last row of the previous page. */
   cursor?: string;
   limit: number;
-  /** Restricts to these ids, e.g. a tag filter's match set (B-5). Omitted means no restriction. */
-  ids?: string[];
+  /** Restricts to services carrying this key:value tag (B-5). Omitted means no restriction. */
+  tag?: { key: string; value: string };
 }
 
 @Injectable()
@@ -55,6 +55,14 @@ export class ServiceRepository {
       .executeTakeFirst();
   }
 
+  /**
+   * The tag filter (B-5) is a `WHERE EXISTS` subquery, not a materialized
+   * id list joined in as `id IN (...)`: an account with many matches would
+   * otherwise bind one parameter per match before `limit` ever trims the
+   * result, eventually exceeding Postgres's bind-parameter ceiling instead
+   * of returning a page. `EXISTS` lets the planner filter and paginate in
+   * one query, with cursor/limit applied exactly as without a tag.
+   */
   async list(userId: string, options: ListServicesOptions): Promise<Service[]> {
     let query = this.db.kysely
       .selectFrom('services')
@@ -66,8 +74,18 @@ export class ServiceRepository {
     if (options.cursor) {
       query = query.where('id', '>', options.cursor);
     }
-    if (options.ids) {
-      query = query.where('id', 'in', options.ids);
+    if (options.tag) {
+      const { key, value } = options.tag;
+      query = query.where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('tags')
+            .select('tags.id')
+            .whereRef('tags.service_id', '=', 'services.id')
+            .where('tags.key', '=', key)
+            .where('tags.value', '=', value),
+        ),
+      );
     }
 
     return query.execute();

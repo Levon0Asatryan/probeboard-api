@@ -99,30 +99,4 @@ export class TagRepository {
     if (executor) return run(executor);
     return this.db.kysely.transaction().execute(run);
   }
-
-  /** Services owned by `userId` carrying the given key:value tag, for filtering. */
-  async filterServiceIdsByTag(userId: string, key: string, value: string): Promise<string[]> {
-    const rows = await this.db.kysely
-      .selectFrom('tags')
-      .innerJoin('services', 'services.id', 'tags.service_id')
-      .select('tags.service_id as id')
-      .where('services.user_id', '=', userId)
-      .where('tags.key', '=', key)
-      .where('tags.value', '=', value)
-      .execute();
-    return rows.map((r) => r.id).filter((id): id is string => id !== null);
-  }
-
-  /** Same as filterServiceIdsByTag, for endpoints owned by userId. */
-  async filterEndpointIdsByTag(userId: string, key: string, value: string): Promise<string[]> {
-    const rows = await this.db.kysely
-      .selectFrom('tags')
-      .innerJoin('endpoints', 'endpoints.id', 'tags.endpoint_id')
-      .select('tags.endpoint_id as id')
-      .where('endpoints.user_id', '=', userId)
-      .where('tags.key', '=', key)
-      .where('tags.value', '=', value)
-      .execute();
-    return rows.map((r) => r.id).filter((id): id is string => id !== null);
-  }
 }

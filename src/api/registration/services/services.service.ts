@@ -187,18 +187,10 @@ export class ServicesService {
   }
 
   async list(userId: string, query: ListQuery): Promise<ServiceDto[]> {
-    let ids: string[] | undefined;
-    if (query.tag) {
-      ids = await this.tags.filterServiceIdsByTag(userId, query.tag.key, query.tag.value);
-      // No service carries the tag -- skip the query entirely rather than
-      // pass an empty IN list through to the database.
-      if (ids.length === 0) return [];
-    }
-
     // The DTO's own bound is a generous structural ceiling, not the real
     // cap -- MAX_LIST_LIMIT is configured (§5.5).
     const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
-    const rows = await this.services.list(userId, { ...query, limit, ids });
+    const rows = await this.services.list(userId, { ...query, limit });
     return Promise.all(rows.map((row) => this.toDto(row.id, userId)));
   }
 

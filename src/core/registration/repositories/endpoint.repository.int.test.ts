@@ -4,10 +4,12 @@ import { UserRepository } from '../../users/repositories/user.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
 import { ServiceRepository } from './service.repository.js';
 import { EndpointRepository } from './endpoint.repository.js';
+import { TagRepository } from './tag.repository.js';
 
 let ctx: TestDb;
 let services: ServiceRepository;
 let endpoints: EndpointRepository;
+let tags: TagRepository;
 let users: UserRepository;
 let userId: string;
 let otherUserId: string;
@@ -19,6 +21,7 @@ beforeAll(() => {
   users = new UserRepository(db);
   services = new ServiceRepository(db);
   endpoints = new EndpointRepository(db);
+  tags = new TagRepository(db);
 });
 
 afterAll(async () => {
@@ -303,6 +306,106 @@ describe('list excludes another user’s endpoints', () => {
 
     const theirs = await endpoints.list(otherUserId, { limit: 10 });
     expect(theirs.map((e) => e.path)).toEqual(['/theirs']);
+  });
+});
+
+describe('the tag filter (B-5)', () => {
+  it('listForService: matches only this user’s endpoints carrying the key:value tag', async () => {
+    const matching = await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/mine',
+    });
+    await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/untagged',
+    });
+    const otherService = await services.create({
+      user_id: otherUserId,
+      name: 'Other API',
+      base_url: 'https://other.example.com',
+    });
+    const otherMatching = await endpoints.create({
+      service_id: otherService.id,
+      user_id: otherUserId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/theirs',
+    });
+    await tags.replaceForEndpoint(matching.id, userId, [{ key: 'critical', value: 'true' }]);
+    await tags.replaceForEndpoint(otherMatching.id, otherUserId, [
+      { key: 'critical', value: 'true' },
+    ]);
+
+    const found = await endpoints.listForService(serviceId, userId, {
+      limit: 50,
+      tag: { key: 'critical', value: 'true' },
+    });
+    expect(found.map((e) => e.id)).toEqual([matching.id]);
+  });
+
+  it('list: matches only this user’s endpoints carrying the key:value tag', async () => {
+    const matching = await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/mine',
+    });
+    await tags.replaceForEndpoint(matching.id, userId, [{ key: 'critical', value: 'true' }]);
+
+    const wrongValue = await endpoints.list(userId, {
+      limit: 50,
+      tag: { key: 'critical', value: 'false' },
+    });
+    expect(wrongValue).toEqual([]);
+
+    const found = await endpoints.list(userId, {
+      limit: 50,
+      tag: { key: 'critical', value: 'true' },
+    });
+    expect(found.map((e) => e.id)).toEqual([matching.id]);
+  });
+
+  it('combines the tag filter with cursor pagination', async () => {
+    const matches: string[] = [];
+    for (const path of ['/a', '/b', '/c']) {
+      const e = await endpoints.create({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        max_redirects: 5,
+        method: 'GET',
+        path,
+      });
+      await tags.replaceForEndpoint(e.id, userId, [{ key: 'env', value: 'prod' }]);
+      matches.push(e.id);
+    }
+
+    const page1 = await endpoints.list(userId, { limit: 2, tag: { key: 'env', value: 'prod' } });
+    expect(page1).toHaveLength(2);
+
+    const page2 = await endpoints.list(userId, {
+      limit: 2,
+      cursor: page1[1].id,
+      tag: { key: 'env', value: 'prod' },
+    });
+    expect(page2).toHaveLength(1);
+    expect(new Set([...page1, ...page2].map((e) => e.id))).toEqual(new Set(matches));
   });
 });
 
