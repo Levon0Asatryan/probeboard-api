@@ -579,3 +579,78 @@ describe('pause and resume', () => {
     expect((resumed.body as { enabled: boolean }).enabled).toBe(true);
   });
 });
+
+describe('B-5: tag filtering', () => {
+  it('filters GET /services by ?tag=key:value', async () => {
+    const prod = await call('/services', {
+      cookie: alice,
+      body: {
+        name: 'prod',
+        baseUrl: 'http://93.184.216.34',
+        tags: [{ key: 'env', value: 'prod' }],
+      },
+    });
+    await call('/services', {
+      cookie: alice,
+      body: {
+        name: 'staging',
+        baseUrl: 'http://93.184.216.35',
+        tags: [{ key: 'env', value: 'staging' }],
+      },
+    });
+    const prodId = (prod.body as { service: { id: string } }).service.id;
+
+    const filtered = await call('/services?tag=env:prod', { method: 'GET', cookie: alice });
+    expect(filtered.status).toBe(200);
+    expect((filtered.body as { id: string }[]).map((s) => s.id)).toEqual([prodId]);
+  });
+
+  it('a tag with no match returns an empty list, not an error', async () => {
+    const filtered = await call('/services?tag=env:nonexistent', { method: 'GET', cookie: alice });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body).toEqual([]);
+  });
+
+  it("does not match another user's service carrying the same tag", async () => {
+    await call('/services', {
+      cookie: bob,
+      body: {
+        name: 'bob-prod',
+        baseUrl: 'http://93.184.216.35',
+        tags: [{ key: 'env', value: 'prod' }],
+      },
+    });
+
+    const filtered = await call('/services?tag=env:prod', { method: 'GET', cookie: alice });
+    expect(filtered.body).toEqual([]);
+  });
+
+  it('filters GET /endpoints and GET /services/:id/endpoints by ?tag=key:value', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const serviceId = (created.body as { service: { id: string } }).service.id;
+    const critical = await call(`/services/${serviceId}/endpoints`, {
+      cookie: alice,
+      body: { path: '/critical', tags: [{ key: 'critical', value: 'true' }] },
+    });
+    await call(`/services/${serviceId}/endpoints`, { cookie: alice, body: { path: '/other' } });
+    const criticalId = (critical.body as { id: string }).id;
+
+    const flat = await call('/endpoints?tag=critical:true', { method: 'GET', cookie: alice });
+    expect((flat.body as { id: string }[]).map((e) => e.id)).toEqual([criticalId]);
+
+    const nested = await call(`/services/${serviceId}/endpoints?tag=critical:true`, {
+      method: 'GET',
+      cookie: alice,
+    });
+    expect((nested.body as { id: string }[]).map((e) => e.id)).toEqual([criticalId]);
+  });
+
+  it('rejects a malformed tag filter', async () => {
+    const res = await call('/services?tag=no-colon-here', { method: 'GET', cookie: alice });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+});
