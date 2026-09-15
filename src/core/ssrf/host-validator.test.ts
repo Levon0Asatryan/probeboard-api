@@ -129,6 +129,40 @@ describe('IPv6 forms', () => {
   });
 });
 
+describe('IANA special-purpose registry ranges added after the review round (docs/m2-verification.md)', () => {
+  it.each([
+    ['IPv4 Service Continuity Prefix (DS-Lite AFTR)', 'http://192.0.0.1/'],
+    ['IPv4 Service Continuity Prefix (DS-Lite B4)', 'http://192.0.0.2/'],
+    ['IPv4 dummy address', 'http://192.0.0.8/'],
+    ['NAT64/DNS64 Discovery, first address', 'http://192.0.0.170/'],
+    ['NAT64/DNS64 Discovery, second address', 'http://192.0.0.171/'],
+    ['Documentation (TEST-NET-1)', 'http://192.0.2.1/'],
+    ['Documentation (TEST-NET-2)', 'http://198.51.100.1/'],
+    ['Documentation (TEST-NET-3)', 'http://203.0.113.1/'],
+    ['6to4 Relay Anycast, deprecated and reclassified non-global', 'http://192.88.99.1/'],
+    ['IPv6 Benchmarking', 'http://[2001:2::1]/'],
+    ['IPv6 deprecated ORCHID', 'http://[2001:10::1]/'],
+    ['IPv6 documentation (RFC 3849)', 'http://[2001:db8::1]/'],
+    ['IPv6 documentation (RFC 9637)', 'http://[3fff::1]/'],
+    ['IPv6 Segment Routing (SRv6) SIDs', 'http://[5f00::1]/'],
+    ['IPv6 Discard-Only Address Block', 'http://[100::1]/'],
+    ['IPv6 Dummy IPv6 Prefix', 'http://[100:0:0:1::1]/'],
+  ])('%s rejected as ADDRESS_NOT_ALLOWED', async (_label, url) => {
+    await rejects(url, 'ADDRESS_NOT_ALLOWED');
+  });
+
+  it.each([
+    ['Port Control Protocol Anycast', 'http://192.0.0.9/'],
+    ['Traversal Using Relays around NAT Anycast', 'http://192.0.0.10/'],
+  ])(
+    '%s is a documented exception inside a blocked /24 and is not rejected',
+    async (_label, url) => {
+      const result = await assertSaveableUrl(url, cfg);
+      expect(result.addresses.length).toBeGreaterThan(0);
+    },
+  );
+});
+
 describe('0.0.0.0 and cloud/CGNAT/benchmark/multicast literals', () => {
   it.each([
     ['unspecified IPv4', 'http://0.0.0.0/'],

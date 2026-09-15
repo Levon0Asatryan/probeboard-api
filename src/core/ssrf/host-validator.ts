@@ -76,6 +76,28 @@ function getBlockList(): BlockList {
   // Alibaba Cloud's metadata address -- a separate literal, not covered by
   // any of the ranges above.
   bl.addAddress('100.100.100.200', 'ipv4');
+  // The rest of this function's ranges are checked entry-by-entry against
+  // the IANA IPv4/IPv6 Special-Purpose Address Registries (docs/m2-verification.md
+  // has the full comparison table), not just the handful of well-known ones
+  // above.
+  //
+  // 192.0.0.0/24 "IETF Protocol Assignments" is non-global, but two single
+  // addresses inside it -- 192.0.0.9 (Port Control Protocol Anycast) and
+  // 192.0.0.10 (TURN Anycast) -- are marked globally reachable. Carving
+  // exactly those two out of an otherwise-blocked /24 needs eight separate
+  // ranges for two addresses; instead, only the three specifically-named
+  // non-global sub-blocks are blocked (DS-Lite's AFTR/B4 addresses land in
+  // the first one), matching every other range in this list -- each is
+  // named by the registry, not swept in wholesale with its siblings.
+  bl.addSubnet('192.0.0.0', 29, 'ipv4'); // IPv4 Service Continuity Prefix (DS-Lite, RFC 7335)
+  bl.addAddress('192.0.0.8', 'ipv4'); // IPv4 dummy address (RFC 7600)
+  bl.addSubnet('192.0.0.170', 31, 'ipv4'); // NAT64/DNS64 Discovery, .170 and .171 (RFC 7050/8880)
+  bl.addSubnet('192.0.2.0', 24, 'ipv4'); // Documentation (TEST-NET-1, RFC 5737)
+  bl.addSubnet('198.51.100.0', 24, 'ipv4'); // Documentation (TEST-NET-2, RFC 5737)
+  bl.addSubnet('203.0.113.0', 24, 'ipv4'); // Documentation (TEST-NET-3, RFC 5737)
+  // Deprecated by RFC 7526, and reclassified non-global by the registry --
+  // "deprecated" is not "gone", the same reasoning fec0::/10 below gets.
+  bl.addSubnet('192.88.99.0', 24, 'ipv4'); // 6to4 Relay Anycast (RFC 3068, deprecated)
 
   // IPv6: loopback, unspecified, unique local, link-local.
   bl.addAddress('::1', 'ipv6');
@@ -106,6 +128,11 @@ function getBlockList(): BlockList {
   // every address in either prefix as unsafe is the same posture already
   // taken for ::/96 above, and decoding RFC 8215's variable embedding
   // lengths correctly is complexity this guard does not need to take on.
+  // (The IANA registry marks 64:ff9b::/96 itself "Global: Yes" -- that
+  // column answers a different question, whether the well-known prefix is
+  // routable on the public Internet, not whether the address it embeds is
+  // safe to connect to. This guard cares about the latter, so the block
+  // stays despite the registry's "Yes".)
   bl.addSubnet('64:ff9b::', 96, 'ipv6'); // RFC 6052 well-known prefix
   bl.addSubnet('64:ff9b:1::', 48, 'ipv6'); // RFC 8215 local-use prefix
   // IPv6 multicast, the counterpart to the IPv4 224.0.0.0/4 rule above --
@@ -129,6 +156,23 @@ function getBlockList(): BlockList {
   // that justifies blocking 6to4 and NAT64 wholesale above, so it gets the
   // same treatment rather than being decoded and classified per-address.
   bl.addSubnet('2001::', 32, 'ipv6');
+  // The rest of this function's IPv6 ranges are, like the IPv4 ones above,
+  // checked entry-by-entry against the IANA IPv6 Special-Purpose Address
+  // Registry (docs/m2-verification.md has the full comparison table).
+  // 2001::/23 "IETF Protocol Assignments" (which 2001::/32 above is one
+  // named sub-block of) is not swept wholesale like 192.0.0.0/24's IPv4
+  // counterpart: unlike that /24's two single global addresses, 2001::/23
+  // carves out two entire /28s for active protocols (ORCHIDv2, Drone
+  // Remote ID) -- wholesale-blocking would reject real, currently-assigned
+  // global traffic, not just two obscure anycast literals. Only the
+  // specifically-named non-global sub-blocks are added here, same as IPv4.
+  bl.addSubnet('2001:2::', 48, 'ipv6'); // Benchmarking (RFC 5180)
+  bl.addSubnet('2001:10::', 28, 'ipv6'); // Deprecated, previously ORCHID (RFC 4843, deprecated by RFC 7343)
+  bl.addSubnet('2001:db8::', 32, 'ipv6'); // Documentation (RFC 3849)
+  bl.addSubnet('3fff::', 20, 'ipv6'); // Documentation (RFC 9637)
+  bl.addSubnet('5f00::', 16, 'ipv6'); // Segment Routing (SRv6) SIDs (RFC 9602)
+  bl.addSubnet('100::', 64, 'ipv6'); // Discard-Only Address Block (RFC 6666)
+  bl.addSubnet('100:0:0:1::', 64, 'ipv6'); // Dummy IPv6 Prefix (RFC 9702)
 
   blockList = bl;
   return bl;
