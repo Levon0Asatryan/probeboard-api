@@ -60,9 +60,18 @@ GET {{baseUrl}}/v1/endpoints/:id
 GET {{baseUrl}}/v1/services/:serviceId/endpoints
 
 ###
+# @name listForServiceByTag
+# B-5: create's own {critical: true} tag matches.
+GET {{baseUrl}}/v1/services/:serviceId/endpoints?tag=critical:true
+
+###
 # @name listAll
 # Every endpoint the signed-in account owns, across services.
 GET {{baseUrl}}/v1/endpoints
+
+###
+# @name listAllByTag
+GET {{baseUrl}}/v1/endpoints?tag=critical:true
 
 ###
 # @name update
