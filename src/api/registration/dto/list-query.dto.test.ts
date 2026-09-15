@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { listQuerySchema } from './list-query.dto.js';
 
 describe('listQuerySchema', () => {
-  it('defaults limit and leaves cursor unset', () => {
+  it('defaults limit and leaves cursor/tag unset', () => {
     const result = listQuerySchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.limit).toBe(50);
       expect(result.data.cursor).toBeUndefined();
+      expect(result.data.tag).toBeUndefined();
     }
   });
 
@@ -28,6 +29,26 @@ describe('listQuerySchema', () => {
     expect(
       listQuerySchema.safeParse({ cursor: '11111111-1111-4111-8111-111111111111' }).success,
     ).toBe(true);
+  });
+
+  it('parses "key:value" into {key, value} (B-5)', () => {
+    const result = listQuerySchema.safeParse({ tag: 'env:prod' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.tag).toEqual({ key: 'env', value: 'prod' });
+  });
+
+  it('splits only on the first colon, so a value may contain one', () => {
+    const result = listQuerySchema.safeParse({ tag: 'region:us-east:1' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.tag).toEqual({ key: 'region', value: 'us-east:1' });
+  });
+
+  it('rejects a tag filter with no colon', () => {
+    expect(listQuerySchema.safeParse({ tag: 'noSeparator' }).success).toBe(false);
+  });
+
+  it('rejects a tag filter with an empty key', () => {
+    expect(listQuerySchema.safeParse({ tag: ':prod' }).success).toBe(false);
   });
 
   it('rejects unknown fields', () => {

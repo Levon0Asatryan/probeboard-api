@@ -3,9 +3,11 @@ import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
 import { ServiceRepository } from './service.repository.js';
+import { TagRepository } from './tag.repository.js';
 
 let ctx: TestDb;
 let services: ServiceRepository;
+let tags: TagRepository;
 let users: UserRepository;
 let userId: string;
 let otherUserId: string;
@@ -15,6 +17,7 @@ beforeAll(() => {
   const db = { kysely: ctx.db } as DbService;
   users = new UserRepository(db);
   services = new ServiceRepository(db);
+  tags = new TagRepository(db);
 });
 
 afterAll(async () => {
@@ -115,6 +118,99 @@ describe('list', () => {
     expect(page2[0].id).not.toBe(page1[0].id);
     expect(page2[0].id).not.toBe(page1[1].id);
   });
+
+  it('filters to only this user’s services carrying the key:value tag (B-5)', async () => {
+    const matching = await services.create({
+      user_id: userId,
+      name: 'API',
+      base_url: 'https://api.example.com',
+    });
+    await services.create({
+      user_id: userId,
+      name: 'Other',
+      base_url: 'https://other.example.com',
+    });
+    const otherUsersMatching = await services.create({
+      user_id: otherUserId,
+      name: 'Other user API',
+      base_url: 'https://other-user.example.com',
+    });
+    await tags.replaceForService(matching.id, userId, [{ key: 'env', value: 'prod' }]);
+    await tags.replaceForService(otherUsersMatching.id, otherUserId, [
+      { key: 'env', value: 'prod' },
+    ]);
+
+    const found = await services.list(userId, { limit: 50, tag: { key: 'env', value: 'prod' } });
+    expect(found.map((s) => s.id)).toEqual([matching.id]);
+  });
+
+  it('does not match a different value for the same key', async () => {
+    const service = await services.create({
+      user_id: userId,
+      name: 'API',
+      base_url: 'https://api.example.com',
+    });
+    await tags.replaceForService(service.id, userId, [{ key: 'env', value: 'prod' }]);
+
+    const found = await services.list(userId, {
+      limit: 50,
+      tag: { key: 'env', value: 'staging' },
+    });
+    expect(found).toEqual([]);
+  });
+
+  it('combines the tag filter with cursor pagination', async () => {
+    const matches: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const s = await services.create({
+        user_id: userId,
+        name: `S${i}`,
+        base_url: `https://s${i}.example.com`,
+      });
+      await tags.replaceForService(s.id, userId, [{ key: 'env', value: 'prod' }]);
+      matches.push(s.id);
+    }
+
+    const page1 = await services.list(userId, {
+      limit: 2,
+      tag: { key: 'env', value: 'prod' },
+    });
+    expect(page1).toHaveLength(2);
+
+    const page2 = await services.list(userId, {
+      limit: 2,
+      cursor: page1[1].id,
+      tag: { key: 'env', value: 'prod' },
+    });
+    expect(page2).toHaveLength(1);
+    expect(new Set([...page1, ...page2].map((s) => s.id))).toEqual(new Set(matches));
+  });
+
+  it('still returns a page when the match set is larger than Postgres can bind as one IN list', async () => {
+    // Same guard as EndpointRepository's own version of this test: a
+    // materialized-id-list WHERE id IN (...) binds one parameter per id,
+    // and Postgres rejects a query with more than 65535 bind parameters
+    // outright. EXISTS never binds one parameter per row.
+    const rowCount = 70_000;
+    await ctx.pool.query(
+      `INSERT INTO services (user_id, name, base_url)
+         SELECT $1, 'bulk ' || gs, 'https://bulk-' || gs || '.example.com'
+         FROM generate_series(1, $2) AS gs`,
+      [userId, rowCount],
+    );
+    await ctx.pool.query(
+      `INSERT INTO tags (service_id, key, value)
+         SELECT id, 'load', 'test' FROM services
+         WHERE user_id = $1 AND name LIKE 'bulk %'`,
+      [userId],
+    );
+
+    const page = await services.list(userId, {
+      limit: 10,
+      tag: { key: 'load', value: 'test' },
+    });
+    expect(page).toHaveLength(10);
+  }, 30_000);
 });
 
 describe('update', () => {

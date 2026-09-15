@@ -1,10 +1,26 @@
 import { z } from 'zod';
 import type { Tag } from '../../../core/db/types.js';
 
-/** key:value tag (B-5). Bounds are structural, not configured -- no reason to make these tunable. */
+/**
+ * key:value tag (B-5). Bounds are structural, not configured -- no reason
+ * to make these tunable.
+ *
+ * `key` may not contain a colon: the `?tag=key:value` filter always splits
+ * on the *first* colon, so a tag written as `{key: "team:region", value:
+ * "west"}` would be stored but could never be matched by that filter --
+ * `?tag=team:region:west` parses as key `team`, value `region:west`.
+ */
 export const tagInputSchema = z
   .object({
-    key: z.string().min(1).max(128),
+    // A regex, not .refine(): z.toJSONSchema (the OpenAPI document, §L178)
+    // drops an arbitrary predicate silently, but converts a regex to
+    // `pattern` -- a generated client needs to see this bound too, not just
+    // the runtime reject it.
+    key: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[^:]*$/, 'must not contain a colon'),
     value: z.string().min(1).max(256),
   })
   .strict();

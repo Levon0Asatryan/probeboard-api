@@ -202,6 +202,7 @@ export class EndpointsService {
     const rows = await this.endpoints.listForService(serviceId, userId, {
       cursor: query.cursor,
       limit,
+      tag: query.tag,
     });
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }

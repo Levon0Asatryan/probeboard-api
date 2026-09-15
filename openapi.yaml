@@ -262,6 +262,7 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 128
+                    pattern: ^[^:]*$
                   value:
                     type: string
                     minLength: 1
@@ -308,6 +309,7 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 128
+                    pattern: ^[^:]*$
                   value:
                     type: string
                     minLength: 1
@@ -353,6 +355,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1
@@ -501,6 +504,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1
@@ -666,6 +670,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1
@@ -1311,6 +1316,15 @@ paths:
             minimum: 1
             maximum: 1000
             default: 50
+        - &a6
+          name: tag
+          in: query
+          required: false
+          description: 'B-5: "key:value", split on the first colon only. Matches services/endpoints carrying that exact tag; no match returns an empty list, not an error.'
+          schema:
+            type: string
+            pattern: ^[^:]+:.*$
+            example: env:prod
       responses:
         "200":
           description: One page, oldest id first.
@@ -1320,6 +1334,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Service"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "429": *a2
   /v1/services/{id}:
@@ -1421,6 +1441,7 @@ paths:
         - *a3
         - *a4
         - *a5
+        - *a6
       responses:
         "200":
           description: One page of endpoints under this service, oldest id first.
@@ -1430,6 +1451,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "404":
           description: Not found, or owned by someone else.
@@ -1488,6 +1515,7 @@ paths:
       parameters:
         - *a4
         - *a5
+        - *a6
       responses:
         "200":
           description: One page, oldest id first.
@@ -1497,6 +1525,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "429": *a2
   /v1/endpoints/{id}:

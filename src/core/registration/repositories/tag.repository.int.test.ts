@@ -135,27 +135,6 @@ describe('replaceForService', () => {
   });
 });
 
-describe('filterServiceIdsByTag', () => {
-  it('finds only this user’s services carrying the tag', async () => {
-    const otherService = await services.create({
-      user_id: otherUserId,
-      name: 'Other',
-      base_url: 'https://other.example.com',
-    });
-    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
-    await tags.replaceForService(otherService.id, otherUserId, [{ key: 'env', value: 'prod' }]);
-
-    const found = await tags.filterServiceIdsByTag(userId, 'env', 'prod');
-    expect(found).toEqual([serviceId]);
-  });
-
-  it('does not match a different value for the same key', async () => {
-    await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);
-
-    await expect(tags.filterServiceIdsByTag(userId, 'env', 'staging')).resolves.toEqual([]);
-  });
-});
-
 describe('cascade delete', () => {
   it('deleting the service deletes its tags', async () => {
     await tags.replaceForService(serviceId, userId, [{ key: 'env', value: 'prod' }]);

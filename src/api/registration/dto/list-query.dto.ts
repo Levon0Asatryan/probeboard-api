@@ -16,10 +16,27 @@ import { z } from 'zod';
  */
 const STRUCTURAL_MAX_LIMIT = 1000;
 
+/**
+ * B-5: `?tag=key:value` filters either list endpoint. Split on the first
+ * `:` only, so a value is free to contain one itself (e.g. `region:us-east:1`
+ * splits to key `region`, value `us-east:1`) -- only the key is required to
+ * be colon-free.
+ */
+export const tagFilterSchema = z
+  .string()
+  .refine((v) => v.includes(':') && v.indexOf(':') > 0, {
+    message: 'must be "key:value"',
+  })
+  .transform((v) => {
+    const i = v.indexOf(':');
+    return { key: v.slice(0, i), value: v.slice(i + 1) };
+  });
+
 export const listQuerySchema = z
   .object({
     cursor: z.uuid().optional(),
     limit: z.coerce.number().int().min(1).max(STRUCTURAL_MAX_LIMIT).default(50),
+    tag: tagFilterSchema.optional(),
   })
   .strict();
 

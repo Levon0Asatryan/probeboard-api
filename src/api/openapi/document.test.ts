@@ -163,6 +163,13 @@ describe('shapes come from the schemas the server validates with', () => {
     const login = schemas.LoginRequest as { properties: { password: { minLength: number } } };
     expect(login.properties.password.minLength).toBe(1);
   });
+
+  it('encodes the tag-key colon ban as a pattern, since z.toJSONSchema drops .refine()', () => {
+    const create = schemas.CreateEndpointRequest as {
+      properties: { tags: { items: { properties: { key: { pattern: string } } } } };
+    };
+    expect(create.properties.tags.items.properties.key.pattern).toBe('^[^:]*$');
+  });
 });
 
 describe('the cursor parameter', () => {
@@ -175,6 +182,39 @@ describe('the cursor parameter', () => {
     const get = paths['/v1/services'].get;
     const cursor = get.parameters!.find((p) => p.name === 'cursor')!;
     expect(cursor.schema.format).toBe('uuid');
+  });
+});
+
+describe('the tag filter parameter', () => {
+  it('documents the "key:value" grammar as a pattern, matching tagFilterSchema', () => {
+    const doc = buildOpenApiDocument();
+    const paths = doc.paths as Record<
+      string,
+      Record<string, { parameters?: { name: string; schema: { pattern?: string } }[] }>
+    >;
+    for (const [path, method] of [
+      ['/v1/services', 'get'],
+      ['/v1/endpoints', 'get'],
+      ['/v1/services/{id}/endpoints', 'get'],
+    ] as const) {
+      const tag = paths[path][method].parameters!.find((p) => p.name === 'tag')!;
+      expect(tag.schema.pattern, path).toBe('^[^:]+:.*$');
+    }
+  });
+
+  it('documents 400, reachable through zodQuery(listQuerySchema/tagQuerySchema) on every filtered route', () => {
+    const doc = buildOpenApiDocument();
+    const paths = doc.paths as Record<
+      string,
+      Record<string, { responses: Record<string, unknown> }>
+    >;
+    for (const [path, method] of [
+      ['/v1/services', 'get'],
+      ['/v1/endpoints', 'get'],
+      ['/v1/services/{id}/endpoints', 'get'],
+    ] as const) {
+      expect(paths[path][method].responses, path).toHaveProperty('400');
+    }
   });
 });
 

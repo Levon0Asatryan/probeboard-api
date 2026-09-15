@@ -95,6 +95,17 @@ Content-Type: application/json
 GET {{baseUrl}}/v1/services
 
 ###
+# @name listByTag
+# B-5: "key:value", split on the first colon only. createExplicit's own
+# {env: prod} tag matches; a non-matching tag returns [], not an error.
+GET {{baseUrl}}/v1/services?tag=env:prod
+
+###
+# @name listByMalformedTag
+# 400 VALIDATION_FAILED -- no colon in the filter.
+GET {{baseUrl}}/v1/services?tag=noColonHere
+
+###
 # @name get
 # Replace :id with createExplicit's response id.
 GET {{baseUrl}}/v1/services/:id

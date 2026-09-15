@@ -161,6 +161,23 @@ const limitParam = {
   schema: { type: 'integer' as const, minimum: 1, maximum: 1000, default: 50 },
 };
 
+const tagParam = {
+  name: 'tag',
+  in: 'query' as const,
+  required: false,
+  description:
+    'B-5: "key:value", split on the first colon only. Matches services/endpoints ' +
+    'carrying that exact tag; no match returns an empty list, not an error.',
+  // Matches tagFilterSchema's own grammar: at least one non-colon character
+  // (the key), then a colon, then anything at all (the value, which may
+  // itself contain colons -- only the *first* one is the split point).
+  schema: {
+    type: 'string' as const,
+    pattern: '^[^:]+:.*$',
+    example: 'env:prod',
+  },
+};
+
 /** Shared by every authenticated route. */
 const authErrors = {
   '401': errorResponse('No session cookie, or one that is expired, revoked or unknown.'),
@@ -814,7 +831,7 @@ export function buildOpenApiDocument(
           tags: ['services'],
           operationId: 'listServices',
           summary: 'List services owned by the signed-in account',
-          parameters: [cursorParam, limitParam],
+          parameters: [cursorParam, limitParam, tagParam],
           responses: {
             '200': {
               description: 'One page, oldest id first.',
@@ -824,6 +841,7 @@ export function buildOpenApiDocument(
                 },
               },
             },
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter.'),
             ...authErrors,
           },
         },
@@ -886,7 +904,7 @@ export function buildOpenApiDocument(
           tags: ['endpoints'],
           operationId: 'listServiceEndpoints',
           summary: "A service's endpoints",
-          parameters: [idParam, cursorParam, limitParam],
+          parameters: [idParam, cursorParam, limitParam, tagParam],
           responses: {
             '200': {
               description: 'One page of endpoints under this service, oldest id first.',
@@ -896,6 +914,7 @@ export function buildOpenApiDocument(
                 },
               },
             },
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter.'),
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -934,7 +953,7 @@ export function buildOpenApiDocument(
           tags: ['endpoints'],
           operationId: 'listEndpoints',
           summary: 'List every endpoint owned by the signed-in account, across services',
-          parameters: [cursorParam, limitParam],
+          parameters: [cursorParam, limitParam, tagParam],
           responses: {
             '200': {
               description: 'One page, oldest id first.',
@@ -944,6 +963,7 @@ export function buildOpenApiDocument(
                 },
               },
             },
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter.'),
             ...authErrors,
           },
         },
