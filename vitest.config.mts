@@ -73,6 +73,20 @@ export default defineConfig({
         // provider response to reach at all.
         'src/api/auth/oauth.controller.ts',
         'src/api/auth/services/oauth.service.ts',
+        // Same shape again: HTTP wiring, and the SSRF/quota/transaction
+        // orchestration it drives (save-time re-validation on every write,
+        // the user-row lock before counting for the endpoint quota, B-3's
+        // find-or-create-and-attach), covered by
+        // e2e/registration-http.int.test.ts against a real server and a
+        // real database. Unit tests here would mock the guard, the lock and
+        // the transaction away and prove nothing about the thing this code
+        // exists to get right. HeaderValidationService/HeaderStorageService
+        // are deliberately absent from this list: they have no database
+        // behavior of their own, so they get real unit tests instead.
+        'src/api/registration/services.controller.ts',
+        'src/api/registration/endpoints.controller.ts',
+        'src/api/registration/services/services.service.ts',
+        'src/api/registration/services/endpoints.service.ts',
       ],
       // Deliberately low for M0, when most of the tree is wiring. The
       // thresholds rise as the milestones that carry real logic land; docs
