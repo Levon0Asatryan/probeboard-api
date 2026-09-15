@@ -6,6 +6,11 @@ import { registerSchema } from '../auth/dto/register.dto.js';
 import { sessionCookieName } from '../auth/utils/session-cookie.js';
 import { LIVENESS_PATH, READINESS_PATH } from '../health/constants.js';
 import type { AppConfig } from '../../core/config/schema.js';
+import { updateServiceSchema } from '../registration/dto/update-service.dto.js';
+import { createEndpointSchema } from '../registration/dto/create-endpoint.dto.js';
+import { updateEndpointSchema } from '../registration/dto/update-endpoint.dto.js';
+import { headerListSchema } from '../registration/dto/header.dto.js';
+import { tagListSchema } from '../registration/dto/tag.dto.js';
 
 /**
  * The OpenAPI description of what this service serves.
@@ -47,6 +52,16 @@ const ERROR_CODES = [
   'RATE_LIMITED',
   'DATABASE_UNAVAILABLE',
   'INTERNAL_ERROR',
+  // Registration (M2): save-time SSRF validation (docs/m2-plan.md §5.1).
+  'SCHEME_NOT_ALLOWED',
+  'CREDENTIALS_IN_URL',
+  'PORT_NOT_ALLOWED',
+  'URL_UNRESOLVABLE',
+  'ADDRESS_NOT_ALLOWED',
+  // Registration: header validation (§5.2) and the endpoint quota (§5.3).
+  'HEADER_NOT_ALLOWED',
+  'HEADER_INVALID',
+  'QUOTA_EXCEEDED',
 ] as const;
 
 const errorSchema = {
@@ -63,19 +78,44 @@ const errorSchema = {
       description: 'Human-readable prose. Safe to display; never contains internal detail.',
     },
     details: {
-      type: 'array',
-      description: 'Present only on VALIDATION_FAILED: one entry per rejected field.',
-      items: {
-        type: 'object',
-        required: ['path', 'message'],
-        properties: {
-          path: {
-            type: 'string',
-            description: 'Dotted path to the field, or "(root)" when the body itself was wrong.',
+      description:
+        'Shape depends on `code`: an array of field issues on VALIDATION_FAILED, ' +
+        '`{limit, count}` on QUOTA_EXCEEDED, absent on every other code.',
+      oneOf: [
+        {
+          type: 'array',
+          description: 'VALIDATION_FAILED: one entry per rejected field.',
+          items: {
+            type: 'object',
+            required: ['path', 'message'],
+            properties: {
+              path: {
+                type: 'string',
+                description:
+                  'Dotted path to the field, or "(root)" when the body itself was wrong.',
+              },
+              message: { type: 'string' },
+            },
           },
-          message: { type: 'string' },
         },
-      },
+        {
+          type: 'object',
+          description: 'QUOTA_EXCEEDED: the configured cap and the count that reached it (B-8).',
+          required: ['limit', 'count'],
+          properties: {
+            limit: { type: 'integer' },
+            count: { type: 'integer' },
+          },
+        },
+        {
+          type: 'object',
+          description: 'ADDRESS_NOT_ALLOWED: the disallowed address a hostname resolved to (§5.1).',
+          required: ['address'],
+          properties: {
+            address: { type: 'string' },
+          },
+        },
+      ],
     },
   },
 } as const;
@@ -94,6 +134,32 @@ function jsonBody(ref: string) {
     content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } },
   };
 }
+
+const idParam = {
+  name: 'id',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, format: 'uuid' },
+};
+
+const cursorParam = {
+  name: 'cursor',
+  in: 'query' as const,
+  required: false,
+  description: 'Opaque: the `id` of the last row of the previous page.',
+  schema: { type: 'string' as const, format: 'uuid' },
+};
+
+const limitParam = {
+  name: 'limit',
+  in: 'query' as const,
+  required: false,
+  description:
+    'Defaults to 50. The effective maximum is deployment-configured ' +
+    '(MAX_LIST_LIMIT), not the 1000 this schema structurally accepts -- a ' +
+    'request over the configured cap returns that many rows, not an error.',
+  schema: { type: 'integer' as const, minimum: 1, maximum: 1000, default: 50 },
+};
 
 /** Shared by every authenticated route. */
 const authErrors = {
@@ -147,6 +213,8 @@ export function buildOpenApiDocument(
       { name: 'health', description: 'Liveness and readiness, served outside the version prefix.' },
       { name: 'auth', description: 'Accounts and sessions.' },
       { name: 'oauth', description: 'Sign in with Google or GitHub, and linked identities.' },
+      { name: 'services', description: 'Monitored services: their origin, headers and tags.' },
+      { name: 'endpoints', description: 'Monitored endpoints under a service.' },
     ],
     components: {
       schemas: {
@@ -195,6 +263,162 @@ export function buildOpenApiDocument(
               description: 'Display text from the provider. Never the lookup key.',
             },
             linkedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        // Hand-written, not schemaOf(createServiceSchema): z.toJSONSchema
+        // does not encode a zod .refine(), so the generated form would mark
+        // name/baseUrl/url all optional and let a generated client send a
+        // body (e.g. {}) the server actually rejects.
+        CreateServiceRequest: {
+          description:
+            'Exactly one of the two forms below. Explicit: {name, baseUrl}. ' +
+            'Implicit (B-3): {url}, with name optional.',
+          oneOf: [
+            {
+              type: 'object',
+              required: ['name', 'baseUrl'],
+              properties: {
+                name: { type: 'string', minLength: 1, maxLength: 200 },
+                baseUrl: { type: 'string', minLength: 1 },
+                headers: schemaOf(headerListSchema),
+                tags: schemaOf(tagListSchema),
+              },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['url'],
+              properties: {
+                url: { type: 'string', minLength: 1 },
+                name: { type: 'string', minLength: 1, maxLength: 200 },
+                headers: schemaOf(headerListSchema),
+                tags: schemaOf(tagListSchema),
+              },
+              additionalProperties: false,
+            },
+          ],
+        },
+        UpdateServiceRequest: schemaOf(updateServiceSchema),
+        CreateEndpointRequest: schemaOf(createEndpointSchema),
+        UpdateEndpointRequest: schemaOf(updateEndpointSchema),
+        Header: {
+          type: 'object',
+          required: ['name', 'isSecret'],
+          description:
+            'A secret header never carries `value` in any response -- write-only ' +
+            '(docs/m2-plan.md §5.4). The only way to keep one unchanged on a PATCH is ' +
+            '`{name, isSecret: true}` with no `value` key at all.',
+          properties: {
+            name: { type: 'string' },
+            isSecret: { type: 'boolean' },
+            value: { type: 'string', description: 'Absent when isSecret is true.' },
+          },
+        },
+        Tag: {
+          type: 'object',
+          required: ['key', 'value'],
+          properties: { key: { type: 'string' }, value: { type: 'string' } },
+        },
+        Service: {
+          type: 'object',
+          required: ['id', 'name', 'baseUrl', 'headers', 'tags', 'createdAt', 'updatedAt'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            baseUrl: {
+              type: 'string',
+              format: 'uri',
+              description: 'Origin only: scheme + host [+ port].',
+            },
+            headers: { type: 'array', items: { $ref: '#/components/schemas/Header' } },
+            tags: { type: 'array', items: { $ref: '#/components/schemas/Tag' } },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        CreateServiceResponse: {
+          type: 'object',
+          required: ['service'],
+          properties: {
+            service: { $ref: '#/components/schemas/Service' },
+            endpointId: {
+              type: 'string',
+              format: 'uuid',
+              description:
+                'Only present for the implicit form (B-3, `url` in the request): the ' +
+                'endpoint that was attached to an existing service, or created with it.',
+            },
+          },
+        },
+        StatusRange: {
+          type: 'object',
+          required: ['min', 'max'],
+          properties: {
+            min: { type: 'integer', minimum: 100, maximum: 599 },
+            max: { type: 'integer', minimum: 100, maximum: 599 },
+          },
+        },
+        Endpoint: {
+          type: 'object',
+          required: [
+            'id',
+            'serviceId',
+            'method',
+            'path',
+            'intervalS',
+            'timeoutMs',
+            'expectedStatus',
+            'latencyWarnMs',
+            'failureThreshold',
+            'successThreshold',
+            'followRedirects',
+            'maxRedirects',
+            'assertions',
+            'enabled',
+            'headers',
+            'effectiveHeaders',
+            'tags',
+            'createdAt',
+            'updatedAt',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            serviceId: { type: 'string', format: 'uuid' },
+            method: { type: 'string' },
+            path: { type: 'string' },
+            intervalS: {
+              type: 'integer',
+              description: 'One of the configured PROBE_ALLOWED_INTERVALS_S.',
+            },
+            timeoutMs: { type: 'integer' },
+            expectedStatus: { type: 'array', items: { $ref: '#/components/schemas/StatusRange' } },
+            latencyWarnMs: { type: 'integer', nullable: true },
+            failureThreshold: { type: 'integer' },
+            successThreshold: { type: 'integer' },
+            followRedirects: { type: 'boolean' },
+            maxRedirects: { type: 'integer' },
+            assertions: {
+              type: 'array',
+              items: {},
+              description:
+                'Structured, versioned (architecture ADR-5). Opaque to M2; M3 is the first reader.',
+            },
+            enabled: { type: 'boolean', description: 'Pause/resume (FR-9). Inert until M4.' },
+            headers: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/Header' },
+              description: "This endpoint's own headers only.",
+            },
+            effectiveHeaders: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/Header' },
+              description:
+                '`{...serviceHeaders, ...endpointHeaders}` by name, case-insensitively, ' +
+                'endpoint wins (B-4).',
+            },
+            tags: { type: 'array', items: { $ref: '#/components/schemas/Tag' } },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
           },
         },
       },
@@ -545,6 +769,273 @@ export function buildOpenApiDocument(
                 },
               },
             },
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/services`]: {
+        post: {
+          tags: ['services'],
+          operationId: 'createService',
+          summary: 'Register a service, explicitly or from a URL (B-3)',
+          description:
+            'Two forms, discriminated by which of `baseUrl`/`url` is present. Explicit: ' +
+            '`{name, baseUrl}` creates a service at that origin. Implicit (B-3): `{url}` ' +
+            "finds-or-creates a service at the URL's origin and attaches one endpoint at " +
+            'its path, in one transaction -- "a service with exactly one endpoint is the ' +
+            'degenerate case."\n\n' +
+            'The URL is validated by the SSRF guard before anything is stored (§5.1): ' +
+            'scheme, credentials, port, DNS resolution, then every resolved address ' +
+            'classified against a private/loopback/link-local/metadata denylist. Not a ' +
+            'complete defense against DNS rebinding -- see docs/m2-plan.md §6.',
+          requestBody: jsonBody('CreateServiceRequest'),
+          responses: {
+            '201': {
+              description: 'Created (or attached to, in the implicit form).',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CreateServiceResponse' },
+                },
+              },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, or one of the SSRF codes: `SCHEME_NOT_ALLOWED`, ' +
+                '`CREDENTIALS_IN_URL`, `PORT_NOT_ALLOWED`, `URL_UNRESOLVABLE`, ' +
+                '`ADDRESS_NOT_ALLOWED`; or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+            ),
+            '409': errorResponse(
+              '`CONFLICT`: a service already exists at this base URL (explicit form only). ' +
+                '`QUOTA_EXCEEDED`: the endpoint quota is reached (implicit form only).',
+            ),
+            ...authErrors,
+          },
+        },
+        get: {
+          tags: ['services'],
+          operationId: 'listServices',
+          summary: 'List services owned by the signed-in account',
+          parameters: [cursorParam, limitParam],
+          responses: {
+            '200': {
+              description: 'One page, oldest id first.',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { $ref: '#/components/schemas/Service' } },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/services/{id}`]: {
+        get: {
+          tags: ['services'],
+          operationId: 'getService',
+          summary: 'Fetch a service',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'The service.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Service' } } },
+            },
+            '404': errorResponse('Not found, or it belongs to someone else -- indistinguishable.'),
+            ...authErrors,
+          },
+        },
+        patch: {
+          tags: ['services'],
+          operationId: 'updateService',
+          summary: 'Update a service',
+          description:
+            'Every field optional; only what is present is changed. `headers`/`tags`, if ' +
+            'present, fully replace the existing set (docs/m2-plan.md §5.4) -- a secret ' +
+            'entry with no `value` keeps its current ciphertext. `baseUrl`, if present, is ' +
+            're-validated by the SSRF guard even if unchanged (D10).',
+          parameters: [idParam],
+          requestBody: jsonBody('UpdateServiceRequest'),
+          responses: {
+            '200': {
+              description: 'Updated.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Service' } } },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+            ),
+            '404': errorResponse('Not found, or owned by someone else.'),
+            '409': errorResponse('`CONFLICT`: another service already uses this base URL.'),
+            ...authErrors,
+          },
+        },
+        delete: {
+          tags: ['services'],
+          operationId: 'deleteService',
+          summary: 'Delete a service',
+          description:
+            'Cascades to its endpoints, headers and tags. Unconditional hard delete (D9).',
+          parameters: [idParam],
+          responses: {
+            '204': { description: 'Deleted.' },
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/services/{id}/endpoints`]: {
+        get: {
+          tags: ['endpoints'],
+          operationId: 'listServiceEndpoints',
+          summary: "A service's endpoints",
+          parameters: [idParam, cursorParam, limitParam],
+          responses: {
+            '200': {
+              description: 'One page of endpoints under this service, oldest id first.',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { $ref: '#/components/schemas/Endpoint' } },
+                },
+              },
+            },
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+        post: {
+          tags: ['endpoints'],
+          operationId: 'createEndpoint',
+          summary: 'Add an endpoint to a service',
+          description:
+            'Quota-checked (§5.3: locks the user row, counts, then inserts, inside one ' +
+            'transaction -- closes the check-then-act race a separate COUNT would leave ' +
+            'open). The joined base URL + path is re-validated by the SSRF guard (D10).',
+          parameters: [idParam],
+          requestBody: jsonBody('CreateEndpointRequest'),
+          responses: {
+            '201': {
+              description: 'Created.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+              },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+            ),
+            '404': errorResponse('Service not found, or owned by someone else.'),
+            '409': errorResponse(
+              '`CONFLICT`: duplicate method+path on this service. `QUOTA_EXCEEDED`: the ' +
+                'endpoint quota is reached.',
+            ),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints`]: {
+        get: {
+          tags: ['endpoints'],
+          operationId: 'listEndpoints',
+          summary: 'List every endpoint owned by the signed-in account, across services',
+          parameters: [cursorParam, limitParam],
+          responses: {
+            '200': {
+              description: 'One page, oldest id first.',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { $ref: '#/components/schemas/Endpoint' } },
+                },
+              },
+            },
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints/{id}`]: {
+        get: {
+          tags: ['endpoints'],
+          operationId: 'getEndpoint',
+          summary: 'Fetch an endpoint',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'The endpoint, with its own headers and the merged effective set.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+              },
+            },
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+        patch: {
+          tags: ['endpoints'],
+          operationId: 'updateEndpoint',
+          summary: 'Update an endpoint',
+          description:
+            'Every field optional. The joined base URL + path is re-validated by the SSRF ' +
+            'guard unconditionally, even when neither changed (D10).',
+          parameters: [idParam],
+          requestBody: jsonBody('UpdateEndpointRequest'),
+          responses: {
+            '200': {
+              description: 'Updated.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+              },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+            ),
+            '404': errorResponse('Not found, or owned by someone else.'),
+            '409': errorResponse(
+              '`CONFLICT`: another endpoint on this service uses this method+path.',
+            ),
+            ...authErrors,
+          },
+        },
+        delete: {
+          tags: ['endpoints'],
+          operationId: 'deleteEndpoint',
+          summary: 'Delete an endpoint',
+          parameters: [idParam],
+          responses: {
+            '204': { description: 'Deleted.' },
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints/{id}/pause`]: {
+        post: {
+          tags: ['endpoints'],
+          operationId: 'pauseEndpoint',
+          summary: 'Set enabled = false',
+          description: "Inert until M4's scheduler reads `enabled` (FR-9).",
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'Paused.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+              },
+            },
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints/{id}/resume`]: {
+        post: {
+          tags: ['endpoints'],
+          operationId: 'resumeEndpoint',
+          summary: 'Set enabled = true',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'Resumed.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+              },
+            },
+            '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
         },

@@ -165,6 +165,19 @@ describe('shapes come from the schemas the server validates with', () => {
   });
 });
 
+describe('the cursor parameter', () => {
+  it('documents the cursor as a uuid, matching listQuerySchema', () => {
+    const doc = buildOpenApiDocument();
+    const paths = doc.paths as Record<
+      string,
+      Record<string, { parameters?: { name: string; schema: { format?: string } }[] }>
+    >;
+    const get = paths['/v1/services'].get;
+    const cursor = get.parameters!.find((p) => p.name === 'cursor')!;
+    expect(cursor.schema.format).toBe('uuid');
+  });
+});
+
 describe('the error contract', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;

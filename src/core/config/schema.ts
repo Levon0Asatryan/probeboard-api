@@ -2,6 +2,9 @@ import { hostname } from 'node:os';
 import { z } from 'zod';
 import { parseByteSize } from './byte-size.js';
 
+/** PostgreSQL `integer` column range -- `timeout_ms` has no other bound. */
+const POSTGRES_INT4_MAX = 2_147_483_647;
+
 /**
  * An absolute `http://` or `https://` URL, or unset.
  *
@@ -222,18 +225,19 @@ const oauth = {
  * at boot, the same rule `API_BODY_LIMIT` follows -- not silently parse to an
  * empty or partial list and quietly stop blocking a port.
  */
-function portList(defaultValue: string) {
+/** A comma-separated list of bounded integers, e.g. a port or interval set. */
+function numberList(defaultValue: string, bounds: { min: number; max: number; label: string }) {
   return z
     .string()
     .default(defaultValue)
     .transform((v, ctx) => {
-      const ports = v.split(',').map((p) => p.trim());
-      const parsed = ports.map((p) => {
+      const entries = v.split(',').map((p) => p.trim());
+      const parsed = entries.map((p) => {
         const n = Number(p);
-        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+        if (!Number.isInteger(n) || n < bounds.min || n > bounds.max) {
           ctx.addIssue({
             code: 'custom',
-            message: `"${p}" is not a valid TCP port (1-65535)`,
+            message: `"${p}" is not a valid ${bounds.label} (${String(bounds.min)}-${String(bounds.max)})`,
           });
           return z.NEVER;
         }
@@ -241,6 +245,10 @@ function portList(defaultValue: string) {
       });
       return parsed;
     });
+}
+
+function portList(defaultValue: string) {
+  return numberList(defaultValue, { min: 1, max: 65535, label: 'TCP port' });
 }
 
 /**
@@ -254,8 +262,28 @@ const probing = {
     .int()
     .min(1024)
     .default(64 * 1024),
-  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).max(POSTGRES_INT4_MAX).default(30_000),
   PROBE_CONCURRENCY: z.coerce.number().int().min(1).default(50),
+  // FR-7: interval is chosen from a bounded set, not an arbitrary integer --
+  // an unbounded per-endpoint interval is itself an abuse vector (NFR-6/7).
+  // Membership is checked in the registration service, not a DTO field
+  // bound, the same reason PASSWORD_MIN_LENGTH is enforced in AuthService
+  // rather than in a static zod schema (dto/fields.ts): a parameter
+  // decorator's schema is built before config injection runs.
+  PROBE_ALLOWED_INTERVALS_S: numberList('30,60,300,900,3600', {
+    min: 1,
+    max: 86_400,
+    label: 'probe interval in seconds',
+  }),
+  PROBE_DEFAULT_INTERVAL_S: z.coerce.number().int().min(1).default(60),
+  // FR-8: "bounded by a system maximum" -- PROBE_MAX_TIMEOUT_MS above is that
+  // ceiling; this is only the value applied when an endpoint does not name
+  // its own.
+  PROBE_DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).max(POSTGRES_INT4_MAX).default(10_000),
+  // FR-21: redirect-following is per-monitor, but the count itself stays
+  // system-bounded.
+  PROBE_MAX_REDIRECTS_CAP: z.coerce.number().int().min(0).max(50).default(10),
+  PROBE_DEFAULT_MAX_REDIRECTS: z.coerce.number().int().min(0).default(5),
   // Leave true. Users supply the URLs this server then fetches, which is a
   // textbook SSRF primitive. False is for tests against a local server only.
   SSRF_GUARD_ENABLED: z
@@ -303,6 +331,25 @@ const registration = {
     },
     { message: 'must be 32 bytes, base64-encoded -- generate one with `openssl rand -base64 32`' },
   ),
+  // FR-16/B-8. Configurable per the PRD; 100 is comfortably above what a
+  // solo developer or small team (the PRD's stated primary user) would
+  // register (docs/m2-plan.md §10).
+  ENDPOINT_QUOTA_PER_USER: z.coerce.number().int().min(1).max(100_000).default(100),
+  // Service and endpoint headers are counted separately against this cap
+  // (docs/m2-plan.md §5.2).
+  MAX_HEADERS_PER_OWNER: z.coerce.number().int().min(1).max(1000).default(20),
+  MAX_HEADER_NAME_BYTES: z.coerce.number().int().min(1).max(8192).default(256),
+  MAX_HEADER_VALUE_BYTES: z.coerce.number().int().min(1).max(65_536).default(4096),
+  // The services/endpoints list endpoints' page-size cap (docs/m2-plan.md
+  // §5.5). Enforced in the service layer, not the request DTO -- a
+  // parameter decorator's schema is built before config injection runs.
+  MAX_LIST_LIMIT: z.coerce.number().int().min(1).max(1000).default(100),
+  // An endpoint's path, byte-length (docs/m2-plan.md §3) -- checked against
+  // the canonical path (post-URL-parse) in the service layer, not a DTO
+  // .max(), since z.string().max() counts UTF-16 code units rather than
+  // UTF-8 bytes and a parameter decorator's schema is built before config
+  // injection runs.
+  MAX_ENDPOINT_PATH_BYTES: z.coerce.number().int().min(1).max(8192).default(2048),
 };
 
 /** Claim-based scheduling (NFR-2, NFR-3, NFR-4). */
@@ -383,6 +430,18 @@ export const configSchema = baseSchema
   .refine((c) => !c.OAUTH_ENABLED || Boolean(c.GOOGLE_CLIENT_ID) || Boolean(c.GITHUB_CLIENT_ID), {
     path: ['OAUTH_ENABLED'],
     message: 'true with no provider configured turns on a feature with no way to use it',
+  })
+  .refine((c) => c.PROBE_ALLOWED_INTERVALS_S.includes(c.PROBE_DEFAULT_INTERVAL_S), {
+    path: ['PROBE_DEFAULT_INTERVAL_S'],
+    message: 'must be one of PROBE_ALLOWED_INTERVALS_S, or no endpoint could ever use the default',
+  })
+  .refine((c) => c.PROBE_DEFAULT_TIMEOUT_MS <= c.PROBE_MAX_TIMEOUT_MS, {
+    path: ['PROBE_DEFAULT_TIMEOUT_MS'],
+    message: 'must not exceed PROBE_MAX_TIMEOUT_MS',
+  })
+  .refine((c) => c.PROBE_DEFAULT_MAX_REDIRECTS <= c.PROBE_MAX_REDIRECTS_CAP, {
+    path: ['PROBE_DEFAULT_MAX_REDIRECTS'],
+    message: 'must not exceed PROBE_MAX_REDIRECTS_CAP',
   });
 
 export type AppConfig = z.infer<typeof baseSchema>;

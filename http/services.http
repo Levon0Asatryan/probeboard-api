@@ -1,0 +1,140 @@
+### api/registration — services
+#
+# Run auth.http's register + login first so the client's cookie jar carries a
+# session; every request here reuses it.
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name createExplicit
+# 201. Explicit form: {name, baseUrl}. baseUrl is normalized to its origin --
+# scheme + host [+ port], no path -- even if you paste one with a path.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "Example API",
+  "baseUrl": "https://93.184.216.34",
+  "headers": [
+    { "name": "X-Client-Id", "value": "probeboard", "isSecret": false },
+    { "name": "X-Api-Key", "value": "replace-me", "isSecret": true }
+  ],
+  "tags": [{ "key": "env", "value": "prod" }]
+}
+
+###
+# @name createDuplicateBaseUrl
+# 409 CONFLICT: the explicit form does not silently attach like B-3's does.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "Same origin again",
+  "baseUrl": "https://93.184.216.34"
+}
+
+###
+# @name createImplicitNewOrigin
+# 201, {service, endpointId}. B-3: a bare URL creates a service at its origin
+# plus one endpoint at its path, in one transaction.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "url": "https://93.184.216.35/v1/orders"
+}
+
+###
+# @name createImplicitExistingOrigin
+# 201, same service.id as createImplicitNewOrigin -- attaches a second
+# endpoint instead of duplicating the service.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "url": "https://93.184.216.35/v1/users"
+}
+
+###
+# @name rejectScheme
+# 400 SCHEME_NOT_ALLOWED, before any DNS lookup.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "ftp",
+  "baseUrl": "ftp://93.184.216.34"
+}
+
+###
+# @name rejectCredentials
+# 400 CREDENTIALS_IN_URL.
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "creds",
+  "baseUrl": "https://user:pass@93.184.216.34"
+}
+
+###
+# @name rejectLoopback
+# 400 ADDRESS_NOT_ALLOWED -- a private/loopback/link-local/metadata address,
+# literal or resolved, at save time (docs/m2-plan.md §5.1, §6).
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "loopback",
+  "baseUrl": "http://127.0.0.1"
+}
+
+###
+# @name list
+# 200, an array. Only the signed-in account's own services.
+GET {{baseUrl}}/v1/services
+
+###
+# @name get
+# Replace :id with createExplicit's response id.
+GET {{baseUrl}}/v1/services/:id
+
+###
+# @name update
+# 200. headers/tags, if present, fully replace the existing set. The secret
+# header above is kept (not shown, not touched) by naming it with no `value`.
+PATCH {{baseUrl}}/v1/services/:id
+Content-Type: application/json
+
+{
+  "name": "Example API (renamed)",
+  "headers": [
+    { "name": "X-Client-Id", "value": "probeboard-v2", "isSecret": false },
+    { "name": "X-Api-Key", "isSecret": true }
+  ]
+}
+
+###
+# @name updateRejectsLoopback
+# 400 ADDRESS_NOT_ALLOWED -- baseUrl is re-validated on every save (D10), not
+# only at create.
+PATCH {{baseUrl}}/v1/services/:id
+Content-Type: application/json
+
+{
+  "baseUrl": "http://127.0.0.1"
+}
+
+###
+# @name listEndpointsForService
+GET {{baseUrl}}/v1/services/:id/endpoints
+
+###
+# @name delete
+# 204. Cascades to the service's endpoints, headers and tags.
+DELETE {{baseUrl}}/v1/services/:id
+
+###
+# @name getAfterDelete
+# 404.
+GET {{baseUrl}}/v1/services/:id

@@ -170,6 +170,30 @@ describe('API_BODY_LIMIT', () => {
   });
 });
 
+describe('probe timeout bounds', () => {
+  // endpoints.timeout_ms is a Postgres `integer` column -- a value beyond
+  // int4 range would boot fine here and only fail as an opaque database
+  // error the first time an endpoint without its own timeoutMs is saved.
+  it('refuses a PROBE_MAX_TIMEOUT_MS beyond the int4 column range', () => {
+    expect(() => loadConfig({ ...valid, PROBE_MAX_TIMEOUT_MS: '2147483648' })).toThrow(
+      /PROBE_MAX_TIMEOUT_MS/,
+    );
+  });
+
+  it('refuses a PROBE_DEFAULT_TIMEOUT_MS beyond the int4 column range', () => {
+    // PROBE_MAX_TIMEOUT_MS raised to match, so the "must not exceed
+    // PROBE_MAX_TIMEOUT_MS" refine can't also explain the rejection --
+    // only PROBE_DEFAULT_TIMEOUT_MS's own int4 bound should.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        PROBE_MAX_TIMEOUT_MS: '2147483648',
+        PROBE_DEFAULT_TIMEOUT_MS: '2147483648',
+      }),
+    ).toThrow(/PROBE_DEFAULT_TIMEOUT_MS/);
+  });
+});
+
 describe('OAUTH_PROVIDER_MAX_RESPONSE_BYTES', () => {
   it('defaults to a generous but bounded size', () => {
     expect(loadConfig(valid).OAUTH_PROVIDER_MAX_RESPONSE_BYTES).toBe('1mb');
