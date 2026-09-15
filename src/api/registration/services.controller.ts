@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -47,14 +48,17 @@ export class ServicesController {
   }
 
   @Get(':id')
-  async get(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<ServiceDto> {
+  async get(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ServiceDto> {
     return this.services.get(user.id, id);
   }
 
   @Patch(':id')
   async update(
     @CurrentUser() user: RequestUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body(zodBody(updateServiceSchema)) body: UpdateServiceRequest,
   ): Promise<ServiceDto> {
     return this.services.update(user.id, id, body);
@@ -62,14 +66,17 @@ export class ServicesController {
 
   @Delete(':id')
   @HttpCode(204)
-  async remove(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<void> {
+  async remove(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
     await this.services.delete(user.id, id);
   }
 
   @Get(':id/endpoints')
   async listEndpoints(
     @CurrentUser() user: RequestUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ): Promise<EndpointDto[]> {
     return this.endpoints.listForService(user.id, id);
   }
@@ -77,7 +84,7 @@ export class ServicesController {
   @Post(':id/endpoints')
   async createEndpoint(
     @CurrentUser() user: RequestUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body(zodBody(createEndpointSchema)) body: CreateEndpointRequest,
   ): Promise<EndpointDto> {
     return this.endpoints.createForService(user.id, id, body);

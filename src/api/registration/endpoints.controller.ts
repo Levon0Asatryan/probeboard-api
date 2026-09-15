@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -32,14 +33,17 @@ export class EndpointsController {
   }
 
   @Get(':id')
-  async get(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<EndpointDto> {
+  async get(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<EndpointDto> {
     return this.endpoints.get(user.id, id);
   }
 
   @Patch(':id')
   async update(
     @CurrentUser() user: RequestUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body(zodBody(updateEndpointSchema)) body: UpdateEndpointRequest,
   ): Promise<EndpointDto> {
     return this.endpoints.update(user.id, id, body);
@@ -47,19 +51,28 @@ export class EndpointsController {
 
   @Delete(':id')
   @HttpCode(204)
-  async remove(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<void> {
+  async remove(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
     await this.endpoints.delete(user.id, id);
   }
 
   @Post(':id/pause')
   @HttpCode(200)
-  async pause(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<EndpointDto> {
+  async pause(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<EndpointDto> {
     return this.endpoints.setEnabled(user.id, id, false);
   }
 
   @Post(':id/resume')
   @HttpCode(200)
-  async resume(@CurrentUser() user: RequestUser, @Param('id') id: string): Promise<EndpointDto> {
+  async resume(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<EndpointDto> {
     return this.endpoints.setEnabled(user.id, id, true);
   }
 }
