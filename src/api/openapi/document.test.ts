@@ -305,3 +305,47 @@ describe('the session cookie scheme', () => {
     expect(schemes.sessionCookie.name).toBe('__Host-pb_session');
   });
 });
+
+describe('every $ref resolves', () => {
+  /** Walks every `$ref` string reachable from the document. */
+  function collectRefs(node: unknown, refs: string[]): void {
+    if (Array.isArray(node)) {
+      for (const item of node) collectRefs(item, refs);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.$ref === 'string') refs.push(obj.$ref);
+    for (const value of Object.values(obj)) collectRefs(value, refs);
+  }
+
+  /** `#/a/b/c` -> doc.a.b.c, per RFC 6901's JSON Pointer syntax. */
+  function resolves(doc: Record<string, unknown>, ref: string): boolean {
+    if (!ref.startsWith('#/')) return false;
+    const segments = ref
+      .slice(2)
+      .split('/')
+      .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
+    let cursor: unknown = doc;
+    for (const segment of segments) {
+      if (cursor === null || typeof cursor !== 'object') return false;
+      cursor = (cursor as Record<string, unknown>)[segment];
+      if (cursor === undefined) return false;
+    }
+    return true;
+  }
+
+  it('every $ref in the document points at something that actually exists', () => {
+    const doc = buildOpenApiDocument();
+    const refs: string[] = [];
+    collectRefs(doc, refs);
+
+    // Not zero -- an empty list would make the assertion below pass by
+    // accident if the walk found nothing.
+    expect(refs.length).toBeGreaterThan(10);
+
+    const unresolved = [...new Set(refs)].filter((ref) => !resolves(doc, ref));
+    expect(unresolved).toEqual([]);
+  });
+});

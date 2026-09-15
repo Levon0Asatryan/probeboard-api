@@ -9,6 +9,7 @@ import type { AppConfig } from '../../core/config/schema.js';
 import { updateServiceSchema } from '../registration/dto/update-service.dto.js';
 import { createEndpointSchema } from '../registration/dto/create-endpoint.dto.js';
 import { updateEndpointSchema } from '../registration/dto/update-endpoint.dto.js';
+import { jsonValueSchema } from '../registration/dto/endpoint-fields.js';
 import { headerListSchema } from '../registration/dto/header.dto.js';
 import { tagListSchema } from '../registration/dto/tag.dto.js';
 
@@ -30,6 +31,40 @@ import { tagListSchema } from '../registration/dto/tag.dto.js';
 /** Emitted by zod, in the dialect OpenAPI 3.0 accepts. */
 function schemaOf(schema: ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: 'openapi-3.0' });
+}
+
+/**
+ * `z.toJSONSchema`'s handling of a recursive schema (`jsonValueSchema`,
+ * `endpoint-fields.ts`) is not a valid OpenAPI 3.0 document on its own: a
+ * schema converted standalone self-references as `$ref: "#"` (document
+ * root), and one nested inside a larger conversion (`assertionSchema`
+ * inside `createEndpointSchema`/`updateEndpointSchema`) instead gets a
+ * `definitions` object *nested inside that field's own schema* with
+ * `$ref: "#/definitions/__schema0"` -- `definitions` is a Swagger 2.0/JSON
+ * Schema keyword OpenAPI 3.0 does not recognize at all, and even if it
+ * did, the ref is relative to the document root, not to wherever this
+ * function embeds the field, so no conformant resolver finds either.
+ *
+ * Rewritten here to a single shared `components.schemas.JsonValue`
+ * (registered once, below) that every occurrence -- the standalone
+ * conversion and any nested one -- references by its real path, with the
+ * orphaned local `definitions` block dropped.
+ */
+function inlineJsonValueRefs(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(inlineJsonValueRefs);
+  if (node === null || typeof node !== 'object') return node;
+
+  const obj = node as Record<string, unknown>;
+  if (typeof obj.$ref === 'string' && (obj.$ref === '#' || obj.$ref.startsWith('#/definitions/'))) {
+    return { $ref: '#/components/schemas/JsonValue' };
+  }
+
+  const { definitions: _dropped, ...rest } = obj;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rest)) {
+    out[key] = inlineJsonValueRefs(value);
+  }
+  return out;
 }
 
 /**
@@ -316,8 +351,19 @@ export function buildOpenApiDocument(
           ],
         },
         UpdateServiceRequest: schemaOf(updateServiceSchema),
-        CreateEndpointRequest: schemaOf(createEndpointSchema),
-        UpdateEndpointRequest: schemaOf(updateEndpointSchema),
+        // A named component, not inlined at each `equals` field: the schema
+        // is recursive (an object/array can itself hold json values), which
+        // OpenAPI 3.0 can only express as a schema that refs itself by a
+        // real path -- see inlineJsonValueRefs above.
+        JsonValue: inlineJsonValueRefs(schemaOf(jsonValueSchema)) as Record<string, unknown>,
+        CreateEndpointRequest: inlineJsonValueRefs(schemaOf(createEndpointSchema)) as Record<
+          string,
+          unknown
+        >,
+        UpdateEndpointRequest: inlineJsonValueRefs(schemaOf(updateEndpointSchema)) as Record<
+          string,
+          unknown
+        >,
         Header: {
           type: 'object',
           required: ['name', 'isSecret'],
