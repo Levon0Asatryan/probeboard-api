@@ -170,60 +170,99 @@ export class EndpointsService {
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }
 
+  /**
+   * One transaction, the endpoint row locked first (D10's re-validation
+   * still reads the service row, but only the endpoint row needs locking
+   * here -- nothing else in this method's own writes touches the service).
+   * Locking first, before computing `method`/`path`, closes two gaps at
+   * once: a header "keep" resolved from a pre-lock read could be replaced
+   * by a concurrent PATCH's rotation before this one's replace runs and
+   * would then restore the stale ciphertext, and writing back `method`/
+   * `path` unconditionally (copied from a pre-lock read) could silently
+   * revert a concurrent PATCH's change to the field this one never asked
+   * to touch. Only fields actually present in `dto` are written; `method`/
+   * `path` are still read for D10's re-validation even when unchanged.
+   */
   async update(userId: string, id: string, dto: UpdateEndpointRequest): Promise<EndpointDto> {
-    const existing = await this.endpoints.findById(id, userId);
-    if (!existing) throw new NotFoundError('endpoint');
-    const service = await this.services.findById(existing.service_id, userId);
-    if (!service) throw new NotFoundError('endpoint');
-
     if (dto.headers) this.headerValidation.validate(dto.headers);
 
-    const method = dto.method ?? existing.method;
-    const path = dto.path ?? existing.path;
-    // D10: unconditional re-validation, even if neither method nor path changed.
-    await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
+    await this.db.kysely.transaction().execute(async (trx) => {
+      const existing = await trx
+        .selectFrom('endpoints')
+        .selectAll()
+        .where('id', '=', id)
+        .where('user_id', '=', userId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!existing) throw new NotFoundError('endpoint');
 
-    if (dto.intervalS !== undefined) this.checkInterval(dto.intervalS);
-    if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
-    if (dto.maxRedirects !== undefined) this.checkMaxRedirects(dto.maxRedirects);
+      const service = await trx
+        .selectFrom('services')
+        .selectAll()
+        .where('id', '=', existing.service_id)
+        .where('user_id', '=', userId)
+        .executeTakeFirst();
+      if (!service) throw new NotFoundError('endpoint');
 
-    const updated = await this.endpoints
-      .update(id, userId, {
-        method,
-        path,
-        ...(dto.intervalS !== undefined ? { interval_s: dto.intervalS } : {}),
-        ...(dto.timeoutMs !== undefined ? { timeout_ms: dto.timeoutMs } : {}),
-        ...(dto.expectedStatus ? { expected_status: JSON.stringify(dto.expectedStatus) } : {}),
-        ...(dto.latencyWarnMs !== undefined ? { latency_warn_ms: dto.latencyWarnMs } : {}),
-        ...(dto.failureThreshold !== undefined ? { failure_threshold: dto.failureThreshold } : {}),
-        ...(dto.successThreshold !== undefined ? { success_threshold: dto.successThreshold } : {}),
-        ...(dto.followRedirects !== undefined ? { follow_redirects: dto.followRedirects } : {}),
-        ...(dto.maxRedirects !== undefined ? { max_redirects: dto.maxRedirects } : {}),
-        ...(dto.assertions ? { assertions: JSON.stringify(dto.assertions) } : {}),
-      })
-      .catch((err: unknown) => {
-        if (isUniqueViolation(err, 'endpoints_service_method_path_key')) {
-          throw new ConflictError(
-            'CONFLICT',
-            'an endpoint already exists for this method and path',
-          );
-        }
-        throw err;
-      });
-    if (!updated) throw new NotFoundError('endpoint');
+      const path = dto.path ?? existing.path;
+      // D10: unconditional re-validation, even if neither method nor path changed.
+      await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
 
-    if (dto.headers) {
-      const existingHeaders = await this.headers.listForEndpoint(id, userId);
-      const rows = this.headerStorage.toStorageRows(dto.headers, existingHeaders);
-      await this.headers.replaceForEndpoint(id, userId, rows);
-    }
-    if (dto.tags) {
-      await this.tags.replaceForEndpoint(
-        id,
-        userId,
-        dto.tags.map((t) => ({ key: t.key, value: t.value })),
-      );
-    }
+      if (dto.intervalS !== undefined) this.checkInterval(dto.intervalS);
+      if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
+      if (dto.maxRedirects !== undefined) this.checkMaxRedirects(dto.maxRedirects);
+
+      await this.endpoints
+        .update(
+          id,
+          userId,
+          {
+            ...(dto.method !== undefined ? { method: dto.method } : {}),
+            ...(dto.path !== undefined ? { path: dto.path } : {}),
+            ...(dto.intervalS !== undefined ? { interval_s: dto.intervalS } : {}),
+            ...(dto.timeoutMs !== undefined ? { timeout_ms: dto.timeoutMs } : {}),
+            ...(dto.expectedStatus ? { expected_status: JSON.stringify(dto.expectedStatus) } : {}),
+            ...(dto.latencyWarnMs !== undefined ? { latency_warn_ms: dto.latencyWarnMs } : {}),
+            ...(dto.failureThreshold !== undefined
+              ? { failure_threshold: dto.failureThreshold }
+              : {}),
+            ...(dto.successThreshold !== undefined
+              ? { success_threshold: dto.successThreshold }
+              : {}),
+            ...(dto.followRedirects !== undefined ? { follow_redirects: dto.followRedirects } : {}),
+            ...(dto.maxRedirects !== undefined ? { max_redirects: dto.maxRedirects } : {}),
+            ...(dto.assertions ? { assertions: JSON.stringify(dto.assertions) } : {}),
+          },
+          trx,
+        )
+        .catch((err: unknown) => {
+          if (isUniqueViolation(err, 'endpoints_service_method_path_key')) {
+            throw new ConflictError(
+              'CONFLICT',
+              'an endpoint already exists for this method and path',
+            );
+          }
+          throw err;
+        });
+
+      if (dto.headers) {
+        const existingHeaders = await trx
+          .selectFrom('headers')
+          .selectAll()
+          .where('endpoint_id', '=', id)
+          .execute();
+        const rows = this.headerStorage.toStorageRows(dto.headers, existingHeaders);
+        await this.headers.replaceForEndpoint(id, userId, rows, trx);
+      }
+      if (dto.tags) {
+        await this.tags.replaceForEndpoint(
+          id,
+          userId,
+          dto.tags.map((t) => ({ key: t.key, value: t.value })),
+          trx,
+        );
+      }
+    });
 
     return this.toDto(userId, id);
   }

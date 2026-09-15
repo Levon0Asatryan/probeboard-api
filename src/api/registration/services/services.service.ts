@@ -56,6 +56,13 @@ export class ServicesService {
     return this.createImplicit(userId, dto.url!, dto.name, dto);
   }
 
+  /**
+   * One transaction end to end: a service committed with its header/tag
+   * writes still pending would leave a base URL "occupied" by a service the
+   * client's own request never actually finished creating, so a retry after
+   * a header/tag validation failure gets CONFLICT instead of the create it
+   * asked for.
+   */
   private async createExplicit(
     userId: string,
     rawBaseUrl: string,
@@ -65,28 +72,33 @@ export class ServicesService {
     await assertSaveableUrl(rawBaseUrl, this.ssrfConfig);
     const origin = new URL(rawBaseUrl).origin;
 
-    const service = await this.services
-      .create({ user_id: userId, name, base_url: origin })
-      .catch((err: unknown) => {
-        if (isUniqueViolation(err, 'services_user_base_url_key')) {
-          throw new ConflictError('CONFLICT', 'a service already exists at this base URL');
-        }
-        throw err;
-      });
+    const serviceId = await this.db.kysely.transaction().execute(async (trx) => {
+      const service = await this.services
+        .create({ user_id: userId, name, base_url: origin }, trx)
+        .catch((err: unknown) => {
+          if (isUniqueViolation(err, 'services_user_base_url_key')) {
+            throw new ConflictError('CONFLICT', 'a service already exists at this base URL');
+          }
+          throw err;
+        });
 
-    if (dto.headers && dto.headers.length > 0) {
-      const rows = this.headerStorage.toStorageRows(dto.headers, []);
-      await this.headers.replaceForService(service.id, userId, rows);
-    }
-    if (dto.tags && dto.tags.length > 0) {
-      await this.tags.replaceForService(
-        service.id,
-        userId,
-        dto.tags.map((t) => ({ key: t.key, value: t.value })),
-      );
-    }
+      if (dto.headers && dto.headers.length > 0) {
+        const rows = this.headerStorage.toStorageRows(dto.headers, []);
+        await this.headers.replaceForService(service.id, userId, rows, trx);
+      }
+      if (dto.tags && dto.tags.length > 0) {
+        await this.tags.replaceForService(
+          service.id,
+          userId,
+          dto.tags.map((t) => ({ key: t.key, value: t.value })),
+          trx,
+        );
+      }
 
-    return { service: await this.toDto(service.id, userId) };
+      return service.id;
+    });
+
+    return { service: await this.toDto(serviceId, userId) };
   }
 
   /** B-3: attaches to an existing service at the same origin, or creates both service and endpoint. */
@@ -118,18 +130,31 @@ export class ServicesService {
         );
       }
 
-      const endpoint = await this.endpoints.create(
-        {
-          service_id: service.id,
-          user_id: userId,
-          method: 'GET',
-          path,
-          interval_s: this.cfg.PROBE_DEFAULT_INTERVAL_S,
-          timeout_ms: this.cfg.PROBE_DEFAULT_TIMEOUT_MS,
-          max_redirects: this.cfg.PROBE_DEFAULT_MAX_REDIRECTS,
-        },
-        trx,
-      );
+      const endpoint = await this.endpoints
+        .create(
+          {
+            service_id: service.id,
+            user_id: userId,
+            method: 'GET',
+            path,
+            interval_s: this.cfg.PROBE_DEFAULT_INTERVAL_S,
+            timeout_ms: this.cfg.PROBE_DEFAULT_TIMEOUT_MS,
+            max_redirects: this.cfg.PROBE_DEFAULT_MAX_REDIRECTS,
+          },
+          trx,
+        )
+        .catch((err: unknown) => {
+          // The same URL submitted twice: the second call attaches to the
+          // service the first call created, then collides on this unique
+          // index -- an ordinary duplicate request, not a server fault.
+          if (isUniqueViolation(err, 'endpoints_service_method_path_key')) {
+            throw new ConflictError(
+              'CONFLICT',
+              'an endpoint already exists for this method and path',
+            );
+          }
+          throw err;
+        });
 
       if (dto.headers && dto.headers.length > 0) {
         const rows = this.headerStorage.toStorageRows(dto.headers, []);
@@ -162,10 +187,16 @@ export class ServicesService {
     return Promise.all(rows.map((row) => this.toDto(row.id, userId)));
   }
 
+  /**
+   * One transaction, the service row locked first: a name/baseUrl change
+   * committing while a header/tag write still fails would leave a partial
+   * mutation visible, and reading "existing headers" for a secret's keep
+   * semantics before this lock would let a concurrent PATCH rotate the
+   * secret in between, so this read has to happen inside the same lock
+   * `HeaderRepository.replaceForService` itself takes on the owner row --
+   * re-acquiring it there is a no-op, not a second, racing lock.
+   */
   async update(userId: string, id: string, dto: UpdateServiceRequest): Promise<ServiceDto> {
-    const existing = await this.services.findById(id, userId);
-    if (!existing) throw new NotFoundError('service');
-
     if (dto.headers) this.headerValidation.validate(dto.headers);
 
     let baseUrl: string | undefined;
@@ -174,31 +205,51 @@ export class ServicesService {
       baseUrl = new URL(dto.baseUrl).origin;
     }
 
-    const updated = await this.services
-      .update(id, userId, {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(baseUrl !== undefined ? { base_url: baseUrl } : {}),
-      })
-      .catch((err: unknown) => {
-        if (isUniqueViolation(err, 'services_user_base_url_key')) {
-          throw new ConflictError('CONFLICT', 'a service already exists at this base URL');
-        }
-        throw err;
-      });
-    if (!updated) throw new NotFoundError('service');
+    await this.db.kysely.transaction().execute(async (trx) => {
+      const locked = await trx
+        .selectFrom('services')
+        .select('id')
+        .where('id', '=', id)
+        .where('user_id', '=', userId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!locked) throw new NotFoundError('service');
 
-    if (dto.headers) {
-      const existingHeaders = await this.headers.listForService(id, userId);
-      const rows = this.headerStorage.toStorageRows(dto.headers, existingHeaders);
-      await this.headers.replaceForService(id, userId, rows);
-    }
-    if (dto.tags) {
-      await this.tags.replaceForService(
-        id,
-        userId,
-        dto.tags.map((t) => ({ key: t.key, value: t.value })),
-      );
-    }
+      await this.services
+        .update(
+          id,
+          userId,
+          {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(baseUrl !== undefined ? { base_url: baseUrl } : {}),
+          },
+          trx,
+        )
+        .catch((err: unknown) => {
+          if (isUniqueViolation(err, 'services_user_base_url_key')) {
+            throw new ConflictError('CONFLICT', 'a service already exists at this base URL');
+          }
+          throw err;
+        });
+
+      if (dto.headers) {
+        const existingHeaders = await trx
+          .selectFrom('headers')
+          .selectAll()
+          .where('service_id', '=', id)
+          .execute();
+        const rows = this.headerStorage.toStorageRows(dto.headers, existingHeaders);
+        await this.headers.replaceForService(id, userId, rows, trx);
+      }
+      if (dto.tags) {
+        await this.tags.replaceForService(
+          id,
+          userId,
+          dto.tags.map((t) => ({ key: t.key, value: t.value })),
+          trx,
+        );
+      }
+    });
 
     return this.toDto(id, userId);
   }

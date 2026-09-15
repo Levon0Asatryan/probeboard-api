@@ -371,6 +371,72 @@ describe('duplicate method+path', () => {
     expect(dup.status).toBe(409);
     expect(dup.body).toMatchObject({ code: 'CONFLICT' });
   });
+
+  it('B-3: submitting the same implicit URL twice conflicts, not 500s', async () => {
+    await call('/services', { cookie: alice, body: { url: 'http://93.184.216.34/orders' } });
+    const dup = await call('/services', {
+      cookie: alice,
+      body: { url: 'http://93.184.216.34/orders' },
+    });
+    expect(dup.status).toBe(409);
+    expect(dup.body).toMatchObject({ code: 'CONFLICT' });
+  });
+});
+
+describe('malformed ids', () => {
+  it('400s rather than 500ing on a non-UUID :id', async () => {
+    for (const path of [
+      '/services/not-a-uuid',
+      '/endpoints/not-a-uuid',
+      '/services/not-a-uuid/endpoints',
+    ]) {
+      const res = await call(path, { method: 'GET', cookie: alice });
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
+describe('atomicity: a failed PATCH changes nothing', () => {
+  it('does not rename the service when the header replacement fails', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'original', baseUrl: 'http://93.184.216.34' },
+    });
+    const id = (created.body as { service: { id: string } }).service.id;
+
+    const patch = await call(`/services/${id}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { name: 'renamed', headers: [{ name: 'X-Never-Set', isSecret: true }] },
+    });
+    expect(patch.status).toBe(400);
+
+    const got = await call(`/services/${id}`, { method: 'GET', cookie: alice });
+    expect((got.body as { name: string }).name).toBe('original');
+  });
+
+  it('does not change the endpoint path when the header replacement fails', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const serviceId = (created.body as { service: { id: string } }).service.id;
+    const endpoint = await call(`/services/${serviceId}/endpoints`, {
+      cookie: alice,
+      body: { path: '/orders' },
+    });
+    const id = (endpoint.body as { id: string }).id;
+
+    const patch = await call(`/endpoints/${id}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { path: '/changed', headers: [{ name: 'X-Never-Set', isSecret: true }] },
+    });
+    expect(patch.status).toBe(400);
+
+    const got = await call(`/endpoints/${id}`, { method: 'GET', cookie: alice });
+    expect((got.body as { path: string }).path).toBe('/orders');
+  });
 });
 
 describe('pause and resume', () => {
