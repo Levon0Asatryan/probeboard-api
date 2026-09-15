@@ -415,31 +415,46 @@ describe('the tag filter (B-5)', () => {
     // against real Postgres, or that .list() still calls that query
     // builder at all -- only this, run for real, closes that gap.
     //
-    // A generous 90s timeout, not the 30s the same test used before it was
-    // briefly removed for flaking on a slow CI runner: the insert and
-    // query themselves are fast (under 2s locally), so the margin is
-    // headroom against a loaded runner, not evidence the test is slow.
-    const rowCount = 70_000;
-    await ctx.pool.query(
-      `INSERT INTO endpoints
-           (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
-         SELECT $1, $2, 'GET', '/bulk-' || gs, 60, 10000, 5
-         FROM generate_series(1, $3) AS gs`,
-      [serviceId, userId, rowCount],
-    );
-    await ctx.pool.query(
-      `INSERT INTO tags (endpoint_id, key, value)
-         SELECT id, 'load', 'test' FROM endpoints
-         WHERE service_id = $1 AND path LIKE '/bulk-%'`,
-      [serviceId],
-    );
+    // autovacuum is disabled for these two tables for the duration of this
+    // test, not left to race: production sees exactly this "just
+    // bulk-inserted, not yet autoanalyzed" window on every write, and a
+    // plan that only holds once ANALYZE has run is not a fix for it (see
+    // docs/m2-verification.md). Disabling autovacuum here makes that
+    // worst case the *only* case, deterministically, instead of an
+    // intermittent race the test wins or loses depending on runner speed --
+    // which is what made this test's ServiceRepository twin hang for 80s+
+    // on CI before the LATERAL join + composite index fix
+    // (m2-verification.md defect #12). With the fix, the plan does not
+    // depend on statistics at all, so this passes well inside the default
+    // 20s timeout regardless.
+    await ctx.pool.query(`ALTER TABLE endpoints SET (autovacuum_enabled = false)`);
+    await ctx.pool.query(`ALTER TABLE tags SET (autovacuum_enabled = false)`);
+    try {
+      const rowCount = 70_000;
+      await ctx.pool.query(
+        `INSERT INTO endpoints
+             (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
+           SELECT $1, $2, 'GET', '/bulk-' || gs, 60, 10000, 5
+           FROM generate_series(1, $3) AS gs`,
+        [serviceId, userId, rowCount],
+      );
+      await ctx.pool.query(
+        `INSERT INTO tags (endpoint_id, key, value)
+           SELECT id, 'load', 'test' FROM endpoints
+           WHERE service_id = $1 AND path LIKE '/bulk-%'`,
+        [serviceId],
+      );
 
-    const page = await endpoints.list(userId, {
-      limit: 10,
-      tag: { key: 'load', value: 'test' },
-    });
-    expect(page).toHaveLength(10);
-  }, 90_000);
+      const page = await endpoints.list(userId, {
+        limit: 10,
+        tag: { key: 'load', value: 'test' },
+      });
+      expect(page).toHaveLength(10);
+    } finally {
+      await ctx.pool.query(`ALTER TABLE endpoints RESET (autovacuum_enabled)`);
+      await ctx.pool.query(`ALTER TABLE tags RESET (autovacuum_enabled)`);
+    }
+  });
 });
 
 describe('countForUser', () => {
