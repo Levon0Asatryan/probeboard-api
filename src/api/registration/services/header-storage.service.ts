@@ -4,6 +4,7 @@ import type { AppConfig } from '../../../core/config/schema.js';
 import { AppError } from '../../../core/errors/app-error.js';
 import { encryptSecret, parseHeaderEncryptionKey } from '../../../core/crypto/header-cipher.js';
 import type { Header } from '../../../core/db/types.js';
+import { mergeHeaderRows } from '../../../core/registration/header-merge.js';
 import type { NewOwnedHeader } from '../../../core/registration/repositories/header.repository.js';
 import type { HeaderInput } from '../dto/header.dto.js';
 
@@ -97,14 +98,7 @@ export function toHeaderDto(header: Header): HeaderDto {
     : { name: header.name, isSecret: false, value: header.value ?? '' };
 }
 
-/**
- * B-4: an endpoint's effective headers are `{...serviceHeaders,
- * ...endpointHeaders}` keyed by `lower(name)`, endpoint wins -- computed at
- * read time, never stored pre-merged (docs/m2-plan.md §5.2).
- */
+/** DTO wrapper over `mergeHeaderRows` (core) -- the redacted view an HTTP response needs. */
 export function mergeHeaders(serviceHeaders: Header[], endpointHeaders: Header[]): HeaderDto[] {
-  const merged = new Map<string, Header>();
-  for (const h of serviceHeaders) merged.set(h.name.toLowerCase(), h);
-  for (const h of endpointHeaders) merged.set(h.name.toLowerCase(), h);
-  return [...merged.values()].map(toHeaderDto);
+  return mergeHeaderRows(serviceHeaders, endpointHeaders).map(toHeaderDto);
 }
