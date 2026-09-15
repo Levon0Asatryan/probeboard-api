@@ -201,6 +201,21 @@ describe('the tag filter parameter', () => {
       expect(tag.schema.pattern, path).toBe('^[^:]+:.*$');
     }
   });
+
+  it('documents 400, reachable through zodQuery(listQuerySchema/tagQuerySchema) on every filtered route', () => {
+    const doc = buildOpenApiDocument();
+    const paths = doc.paths as Record<
+      string,
+      Record<string, { responses: Record<string, unknown> }>
+    >;
+    for (const [path, method] of [
+      ['/v1/services', 'get'],
+      ['/v1/endpoints', 'get'],
+      ['/v1/services/{id}/endpoints', 'get'],
+    ] as const) {
+      expect(paths[path][method].responses, path).toHaveProperty('400');
+    }
+  });
 });
 
 describe('the error contract', () => {

@@ -1334,6 +1334,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Service"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "429": *a2
   /v1/services/{id}:
@@ -1445,6 +1451,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "404":
           description: Not found, or owned by someone else.
@@ -1513,6 +1525,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Endpoint"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401": *a1
         "429": *a2
   /v1/endpoints/{id}:
