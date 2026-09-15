@@ -12,10 +12,10 @@ M2 shipped as five PRs (#28–#35, `docs/m2-plan.md` §8) across two review
 rounds this record covers together: the five PRs themselves, and a sixth,
 `fix/m2-review-findings` (PR #37), that closed every Codex thread the first
 round left unreplied, fixed what those threads found, and was itself
-reviewed once more -- defects #9 and #10 below are from that second round on
-this same branch.
+reviewed twice more -- defects #9, #10 and #11 below are from those two
+follow-up rounds on this same branch.
 
-Date: 2026-09-15 · branch `fix/m2-review-findings` at `35b5b3d` (this record
+Date: 2026-09-15 · branch `fix/m2-review-findings` at `59d060d` (this record
 is its own next commit) · Postgres 17-alpine · Node 22-alpine · NestJS 12
 
 ## Method
@@ -53,6 +53,9 @@ removal against the code they guard, not only by passing once.
 | TEST-NET-1 (`192.0.2.1`, newly blocked)                            | `400 ADDRESS_NOT_ALLOWED`                                          |
 | IPv6 documentation (`2001:db8::1`, RFC 3849, newly blocked)        | `400 ADDRESS_NOT_ALLOWED`                                          |
 | Port Control Protocol Anycast (`192.0.0.9`, IANA-global exception) | `201` -- deliberately not blocked (see the comparison table below) |
+| ORCHIDv2 (`2001:20::1`, IANA-global IPv6 exception)                | `201` -- deliberately not blocked                                  |
+| Unnamed non-global address inside `192.0.0.0/24` (`192.0.0.11`)    | `400 ADDRESS_NOT_ALLOWED` -- see defect #11                        |
+| Unnamed non-global address inside `2001::/23` (`2001:5::1`)        | `400 ADDRESS_NOT_ALLOWED` -- see defect #11                        |
 | `PATCH baseUrl` to a blocked address                               | `400` -- re-validated on every save (D10), not only at create      |
 
 ### Header/tag replace atomicity
@@ -86,8 +89,8 @@ removal against the code they guard, not only by passing once.
 | --------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `npm run typecheck`                                 | clean                                                                             |
 | `npm run lint`                                      | clean                                                                             |
-| `npx vitest run` (unit)                             | 627 passed, 55 files                                                              |
-| `npm run test:coverage`                             | 97.44% stmts / 91.49% branches / 98.31% fns / 98.01% lines -- above the 90% floor |
+| `npx vitest run` (unit)                             | 636 passed, 55 files                                                              |
+| `npm run test:coverage`                             | 97.48% stmts / 91.58% branches / 98.32% fns / 98.04% lines -- above the 90% floor |
 | `npm run test:int` (real Postgres)                  | 303 passed, 18 files, ~18s (was timing out intermittently -- see defect #8)       |
 | `docker compose up -d --build` from an empty volume | postgres, migrate, api, worker healthy                                            |
 
@@ -155,67 +158,61 @@ restored).
 this record's date; `−` = already covered by an existing, differently-scoped
 rule):
 
-| Block                       | Family | Name                                                     | Global? | Action                                                                                                  |
-| --------------------------- | ------ | -------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
-| `0.0.0.0/8`                 | v4     | "This network"                                           | No      | already blocked                                                                                         |
-| `10.0.0.0/8`                | v4     | Private-Use                                              | No      | already blocked                                                                                         |
-| `100.64.0.0/10`             | v4     | Shared Address Space (CGNAT)                             | No      | already blocked                                                                                         |
-| `127.0.0.0/8`               | v4     | Loopback                                                 | No      | already blocked                                                                                         |
-| `169.254.0.0/16`            | v4     | Link Local                                               | No      | already blocked                                                                                         |
-| `172.16.0.0/12`             | v4     | Private-Use                                              | No      | already blocked                                                                                         |
-| `192.0.0.0/29`              | v4     | IPv4 Service Continuity Prefix (DS-Lite)                 | No      | **added** (Codex-named)                                                                                 |
-| `192.0.0.8/32`              | v4     | IPv4 dummy address                                       | No      | **added**                                                                                               |
-| `192.0.0.9/32`              | v4     | Port Control Protocol Anycast                            | **Yes** | left reachable (see note)                                                                               |
-| `192.0.0.10/32`             | v4     | TURN Anycast                                             | **Yes** | left reachable (see note)                                                                               |
-| `192.0.0.170/32`, `.171/32` | v4     | NAT64/DNS64 Discovery                                    | No      | **added**                                                                                               |
-| `192.0.2.0/24`              | v4     | Documentation (TEST-NET-1)                               | No      | **added**                                                                                               |
-| `192.31.196.0/24`           | v4     | AS112-v4                                                 | Yes     | no rule needed                                                                                          |
-| `192.52.193.0/24`           | v4     | AMT                                                      | Yes     | no rule needed                                                                                          |
-| `192.88.99.0/24`            | v4     | 6to4 Relay Anycast (deprecated)                          | No      | **added**                                                                                               |
-| `192.168.0.0/16`            | v4     | Private-Use                                              | No      | already blocked                                                                                         |
-| `192.175.48.0/24`           | v4     | Direct Delegation AS112                                  | Yes     | no rule needed                                                                                          |
-| `198.18.0.0/15`             | v4     | Benchmarking                                             | No      | already blocked                                                                                         |
-| `198.51.100.0/24`           | v4     | Documentation (TEST-NET-2)                               | No      | **added**                                                                                               |
-| `203.0.113.0/24`            | v4     | Documentation (TEST-NET-3)                               | No      | **added**                                                                                               |
-| `224.0.0.0/4`               | v4     | Multicast                                                | No      | already blocked                                                                                         |
-| `240.0.0.0/4`               | v4     | Reserved (covers `255.255.255.255/32` Limited Broadcast) | No      | already blocked                                                                                         |
-| `::1/128`                   | v6     | Loopback                                                 | No      | already blocked                                                                                         |
-| `::/128`                    | v6     | Unspecified                                              | No      | already blocked                                                                                         |
-| `::ffff:0:0/96`             | v6     | IPv4-mapped                                              | No      | handled by cross-family matching, not a subnet rule                                                     |
-| `64:ff9b::/96`              | v6     | IPv4-IPv6 Translation (NAT64 WKP)                        | **Yes** | blocked anyway -- registry "Global" answers routability, not embedded-address safety (see code comment) |
-| `64:ff9b:1::/48`            | v6     | IPv4-IPv6 Translation (NAT64 local-use)                  | No      | already blocked                                                                                         |
-| `100::/64`                  | v6     | Discard-Only Address Block                               | No      | **added**                                                                                               |
-| `100:0:0:1::/64`            | v6     | Dummy IPv6 Prefix                                        | No      | **added**                                                                                               |
-| `2001::/23`                 | v6     | IETF Protocol Assignments (parent)                       | No      | not swept wholesale -- see asymmetry note                                                               |
-| `2001::/32`                 | v6     | Teredo                                                   | No      | already blocked                                                                                         |
-| `2001:1::1/128`–`.3/128`    | v6     | PCP/TURN/DNS-SD Anycast                                  | Yes     | no rule needed                                                                                          |
-| `2001:2::/48`               | v6     | Benchmarking                                             | No      | **added**                                                                                               |
-| `2001:3::/32`               | v6     | AMT                                                      | Yes     | no rule needed                                                                                          |
-| `2001:4:112::/48`           | v6     | AS112-v6                                                 | Yes     | no rule needed                                                                                          |
-| `2001:10::/28`              | v6     | deprecated (previously ORCHID)                           | No      | **added**                                                                                               |
-| `2001:20::/28`              | v6     | ORCHIDv2                                                 | Yes     | no rule needed                                                                                          |
-| `2001:30::/28`              | v6     | Drone Remote ID (DETs)                                   | Yes     | no rule needed                                                                                          |
-| `2001:db8::/32`             | v6     | Documentation                                            | No      | **added** (Codex-named)                                                                                 |
-| `2002::/16`                 | v6     | 6to4                                                     | No      | already blocked                                                                                         |
-| `2620:4f:8000::/48`         | v6     | Direct Delegation AS112                                  | Yes     | no rule needed                                                                                          |
-| `3fff::/20`                 | v6     | Documentation (RFC 9637)                                 | No      | **added**                                                                                               |
-| `5f00::/16`                 | v6     | Segment Routing (SRv6) SIDs                              | No      | **added**                                                                                               |
-| `fc00::/7`                  | v6     | Unique-Local                                             | No      | already blocked                                                                                         |
-| `fe80::/10`                 | v6     | Link-Local                                               | No      | already blocked                                                                                         |
+| Block                    | Family | Name                                                     | Global? | Action                                                                                                                                                                                           |
+| ------------------------ | ------ | -------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0.0.0.0/8`              | v4     | "This network"                                           | No      | already blocked                                                                                                                                                                                  |
+| `10.0.0.0/8`             | v4     | Private-Use                                              | No      | already blocked                                                                                                                                                                                  |
+| `100.64.0.0/10`          | v4     | Shared Address Space (CGNAT)                             | No      | already blocked                                                                                                                                                                                  |
+| `127.0.0.0/8`            | v4     | Loopback                                                 | No      | already blocked                                                                                                                                                                                  |
+| `169.254.0.0/16`         | v4     | Link Local                                               | No      | already blocked                                                                                                                                                                                  |
+| `172.16.0.0/12`          | v4     | Private-Use                                              | No      | already blocked                                                                                                                                                                                  |
+| `192.0.0.0/24`           | v4     | IETF Protocol Assignments (parent)                       | No      | **added, wholesale** (see the carve-out note) -- covers DS-Lite (Codex-named), the dummy address, NAT64/DNS64 Discovery, and every unnamed address in the /24 a first version of this fix missed |
+| `192.0.0.9/32`           | v4     | Port Control Protocol Anycast                            | **Yes** | carved out of the /24 block (see note)                                                                                                                                                           |
+| `192.0.0.10/32`          | v4     | TURN Anycast                                             | **Yes** | carved out of the /24 block (see note)                                                                                                                                                           |
+| `192.0.2.0/24`           | v4     | Documentation (TEST-NET-1)                               | No      | **added**                                                                                                                                                                                        |
+| `192.31.196.0/24`        | v4     | AS112-v4                                                 | Yes     | no rule needed                                                                                                                                                                                   |
+| `192.52.193.0/24`        | v4     | AMT                                                      | Yes     | no rule needed                                                                                                                                                                                   |
+| `192.88.99.0/24`         | v4     | 6to4 Relay Anycast (deprecated)                          | No      | **added**                                                                                                                                                                                        |
+| `192.168.0.0/16`         | v4     | Private-Use                                              | No      | already blocked                                                                                                                                                                                  |
+| `192.175.48.0/24`        | v4     | Direct Delegation AS112                                  | Yes     | no rule needed                                                                                                                                                                                   |
+| `198.18.0.0/15`          | v4     | Benchmarking                                             | No      | already blocked                                                                                                                                                                                  |
+| `198.51.100.0/24`        | v4     | Documentation (TEST-NET-2)                               | No      | **added**                                                                                                                                                                                        |
+| `203.0.113.0/24`         | v4     | Documentation (TEST-NET-3)                               | No      | **added**                                                                                                                                                                                        |
+| `224.0.0.0/4`            | v4     | Multicast                                                | No      | already blocked                                                                                                                                                                                  |
+| `240.0.0.0/4`            | v4     | Reserved (covers `255.255.255.255/32` Limited Broadcast) | No      | already blocked                                                                                                                                                                                  |
+| `::1/128`                | v6     | Loopback                                                 | No      | already blocked                                                                                                                                                                                  |
+| `::/128`                 | v6     | Unspecified                                              | No      | already blocked                                                                                                                                                                                  |
+| `::ffff:0:0/96`          | v6     | IPv4-mapped                                              | No      | handled by cross-family matching, not a subnet rule                                                                                                                                              |
+| `64:ff9b::/96`           | v6     | IPv4-IPv6 Translation (NAT64 WKP)                        | **Yes** | blocked anyway -- registry "Global" answers routability, not embedded-address safety (see code comment)                                                                                          |
+| `64:ff9b:1::/48`         | v6     | IPv4-IPv6 Translation (NAT64 local-use)                  | No      | already blocked                                                                                                                                                                                  |
+| `100::/64`               | v6     | Discard-Only Address Block                               | No      | **added**                                                                                                                                                                                        |
+| `100:0:0:1::/64`         | v6     | Dummy IPv6 Prefix                                        | No      | **added**                                                                                                                                                                                        |
+| `2001::/23`              | v6     | IETF Protocol Assignments (parent)                       | No      | **added, wholesale** (see the carve-out note) -- covers Teredo, Benchmarking, deprecated ORCHID, and every unnamed address in the /23 a first version of this fix missed                         |
+| `2001:1::1/128`–`.3/128` | v6     | PCP/TURN/DNS-SD Anycast                                  | Yes     | carved out of the /23 block (see note)                                                                                                                                                           |
+| `2001:3::/32`            | v6     | AMT                                                      | Yes     | carved out of the /23 block (see note)                                                                                                                                                           |
+| `2001:4:112::/48`        | v6     | AS112-v6                                                 | Yes     | carved out of the /23 block (see note)                                                                                                                                                           |
+| `2001:20::/28`           | v6     | ORCHIDv2                                                 | Yes     | carved out of the /23 block (see note)                                                                                                                                                           |
+| `2001:30::/28`           | v6     | Drone Remote ID (DETs)                                   | Yes     | carved out of the /23 block (see note)                                                                                                                                                           |
+| `2001:db8::/32`          | v6     | Documentation                                            | No      | **added** (Codex-named) -- outside `2001::/23`, so a separate rule regardless                                                                                                                    |
+| `2002::/16`              | v6     | 6to4                                                     | No      | already blocked                                                                                                                                                                                  |
+| `2620:4f:8000::/48`      | v6     | Direct Delegation AS112                                  | Yes     | no rule needed                                                                                                                                                                                   |
+| `3fff::/20`              | v6     | Documentation (RFC 9637)                                 | No      | **added**                                                                                                                                                                                        |
+| `5f00::/16`              | v6     | Segment Routing (SRv6) SIDs                              | No      | **added**                                                                                                                                                                                        |
+| `fc00::/7`               | v6     | Unique-Local                                             | No      | already blocked                                                                                                                                                                                  |
+| `fe80::/10`              | v6     | Link-Local                                               | No      | already blocked                                                                                                                                                                                  |
 
-Asymmetry note: IPv4's `192.0.0.0/24` and IPv6's `2001::/23` are both
-non-global parent classifications with global exceptions carved out inside
-them, but they were not treated the same way. `192.0.0.0/24`'s exceptions are
-two single anycast addresses (`.9`, `.10`) -- excluding just those two from a
-wholesale block needs eight separate CIDR ranges for no real benefit, so the
-three specifically-named non-global sub-blocks are listed individually
-instead, leaving the small unnamed remainder of the /24 (and the two global
-addresses) alone. `2001::/23`'s exceptions include two entire currently-active
-/28 allocations (ORCHIDv2, Drone Remote ID) -- wholesale-blocking the /23
-would reject real, assigned global traffic, a materially larger cost than
-IPv4's two addresses, so only the specifically-named non-global sub-blocks
-are blocked there too, by the same reasoning applied consistently rather than
-swept differently. Source: IANA's
+Carve-out note: `192.0.0.0/24` and `2001::/23` are both non-global parent
+classifications with more-specific globally reachable entries inside them.
+An earlier version of this fix (this PR's own first commit) named and
+blocked only the registry's own named non-global sub-blocks within each
+parent, leaving every unnamed address in the parent -- unassigned, but
+still non-global by inheritance -- unblocked (defect #11 below). Both
+parents are now blocked wholesale, with the registry's global exceptions
+inside them (`192.0.0.9`/`.10`; `2001:1::1`–`.3`, `2001:3::/32`,
+`2001:4:112::/48`, `2001:20::/28`, `2001:30::/28`) carved back out via a
+second `BlockList` (`GLOBAL_EXCEPTIONS` in `host-validator.ts`) checked
+before the main one -- `net.BlockList` has no subtraction, so "block X
+except Y" is two lists, the narrower checked first. Source: IANA's
 [IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml)
 and
 [IPv6](https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml)
@@ -332,6 +329,35 @@ counted as a fixed defect; recorded here because it is exactly the kind of
 claim this milestone's own review process (checking against the primary
 source instead of trusting either party) exists to catch, including a
 review's own mistakes.
+
+### 11. Naming only the registry's own named children left most of two non-global parent ranges unblocked
+
+A separate finding on the same review round as #10 (and, unlike it,
+correct): defect #4's fix named and blocked only the sub-blocks the IANA
+registries themselves give names to inside `192.0.0.0/24` and `2001::/23`
+(DS-Lite, the dummy address, NAT64/DNS64 Discovery, Teredo, Benchmarking,
+deprecated ORCHID). Both parent blocks are non-global as a whole per their
+own registry entries -- every address inside them inherits that
+classification unless a _more specific_ entry overrides it -- so an address
+with no name of its own, like `192.0.0.11` or `2001:5::1`, matched none of
+the named children and was still accepted. Confirmed by direct bit-range
+computation that both example addresses fall inside their respective
+parent's declared prefix before writing the fix.
+
+Both parents are now blocked wholesale (`bl.addSubnet('192.0.0.0', 24, ...)`,
+`bl.addSubnet('2001::', 23, ...)`), with the registry's own more-specific
+globally reachable entries inside them carved back out via a second
+`BlockList` (`GLOBAL_EXCEPTIONS`) checked first -- the comparison table
+above has the full list of what's carved out and why. This also let two
+lines from #4's fix be removed as redundant: `2001::/32` (Teredo) and the
+IPv4 `192.0.0.0/29`/`192.0.0.8/32`/`192.0.0.170/31` sub-blocks are all
+already covered by their now-wholesale parent.
+
+Two new tests for the gap itself (`192.0.0.11`, `2001:5::1`, both now
+rejected) and seven new tests for the IPv6 exceptions this round made
+explicit. Proven by removal: reverting either wholesale block back to its
+narrower, named-only predecessor fails both gap tests (confirmed for both,
+then restored).
 
 ## What this does not cover
 
