@@ -163,6 +163,13 @@ describe('shapes come from the schemas the server validates with', () => {
     const login = schemas.LoginRequest as { properties: { password: { minLength: number } } };
     expect(login.properties.password.minLength).toBe(1);
   });
+
+  it('encodes the tag-key colon ban as a pattern, since z.toJSONSchema drops .refine()', () => {
+    const create = schemas.CreateEndpointRequest as {
+      properties: { tags: { items: { properties: { key: { pattern: string } } } } };
+    };
+    expect(create.properties.tags.items.properties.key.pattern).toBe('^[^:]*$');
+  });
 });
 
 describe('the cursor parameter', () => {

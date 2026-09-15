@@ -262,6 +262,7 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 128
+                    pattern: ^[^:]*$
                   value:
                     type: string
                     minLength: 1
@@ -308,6 +309,7 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 128
+                    pattern: ^[^:]*$
                   value:
                     type: string
                     minLength: 1
@@ -353,6 +355,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1
@@ -501,6 +504,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1
@@ -666,6 +670,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+                pattern: ^[^:]*$
               value:
                 type: string
                 minLength: 1

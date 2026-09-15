@@ -12,11 +12,15 @@ import type { Tag } from '../../../core/db/types.js';
  */
 export const tagInputSchema = z
   .object({
+    // A regex, not .refine(): z.toJSONSchema (the OpenAPI document, §L178)
+    // drops an arbitrary predicate silently, but converts a regex to
+    // `pattern` -- a generated client needs to see this bound too, not just
+    // the runtime reject it.
     key: z
       .string()
       .min(1)
       .max(128)
-      .refine((v) => !v.includes(':'), { message: 'must not contain a colon' }),
+      .regex(/^[^:]*$/, 'must not contain a colon'),
     value: z.string().min(1).max(256),
   })
   .strict();
