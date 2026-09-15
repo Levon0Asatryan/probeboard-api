@@ -4,13 +4,15 @@ Every endpoint the API serves, as runnable requests. One file per module, named
 after the module it exercises, so the collection stays findable the same way
 the source does.
 
-| File                         | Module        | Covers                                                               |
-| ---------------------------- | ------------- | -------------------------------------------------------------------- |
-| [auth.http](auth.http)       | `api/auth`    | register, login, me, change password, logout, logout-all             |
-| [oauth.http](oauth.http)     | `api/auth`    | sign in with Google/GitHub, link, unlink, identities                 |
-| [health.http](health.http)   | `api/health`  | liveness, readiness                                                  |
-| [common.http](common.http)   | `api/common`  | not-found fallback, error shapes, validation, version prefix, limits |
-| [openapi.http](openapi.http) | `api/openapi` | the Swagger UI page, the document it renders from                    |
+| File                             | Module             | Covers                                                                          |
+| -------------------------------- | ------------------ | ------------------------------------------------------------------------------- |
+| [auth.http](auth.http)           | `api/auth`         | register, login, me, change password, logout, logout-all                        |
+| [oauth.http](oauth.http)         | `api/auth`         | sign in with Google/GitHub, link, unlink, identities                            |
+| [health.http](health.http)       | `api/health`       | liveness, readiness                                                             |
+| [common.http](common.http)       | `api/common`       | not-found fallback, error shapes, validation, version prefix, limits            |
+| [openapi.http](openapi.http)     | `api/openapi`      | the Swagger UI page, the document it renders from                               |
+| [services.http](services.http)   | `api/registration` | create (explicit and B-3 implicit), list, get, update, delete, SSRF rejections  |
+| [endpoints.http](endpoints.http) | `api/registration` | create, list, get, update, delete, pause, resume, duplicate/interval rejections |
 
 A module added later gets a file here in the same pull request. A file that
 does not list every route its module serves is worse than no file, because the
