@@ -183,7 +183,10 @@ export class ServicesService {
   }
 
   async list(userId: string, query: ListQuery): Promise<ServiceDto[]> {
-    const rows = await this.services.list(userId, query);
+    // The DTO's own bound is a generous structural ceiling, not the real
+    // cap -- MAX_LIST_LIMIT is configured (§5.5).
+    const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
+    const rows = await this.services.list(userId, { ...query, limit });
     return Promise.all(rows.map((row) => this.toDto(row.id, userId)));
   }
 
