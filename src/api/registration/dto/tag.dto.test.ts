@@ -27,6 +27,23 @@ describe('tagListSchema', () => {
     expect(tagListSchema.safeParse([]).success).toBe(true);
     expect(tagListSchema.safeParse([{ key: 'env', value: 'prod' }]).success).toBe(true);
   });
+
+  it('rejects a duplicate key, before it reaches the database unique index', () => {
+    const result = tagListSchema.safeParse([
+      { key: 'env', value: 'prod' },
+      { key: 'env', value: 'staging' },
+    ]);
+    expect(result.success).toBe(false);
+  });
+
+  it('allows the same key on separate calls -- only within one list is it a duplicate', () => {
+    expect(
+      tagListSchema.safeParse([
+        { key: 'env', value: 'a' },
+        { key: 'team', value: 'b' },
+      ]).success,
+    ).toBe(true);
+  });
 });
 
 describe('toTagDto', () => {
