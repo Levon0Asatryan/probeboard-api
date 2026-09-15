@@ -382,3 +382,16 @@ describe('cascade delete', () => {
     await expect(headers.listForEndpoint(endpointId, userId)).resolves.toEqual([]);
   });
 });
+
+describe('the executor type excludes a non-transactional Kysely instance', () => {
+  it('a plain Kysely<Database> is not a valid executor, so a caller cannot lose atomicity by passing one', () => {
+    // Compile-time proof: replaceForService/replaceForEndpoint's executor
+    // parameter is Transaction<Database>, not Kysely<Database>. Passing
+    // this repository's own db.kysely -- a plain, non-transactional
+    // instance -- used to type-check and run the lock/delete/insert as
+    // separate autocommit statements, losing the atomicity and locking
+    // the method's own doc comment describes.
+    // @ts-expect-error -- ctx.db is Kysely<Database>, not Transaction<Database>
+    void headers.replaceForService(serviceId, userId, [], ctx.db);
+  });
+});

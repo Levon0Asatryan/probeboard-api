@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Kysely } from 'kysely';
+import type { Transaction } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database, Header, NewHeader } from '../../db/types.js';
 
@@ -94,9 +94,9 @@ export class HeaderRepository {
     serviceId: string,
     userId: string,
     rows: NewOwnedHeader[],
-    executor?: Kysely<Database>,
+    executor?: Transaction<Database>,
   ): Promise<Header[] | undefined> {
-    const run = async (trx: Kysely<Database>): Promise<Header[] | undefined> => {
+    const run = async (trx: Transaction<Database>): Promise<Header[] | undefined> => {
       const owned = await trx
         .selectFrom('services')
         .select('id')
@@ -124,9 +124,9 @@ export class HeaderRepository {
     endpointId: string,
     userId: string,
     rows: NewOwnedHeader[],
-    executor?: Kysely<Database>,
+    executor?: Transaction<Database>,
   ): Promise<Header[] | undefined> {
-    const run = async (trx: Kysely<Database>): Promise<Header[] | undefined> => {
+    const run = async (trx: Transaction<Database>): Promise<Header[] | undefined> => {
       const owned = await trx
         .selectFrom('endpoints')
         .select('id')

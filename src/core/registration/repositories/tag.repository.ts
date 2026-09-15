@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Kysely } from 'kysely';
+import type { Transaction } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database, NewTag, Tag } from '../../db/types.js';
 
@@ -46,9 +46,9 @@ export class TagRepository {
     serviceId: string,
     userId: string,
     rows: NewOwnedTag[],
-    executor?: Kysely<Database>,
+    executor?: Transaction<Database>,
   ): Promise<Tag[] | undefined> {
-    const run = async (trx: Kysely<Database>): Promise<Tag[] | undefined> => {
+    const run = async (trx: Transaction<Database>): Promise<Tag[] | undefined> => {
       const owned = await trx
         .selectFrom('services')
         .select('id')
@@ -75,9 +75,9 @@ export class TagRepository {
     endpointId: string,
     userId: string,
     rows: NewOwnedTag[],
-    executor?: Kysely<Database>,
+    executor?: Transaction<Database>,
   ): Promise<Tag[] | undefined> {
-    const run = async (trx: Kysely<Database>): Promise<Tag[] | undefined> => {
+    const run = async (trx: Transaction<Database>): Promise<Tag[] | undefined> => {
       const owned = await trx
         .selectFrom('endpoints')
         .select('id')
