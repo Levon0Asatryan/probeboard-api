@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { listQuerySchema, tagQuerySchema } from './list-query.dto.js';
+import { listQuerySchema } from './list-query.dto.js';
 
 describe('listQuerySchema', () => {
   it('defaults limit and leaves cursor/tag unset', () => {
@@ -53,21 +53,5 @@ describe('listQuerySchema', () => {
 
   it('rejects unknown fields', () => {
     expect(listQuerySchema.safeParse({ extra: 1 }).success).toBe(false);
-  });
-});
-
-describe('tagQuerySchema', () => {
-  it('accepts no tag at all', () => {
-    expect(tagQuerySchema.safeParse({}).success).toBe(true);
-  });
-
-  it('accepts a valid tag filter', () => {
-    const result = tagQuerySchema.safeParse({ tag: 'env:prod' });
-    expect(result.success).toBe(true);
-    if (result.success) expect(result.data.tag).toEqual({ key: 'env', value: 'prod' });
-  });
-
-  it('rejects unknown fields', () => {
-    expect(tagQuerySchema.safeParse({ tag: 'env:prod', limit: 10 }).success).toBe(false);
   });
 });

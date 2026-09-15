@@ -1311,6 +1311,14 @@ paths:
             minimum: 1
             maximum: 1000
             default: 50
+        - &a6
+          name: tag
+          in: query
+          required: false
+          description: 'B-5: "key:value", split on the first colon only. Matches services/endpoints carrying that exact tag; no match returns an empty list, not an error.'
+          schema:
+            type: string
+            example: env:prod
       responses:
         "200":
           description: One page, oldest id first.
@@ -1421,6 +1429,7 @@ paths:
         - *a3
         - *a4
         - *a5
+        - *a6
       responses:
         "200":
           description: One page of endpoints under this service, oldest id first.
@@ -1488,6 +1497,7 @@ paths:
       parameters:
         - *a4
         - *a5
+        - *a6
       responses:
         "200":
           description: One page, oldest id first.
