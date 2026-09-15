@@ -237,9 +237,38 @@ describe('listForService excludes another user’s endpoints', () => {
       path: '/theirs',
     });
 
-    await expect(endpoints.listForService(serviceId, otherUserId)).resolves.toEqual([]);
-    const mine = await endpoints.listForService(serviceId, userId);
+    await expect(endpoints.listForService(serviceId, otherUserId, { limit: 50 })).resolves.toEqual(
+      [],
+    );
+    const mine = await endpoints.listForService(serviceId, userId, { limit: 50 });
     expect(mine.map((e) => e.path)).toEqual(['/mine']);
+  });
+});
+
+describe('listForService is paginated', () => {
+  it('limits the page and advances by cursor', async () => {
+    for (const path of ['/a', '/b', '/c']) {
+      await endpoints.create({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        max_redirects: 5,
+        method: 'GET',
+        path,
+      });
+    }
+
+    const first = await endpoints.listForService(serviceId, userId, { limit: 2 });
+    expect(first).toHaveLength(2);
+
+    const second = await endpoints.listForService(serviceId, userId, {
+      limit: 2,
+      cursor: first[1].id,
+    });
+    expect(second).toHaveLength(1);
+    expect(second[0].id).not.toBe(first[0].id);
+    expect(second[0].id).not.toBe(first[1].id);
   });
 });
 

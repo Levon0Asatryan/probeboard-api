@@ -32,14 +32,27 @@ export class EndpointRepository {
       .executeTakeFirst();
   }
 
-  async listForService(serviceId: string, userId: string): Promise<Endpoint[]> {
-    return this.db.kysely
+  async listForService(
+    serviceId: string,
+    userId: string,
+    options: { cursor?: string; limit: number; ids?: string[] },
+  ): Promise<Endpoint[]> {
+    let query = this.db.kysely
       .selectFrom('endpoints')
       .selectAll()
       .where('service_id', '=', serviceId)
       .where('user_id', '=', userId)
       .orderBy('id', 'asc')
-      .execute();
+      .limit(options.limit);
+
+    if (options.cursor) {
+      query = query.where('id', '>', options.cursor);
+    }
+    if (options.ids) {
+      query = query.where('id', 'in', options.ids);
+    }
+
+    return query.execute();
   }
 
   async list(userId: string, options: ListEndpointsOptions): Promise<Endpoint[]> {

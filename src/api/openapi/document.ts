@@ -146,7 +146,11 @@ const limitParam = {
   name: 'limit',
   in: 'query' as const,
   required: false,
-  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 50 },
+  description:
+    'Defaults to 50. The effective maximum is deployment-configured ' +
+    '(MAX_LIST_LIMIT), not the 1000 this schema structurally accepts -- a ' +
+    'request over the configured cap returns that many rows, not an error.',
+  schema: { type: 'integer' as const, minimum: 1, maximum: 1000, default: 50 },
 };
 
 /** Shared by every authenticated route. */
@@ -874,10 +878,10 @@ export function buildOpenApiDocument(
           tags: ['endpoints'],
           operationId: 'listServiceEndpoints',
           summary: "A service's endpoints",
-          parameters: [idParam],
+          parameters: [idParam, cursorParam, limitParam],
           responses: {
             '200': {
-              description: 'Every endpoint under this service.',
+              description: 'One page of endpoints under this service, oldest id first.',
               content: {
                 'application/json': {
                   schema: { type: 'array', items: { $ref: '#/components/schemas/Endpoint' } },

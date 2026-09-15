@@ -71,6 +71,23 @@ export class EndpointsService {
     }
   }
 
+  /**
+   * Checked against the *canonical* path (post-URL-parse), not the raw
+   * request string: URL canonicalization can expand a value through
+   * percent-encoding, so validating the pre-parse string would let a
+   * value that is under the cap before parsing land over it after.
+   */
+  private checkPathBytes(path: string): void {
+    if (Buffer.byteLength(path, 'utf8') > this.cfg.MAX_ENDPOINT_PATH_BYTES) {
+      throw new ValidationError([
+        {
+          path: 'path',
+          message: `must be at most ${String(this.cfg.MAX_ENDPOINT_PATH_BYTES)} bytes`,
+        },
+      ]);
+    }
+  }
+
   async createForService(
     userId: string,
     serviceId: string,
@@ -95,6 +112,7 @@ export class EndpointsService {
       // `/a/../orders` all resolve to the same target, and the unique index
       // below only catches duplicates that are byte-identical strings.
       const path = canonicalPath(service.base_url, dto.path);
+      this.checkPathBytes(path);
       // D10: re-validated on every save, using the joined base+path.
       await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
 
@@ -162,10 +180,21 @@ export class EndpointsService {
     return this.toDto(userId, id);
   }
 
-  async listForService(userId: string, serviceId: string): Promise<EndpointDto[]> {
+  async listForService(
+    userId: string,
+    serviceId: string,
+    query: ListQuery,
+  ): Promise<EndpointDto[]> {
     const service = await this.services.findById(serviceId, userId);
     if (!service) throw new NotFoundError('service');
-    const rows = await this.endpoints.listForService(serviceId, userId);
+
+    // The DTO's own bound is a generous structural ceiling, not the real
+    // cap -- MAX_LIST_LIMIT is configured (§5.5).
+    const limit = Math.min(query.limit, this.cfg.MAX_LIST_LIMIT);
+    const rows = await this.endpoints.listForService(serviceId, userId, {
+      cursor: query.cursor,
+      limit,
+    });
     return Promise.all(rows.map((row) => this.toDto(userId, row.id)));
   }
 
@@ -215,6 +244,7 @@ export class EndpointsService {
       // update); only a newly-supplied path needs canonicalizing here.
       const path =
         dto.path !== undefined ? canonicalPath(service.base_url, dto.path) : existing.path;
+      if (dto.path !== undefined) this.checkPathBytes(path);
       // D10: unconditional re-validation, even if neither method nor path changed.
       await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
 

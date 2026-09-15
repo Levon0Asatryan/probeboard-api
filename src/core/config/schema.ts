@@ -341,6 +341,12 @@ const registration = {
   // §5.5). Enforced in the service layer, not the request DTO -- a
   // parameter decorator's schema is built before config injection runs.
   MAX_LIST_LIMIT: z.coerce.number().int().min(1).max(1000).default(100),
+  // An endpoint's path, byte-length (docs/m2-plan.md §3) -- checked against
+  // the canonical path (post-URL-parse) in the service layer, not a DTO
+  // .max(), since z.string().max() counts UTF-16 code units rather than
+  // UTF-8 bytes and a parameter decorator's schema is built before config
+  // injection runs.
+  MAX_ENDPOINT_PATH_BYTES: z.coerce.number().int().min(1).max(8192).default(2048),
 };
 
 /** Claim-based scheduling (NFR-2, NFR-3, NFR-4). */

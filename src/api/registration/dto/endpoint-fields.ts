@@ -22,5 +22,13 @@ export const assertionSchema = z.discriminatedUnion('type', [
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
 
-/** `path` bound (docs/m2-plan.md §3): joined with a validated `base_url` to form the probed URL. */
-export const MAX_ENDPOINT_PATH_BYTES = 2048;
+/**
+ * A generous structural ceiling on `path`, in JS string length -- not the
+ * real cap. The actual byte-length bound is `MAX_ENDPOINT_PATH_BYTES`
+ * (`src/core/config/schema.ts`), enforced in `EndpointsService` against
+ * `Buffer.byteLength` of the *canonical* path (after URL parsing, which can
+ * expand a value through percent-encoding) -- a parameter decorator's
+ * schema is built before config injection runs, and `z.string().max()`
+ * counts UTF-16 code units, not UTF-8 bytes, so neither check belongs here.
+ */
+export const STRUCTURAL_MAX_PATH_LENGTH = 8192;

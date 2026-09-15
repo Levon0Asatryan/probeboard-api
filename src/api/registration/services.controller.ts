@@ -77,8 +77,9 @@ export class ServicesController {
   async listEndpoints(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Query(zodQuery(listQuerySchema)) query: ListQuery,
   ): Promise<EndpointDto[]> {
-    return this.endpoints.listForService(user.id, id);
+    return this.endpoints.listForService(user.id, id, query);
   }
 
   @Post(':id/endpoints')

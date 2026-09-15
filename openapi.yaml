@@ -373,7 +373,7 @@ components:
           default: /
           type: string
           minLength: 1
-          maxLength: 2048
+          maxLength: 8192
         intervalS:
           type: integer
           minimum: 0
@@ -521,7 +521,7 @@ components:
         path:
           type: string
           minLength: 1
-          maxLength: 2048
+          maxLength: 8192
         intervalS:
           type: integer
           minimum: 0
@@ -1263,10 +1263,11 @@ paths:
           name: limit
           in: query
           required: false
+          description: Defaults to 50. The effective maximum is deployment-configured (MAX_LIST_LIMIT), not the 1000 this schema structurally accepts -- a request over the configured cap returns that many rows, not an error.
           schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 1000
             default: 50
       responses:
         "200":
@@ -1376,9 +1377,11 @@ paths:
       summary: A service's endpoints
       parameters:
         - *a3
+        - *a4
+        - *a5
       responses:
         "200":
-          description: Every endpoint under this service.
+          description: One page of endpoints under this service, oldest id first.
           content:
             application/json:
               schema:
