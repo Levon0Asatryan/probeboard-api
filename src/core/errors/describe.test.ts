@@ -64,6 +64,31 @@ describe('describeError', () => {
     expect(describeError(err)).toBe('outer (cause: null)');
   });
 
+  it('expands an AggregateError cause into its constituent errors, not the useless string "AggregateError"', () => {
+    // A multi-address connection failure attached as a cause, e.g. a
+    // resolved hostname whose every address refused the connection.
+    const a = Object.assign(new Error('connect failed'), {
+      code: 'ECONNREFUSED',
+      address: '10.0.0.1',
+    });
+    const b = Object.assign(new Error('connect failed'), {
+      code: 'ECONNREFUSED',
+      address: '10.0.0.2',
+    });
+    const err = new Error('outer');
+    (err as Error & { cause?: unknown }).cause = new AggregateError([a, b], '');
+    expect(describeError(err)).toBe('outer (cause: ECONNREFUSED: connect failed)');
+  });
+
+  it("does not recurse into an AggregateError cause member's own cause chain", () => {
+    const deep = new Error('should not appear');
+    const member = new Error('member');
+    (member as Error & { cause?: unknown }).cause = deep;
+    const err = new Error('outer');
+    (err as Error & { cause?: unknown }).cause = new AggregateError([member], '');
+    expect(describeError(err)).toBe('outer (cause: member)');
+  });
+
   it('handles an AggregateError that wraps nothing', () => {
     expect(describeError(new AggregateError([], ''))).toBe('AggregateError');
     expect(describeError(new AggregateError([], 'all attempts failed'))).toBe(

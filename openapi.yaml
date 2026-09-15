@@ -365,6 +365,21 @@ components:
               - value
             additionalProperties: false
       additionalProperties: false
+    JsonValue:
+      anyOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: string
+          nullable: true
+          enum:
+            - null
+        - type: array
+          items:
+            $ref: "#/components/schemas/JsonValue"
+        - type: object
+          additionalProperties:
+            $ref: "#/components/schemas/JsonValue"
     CreateEndpointRequest:
       type: object
       properties:
@@ -472,7 +487,7 @@ components:
                     type: string
                     minLength: 1
                   equals:
-                    $ref: "#/definitions/__schema0"
+                    $ref: "#/components/schemas/JsonValue"
                 required:
                   - type
                   - path
@@ -517,22 +532,6 @@ components:
         - method
         - path
       additionalProperties: false
-      definitions:
-        __schema0:
-          anyOf:
-            - type: string
-            - type: number
-            - type: boolean
-            - type: string
-              nullable: true
-              enum:
-                - null
-            - type: array
-              items:
-                $ref: "#/definitions/__schema0"
-            - type: object
-              additionalProperties:
-                $ref: "#/definitions/__schema0"
     UpdateEndpointRequest:
       type: object
       properties:
@@ -638,7 +637,7 @@ components:
                     type: string
                     minLength: 1
                   equals:
-                    $ref: "#/definitions/__schema0"
+                    $ref: "#/components/schemas/JsonValue"
                 required:
                   - type
                   - path
@@ -680,22 +679,6 @@ components:
               - value
             additionalProperties: false
       additionalProperties: false
-      definitions:
-        __schema0:
-          anyOf:
-            - type: string
-            - type: number
-            - type: boolean
-            - type: string
-              nullable: true
-              enum:
-                - null
-            - type: array
-              items:
-                $ref: "#/definitions/__schema0"
-            - type: object
-              additionalProperties:
-                $ref: "#/definitions/__schema0"
     Header:
       type: object
       required:

@@ -46,17 +46,26 @@ function describe(err: unknown): string {
     if (cause === undefined) return base;
     const causeCode = cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined;
     const causeText =
-      cause instanceof Error
-        ? causeCode && cause.message !== causeCode
-          ? `${causeCode}: ${cause.message}`
-          : cause.message
-            ? cause.message
-            : (causeCode ?? cause.name)
-        : cause === null
-          ? 'null'
-          : typeof cause === 'string'
-            ? cause
-            : safeTypeOf(cause);
+      // A multi-address connection failure's cause chain, e.g. Node's own
+      // ECONNREFUSED across several resolved addresses. AggregateError.message
+      // is usually empty, so reading it the same way as an ordinary Error
+      // below would discard every constituent error and log just the
+      // uninformative string "AggregateError". Expanded one level -- the
+      // constituents' own messages, not their own further cause chains --
+      // to keep this bounded rather than recursive.
+      cause instanceof AggregateError
+        ? describeAggregateShallow(cause)
+        : cause instanceof Error
+          ? causeCode && cause.message !== causeCode
+            ? `${causeCode}: ${cause.message}`
+            : cause.message
+              ? cause.message
+              : (causeCode ?? cause.name)
+          : cause === null
+            ? 'null'
+            : typeof cause === 'string'
+              ? cause
+              : safeTypeOf(cause);
     return `${base} (cause: ${causeText})`;
   }
 
@@ -70,6 +79,30 @@ function describe(err: unknown): string {
   if (typeof err === 'function') return `[function ${err.name || 'anonymous'}]`;
 
   return safeStringify(err);
+}
+
+/**
+ * `AggregateError.errors`, one level deep -- each constituent's own
+ * message/code, not its own `cause` chain or, if it is itself an
+ * AggregateError, its own constituents. Bounded on purpose: this exists to
+ * stop `cause instanceof AggregateError` from collapsing to the useless
+ * string "AggregateError", not to fully replicate the top-level
+ * `describe()` AggregateError branch's unbounded recursion into a `cause`
+ * position, where a error->cause->error cycle would need to terminate.
+ */
+function describeAggregateShallow(agg: AggregateError): string {
+  const parts = agg.errors
+    .map((e: unknown) => {
+      if (e instanceof Error) {
+        const code = (e as NodeJS.ErrnoException).code;
+        return e.message ? (code ? `${code}: ${e.message}` : e.message) : (code ?? e.name);
+      }
+      if (typeof e === 'string') return e;
+      return safeTypeOf(e);
+    })
+    .filter(Boolean);
+  const unique = [...new Set(parts)];
+  return unique.length > 0 ? unique.join('; ') : agg.message || 'AggregateError';
 }
 
 /**

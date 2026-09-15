@@ -18,7 +18,7 @@ export const statusRangeSchema = z
  * place, and the assertion actually stored and later evaluated is not the
  * one the caller submitted.
  */
-const jsonValueSchema: ZodType<unknown> = z.lazy(() =>
+export const jsonValueSchema: ZodType<unknown> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),

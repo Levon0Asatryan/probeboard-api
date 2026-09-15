@@ -62,8 +62,13 @@ export class ServiceRepository {
    * result, eventually exceeding Postgres's bind-parameter ceiling instead
    * of returning a page. `EXISTS` lets the planner filter and paginate in
    * one query, with cursor/limit applied exactly as without a tag.
+   *
+   * Split out from `list()`, unexecuted, so `service.repository.test.ts`
+   * can `.compile()` it and assert on parameter count without a database --
+   * a real regression here needs many matching rows to observe at
+   * execution time, but is visible in the query shape alone.
    */
-  async list(userId: string, options: ListServicesOptions): Promise<Service[]> {
+  listQuery(userId: string, options: ListServicesOptions) {
     let query = this.db.kysely
       .selectFrom('services')
       .selectAll()
@@ -88,7 +93,11 @@ export class ServiceRepository {
       );
     }
 
-    return query.execute();
+    return query;
+  }
+
+  async list(userId: string, options: ListServicesOptions): Promise<Service[]> {
+    return this.listQuery(userId, options).execute();
   }
 
   async update(

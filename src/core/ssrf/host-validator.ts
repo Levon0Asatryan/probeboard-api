@@ -76,6 +76,30 @@ function getBlockList(): BlockList {
   // Alibaba Cloud's metadata address -- a separate literal, not covered by
   // any of the ranges above.
   bl.addAddress('100.100.100.200', 'ipv4');
+  // The rest of this function's ranges are checked entry-by-entry against
+  // the IANA IPv4/IPv6 Special-Purpose Address Registries (docs/m2-verification.md
+  // has the full comparison table), not just the handful of well-known ones
+  // above.
+  //
+  // 192.0.0.0/24 "IETF Protocol Assignments" is non-global as a whole --
+  // every address in it, not only the ones the registry additionally names
+  // (DS-Lite's AFTR/B4, the dummy address, NAT64/DNS64 Discovery), inherits
+  // that unless a more specific entry overrides it. Blocked wholesale, with
+  // the two addresses the registry marks globally reachable (192.0.0.9,
+  // 192.0.0.10) carved out via GLOBAL_EXCEPTIONS below rather than omitted
+  // from the block -- an earlier version of this list named only the
+  // sub-blocks the registry gives names to and left the rest of the /24
+  // (e.g. 192.0.0.11, unnamed and unassigned but still non-global)
+  // unblocked, an SSRF gap through address space that inherits its
+  // parent's classification precisely because nothing more specific claims
+  // it.
+  bl.addSubnet('192.0.0.0', 24, 'ipv4'); // IETF Protocol Assignments (RFC 6890)
+  bl.addSubnet('192.0.2.0', 24, 'ipv4'); // Documentation (TEST-NET-1, RFC 5737)
+  bl.addSubnet('198.51.100.0', 24, 'ipv4'); // Documentation (TEST-NET-2, RFC 5737)
+  bl.addSubnet('203.0.113.0', 24, 'ipv4'); // Documentation (TEST-NET-3, RFC 5737)
+  // Deprecated by RFC 7526, and reclassified non-global by the registry --
+  // "deprecated" is not "gone", the same reasoning fec0::/10 below gets.
+  bl.addSubnet('192.88.99.0', 24, 'ipv4'); // 6to4 Relay Anycast (RFC 3068, deprecated)
 
   // IPv6: loopback, unspecified, unique local, link-local.
   bl.addAddress('::1', 'ipv6');
@@ -106,6 +130,11 @@ function getBlockList(): BlockList {
   // every address in either prefix as unsafe is the same posture already
   // taken for ::/96 above, and decoding RFC 8215's variable embedding
   // lengths correctly is complexity this guard does not need to take on.
+  // (The IANA registry marks 64:ff9b::/96 itself "Global: Yes" -- that
+  // column answers a different question, whether the well-known prefix is
+  // routable on the public Internet, not whether the address it embeds is
+  // safe to connect to. This guard cares about the latter, so the block
+  // stays despite the registry's "Yes".)
   bl.addSubnet('64:ff9b::', 96, 'ipv6'); // RFC 6052 well-known prefix
   bl.addSubnet('64:ff9b:1::', 48, 'ipv6'); // RFC 8215 local-use prefix
   // IPv6 multicast, the counterpart to the IPv4 224.0.0.0/4 rule above --
@@ -128,18 +157,65 @@ function getBlockList(): BlockList {
   // a Teredo relay decodes and routes to -- the same embedding property
   // that justifies blocking 6to4 and NAT64 wholesale above, so it gets the
   // same treatment rather than being decoded and classified per-address.
-  bl.addSubnet('2001::', 32, 'ipv6');
+  // The rest of this function's IPv6 ranges are, like the IPv4 ones above,
+  // checked entry-by-entry against the IANA IPv6 Special-Purpose Address
+  // Registry (docs/m2-verification.md has the full comparison table).
+  // 2001::/23 "IETF Protocol Assignments" -- which 2001::/32 Teredo above
+  // is one named sub-block of -- is blocked wholesale for the same reason
+  // 192.0.0.0/24 is above: every address in it is non-global unless a more
+  // specific entry overrides it, and naming only the sub-blocks the
+  // registry gives names to (as an earlier version of this list did) left
+  // the rest of the /23 -- unnamed, unassigned, but still non-global --
+  // unblocked. The seven addresses/ranges the registry marks globally
+  // reachable inside this /23 (PCP/TURN/DNS-SD anycast, AMT, AS112-v6,
+  // ORCHIDv2, Drone Remote ID) are carved out via GLOBAL_EXCEPTIONS below.
+  bl.addSubnet('2001::', 23, 'ipv6'); // IETF Protocol Assignments (RFC 6890)
+  bl.addSubnet('2001:db8::', 32, 'ipv6'); // Documentation (RFC 3849)
+  bl.addSubnet('3fff::', 20, 'ipv6'); // Documentation (RFC 9637)
+  bl.addSubnet('5f00::', 16, 'ipv6'); // Segment Routing (SRv6) SIDs (RFC 9602)
+  bl.addSubnet('100::', 64, 'ipv6'); // Discard-Only Address Block (RFC 6666)
+  bl.addSubnet('100:0:0:1::', 64, 'ipv6'); // Dummy IPv6 Prefix (RFC 9702)
 
   blockList = bl;
   return bl;
 }
 
+let globalExceptions: BlockList | undefined;
+
+/**
+ * Addresses/ranges the IANA registries mark globally reachable despite
+ * falling inside a parent range `getBlockList` blocks wholesale
+ * (192.0.0.0/24, 2001::/23) -- checked first in `isBlockedAddress`, so
+ * these specific, narrower entries win over the broader block they sit
+ * inside. `net.BlockList` has no subtraction, so this is how "block
+ * everything in X except Y" is expressed with it: two lists, the narrower
+ * checked first.
+ */
+function getGlobalExceptions(): BlockList {
+  if (globalExceptions) return globalExceptions;
+
+  const bl = new BlockList();
+  bl.addAddress('192.0.0.9', 'ipv4'); // Port Control Protocol Anycast (RFC 7723)
+  bl.addAddress('192.0.0.10', 'ipv4'); // Traversal Using Relays around NAT Anycast (RFC 8155)
+  bl.addAddress('2001:1::1', 'ipv6'); // Port Control Protocol Anycast (RFC 7723)
+  bl.addAddress('2001:1::2', 'ipv6'); // Traversal Using Relays around NAT Anycast (RFC 8155)
+  bl.addAddress('2001:1::3', 'ipv6'); // DNS-SD Service Registration Protocol Anycast (RFC 9665)
+  bl.addSubnet('2001:3::', 32, 'ipv6'); // AMT (RFC 7450)
+  bl.addSubnet('2001:4:112::', 48, 'ipv6'); // AS112-v6 (RFC 7535)
+  bl.addSubnet('2001:20::', 28, 'ipv6'); // ORCHIDv2 (RFC 7343)
+  bl.addSubnet('2001:30::', 28, 'ipv6'); // Drone Remote ID Protocol Entity Tags (RFC 9374)
+
+  globalExceptions = bl;
+  return bl;
+}
+
 function isBlockedAddress(address: string): boolean {
-  const bl = getBlockList();
   // net.isIP distinguishes the family; BlockList.check needs to be told
   // which one explicitly. dns.resolve4/resolve6 already segregate these, so
   // this is only ever called with a clean literal from one of those two.
-  return address.includes(':') ? bl.check(address, 'ipv6') : bl.check(address, 'ipv4');
+  const family = address.includes(':') ? 'ipv6' : 'ipv4';
+  if (getGlobalExceptions().check(address, family)) return false;
+  return getBlockList().check(address, family);
 }
 
 /**

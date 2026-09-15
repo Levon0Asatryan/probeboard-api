@@ -409,11 +409,16 @@ describe('the tag filter (B-5)', () => {
   });
 
   it('still returns a page when the match set is larger than Postgres can bind as one IN list', async () => {
-    // The bug this guards: a WHERE id IN (...ids) built from a
-    // materialized match set binds one parameter per id, and Postgres
-    // rejects a query with more than 65535 bind parameters outright.
-    // EXISTS never binds one parameter per row, so this has to succeed
-    // regardless of how many endpoints carry the tag.
+    // Behavioral, not just structural: endpoint.repository.test.ts's
+    // compiled-query check proves the query never binds one parameter per
+    // matching row, but it cannot prove the query actually succeeds
+    // against real Postgres, or that .list() still calls that query
+    // builder at all -- only this, run for real, closes that gap.
+    //
+    // A generous 90s timeout, not the 30s the same test used before it was
+    // briefly removed for flaking on a slow CI runner: the insert and
+    // query themselves are fast (under 2s locally), so the margin is
+    // headroom against a loaded runner, not evidence the test is slow.
     const rowCount = 70_000;
     await ctx.pool.query(
       `INSERT INTO endpoints
@@ -434,7 +439,7 @@ describe('the tag filter (B-5)', () => {
       tag: { key: 'load', value: 'test' },
     });
     expect(page).toHaveLength(10);
-  }, 30_000);
+  }, 90_000);
 });
 
 describe('countForUser', () => {

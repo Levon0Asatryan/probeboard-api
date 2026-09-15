@@ -56,12 +56,18 @@ export class EndpointRepository {
    * eventually exceeding Postgres's bind-parameter ceiling instead of
    * returning a page. `EXISTS` lets the planner filter and paginate in one
    * query, with cursor/limit applied exactly as without a tag.
+   *
+   * `listForServiceQuery`/`listQuery` are split out, unexecuted, so
+   * `endpoint.repository.test.ts` can `.compile()` them and assert on
+   * parameter count without a database -- a real regression here needs
+   * many matching rows to observe at execution time, but is visible in the
+   * query shape alone.
    */
-  async listForService(
+  listForServiceQuery(
     serviceId: string,
     userId: string,
     options: { cursor?: string; limit: number; tag?: { key: string; value: string } },
-  ): Promise<Endpoint[]> {
+  ) {
     let query = this.db.kysely
       .selectFrom('endpoints')
       .selectAll()
@@ -77,10 +83,18 @@ export class EndpointRepository {
       query = query.where((eb) => tagExists(eb, options.tag!));
     }
 
-    return query.execute();
+    return query;
   }
 
-  async list(userId: string, options: ListEndpointsOptions): Promise<Endpoint[]> {
+  async listForService(
+    serviceId: string,
+    userId: string,
+    options: { cursor?: string; limit: number; tag?: { key: string; value: string } },
+  ): Promise<Endpoint[]> {
+    return this.listForServiceQuery(serviceId, userId, options).execute();
+  }
+
+  listQuery(userId: string, options: ListEndpointsOptions) {
     let query = this.db.kysely
       .selectFrom('endpoints')
       .selectAll()
@@ -95,7 +109,11 @@ export class EndpointRepository {
       query = query.where((eb) => tagExists(eb, options.tag!));
     }
 
-    return query.execute();
+    return query;
+  }
+
+  async list(userId: string, options: ListEndpointsOptions): Promise<Endpoint[]> {
+    return this.listQuery(userId, options).execute();
   }
 
   async update(

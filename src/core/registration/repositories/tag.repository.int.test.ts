@@ -215,3 +215,20 @@ describe('replaceForService and replaceForEndpoint serialize against a concurren
     expect(list.map((t) => [t.key, t.value])).toEqual([['env', 'later']]);
   });
 });
+
+describe('the executor type excludes a non-transactional Kysely instance', () => {
+  it('a plain Kysely<Database> is not a valid executor, so a caller cannot lose atomicity by passing one', () => {
+    // Compile-time proof only -- typeCheckOnly is never called, so nothing
+    // here ever runs against the database; TypeScript still type-checks an
+    // unreachable-at-runtime function body just the same, which is all this
+    // needs. Actually invoking replaceForService with a real serviceId/userId
+    // and this repository's own non-transactional db.kysely would delete and
+    // re-insert real rows outside any transaction, and Vitest would close the
+    // shared pool in afterAll without waiting for that stray promise.
+    const typeCheckOnly = (): void => {
+      // @ts-expect-error -- ctx.db is Kysely<Database>, not Transaction<Database>
+      void tags.replaceForService(serviceId, userId, [], ctx.db);
+    };
+    void typeCheckOnly;
+  });
+});
