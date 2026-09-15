@@ -95,6 +95,16 @@ export class EndpointsService {
     this.checkTimeout(timeoutMs);
     this.checkMaxRedirects(maxRedirects);
 
+    // SSRF validation does real DNS resolution against a user-controlled
+    // hostname -- run it before opening the transaction so a slow or
+    // attacker-stallable lookup never happens while the user row lock is
+    // held. Re-validated below only if base_url changed since this read.
+    const preService = await this.services.findById(serviceId, userId);
+    if (!preService) throw new NotFoundError('service');
+    const prePath = canonicalPath(preService.base_url, dto.path);
+    this.checkPathBytes(prePath);
+    await assertSaveableUrl(effectiveUrl(preService.base_url, prePath), this.ssrfConfig);
+
     const endpointId = await this.db.kysely.transaction().execute(async (trx) => {
       await this.users.lockForUpdate(userId, trx);
 
@@ -106,8 +116,13 @@ export class EndpointsService {
       // below only catches duplicates that are byte-identical strings.
       const path = canonicalPath(service.base_url, dto.path);
       this.checkPathBytes(path);
-      // D10: re-validated on every save, using the joined base+path.
-      await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
+      // D10: re-validated on every save, using the joined base+path -- but
+      // only re-run the DNS lookup if base_url actually changed since the
+      // unlocked pre-check above (a concurrent update to the service row
+      // between that read and this lock), since the path is unchanged.
+      if (service.base_url !== preService.base_url) {
+        await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
+      }
 
       const count = await this.endpoints.countForUser(userId, trx);
       if (count >= this.cfg.ENDPOINT_QUOTA_PER_USER) {
@@ -215,6 +230,20 @@ export class EndpointsService {
   async update(userId: string, id: string, dto: UpdateEndpointRequest): Promise<EndpointDto> {
     if (dto.headers) this.headerValidation.validate(dto.headers);
 
+    // SSRF validation does real DNS resolution against a user-controlled
+    // hostname -- run it before opening the transaction so it never happens
+    // while the endpoint row lock is held. Re-validated below only if the
+    // joined base+path changed since this unlocked read.
+    const preExisting = await this.endpoints.findById(id, userId);
+    if (!preExisting) throw new NotFoundError('endpoint');
+    const preService = await this.services.findById(preExisting.service_id, userId);
+    if (!preService) throw new NotFoundError('endpoint');
+    const prePath =
+      dto.path !== undefined ? canonicalPath(preService.base_url, dto.path) : preExisting.path;
+    if (dto.path !== undefined) this.checkPathBytes(prePath);
+    const preUrl = effectiveUrl(preService.base_url, prePath);
+    await assertSaveableUrl(preUrl, this.ssrfConfig);
+
     await this.db.kysely.transaction().execute(async (trx) => {
       const existing = await trx
         .selectFrom('endpoints')
@@ -238,8 +267,14 @@ export class EndpointsService {
       const path =
         dto.path !== undefined ? canonicalPath(service.base_url, dto.path) : existing.path;
       if (dto.path !== undefined) this.checkPathBytes(path);
-      // D10: unconditional re-validation, even if neither method nor path changed.
-      await assertSaveableUrl(effectiveUrl(service.base_url, path), this.ssrfConfig);
+      // D10: unconditional re-validation, even if neither method nor path
+      // changed -- but only re-run the DNS lookup if the joined base+path
+      // actually differs from the unlocked pre-check above (a concurrent
+      // change to the service or endpoint row between that read and this lock).
+      const url = effectiveUrl(service.base_url, path);
+      if (url !== preUrl) {
+        await assertSaveableUrl(url, this.ssrfConfig);
+      }
 
       if (dto.intervalS !== undefined) this.checkInterval(dto.intervalS);
       if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
