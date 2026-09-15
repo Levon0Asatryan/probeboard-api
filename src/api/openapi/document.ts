@@ -147,7 +147,7 @@ const cursorParam = {
   in: 'query' as const,
   required: false,
   description: 'Opaque: the `id` of the last row of the previous page.',
-  schema: { type: 'string' as const },
+  schema: { type: 'string' as const, format: 'uuid' },
 };
 
 const limitParam = {

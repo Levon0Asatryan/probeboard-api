@@ -1300,6 +1300,7 @@ paths:
           description: "Opaque: the `id` of the last row of the previous page."
           schema:
             type: string
+            format: uuid
         - &a5
           name: limit
           in: query
