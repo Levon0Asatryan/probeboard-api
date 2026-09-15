@@ -74,14 +74,20 @@ Applies to every chat, with or without a handoff prompt. The report
 2. A **real run**: `docker compose up -d --build`, then exercise every changed
    endpoint over HTTP and check stored state with `psql`. Tests alone are not
    done.
-3. CI green on all five jobs.
+3. CI green on all five jobs, and `gh pr view <n> --json mergeable` says
+   `MERGEABLE` — green checks do not mean no conflicts, `gh pr checks` doesn't
+   report that field.
 4. Codex reviews every push. Read findings with
-   `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments`. Verify each
-   against the code before acting: fix what is real, push back with evidence on
-   what is not, and **reply on every thread**. Re-check after each push.
-   Codex is done with a push when `pulls/<n>/reviews` has an entry whose
-   `commit_id` is the head SHA, or `issues/<n>/reactions` has its 👍 (`+1`)
-   dated after that push. 👀 means still reviewing.
+   `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments --paginate`
+   (a PR with more comments than one page reads as "everything answered" with
+   an older thread still open if you drop `--paginate`). Verify each against
+   the code before acting: fix what is real, push back with evidence on what
+   is not, and **reply on every thread**. Re-check after each push.
+   Codex is done with a push only when `pulls/<n>/reviews` has an entry whose
+   `commit_id` is the head SHA. The 👍 (`+1`) reaction on `issues/<n>/reactions`
+   is not proof by itself — the reaction has no `commit_id`, so a reaction from
+   reviewing an older push can look like it postdates a new one. 👀 means still
+   reviewing.
 5. At milestone end, `docs/mN-verification.md`: what was executed and what it
    produced, including defects found by running it.
 6. Report back in the format in `docs/handoff-template.md`. Say plainly what
@@ -205,3 +211,10 @@ fails for a reason unrelated to the change.
   log, never to a response.
 - **Every guard, filter or check ships with a test that proves it fails** when
   it should. This repository has shipped three that silently did nothing.
+- Never cache a rejected promise (e.g. a timing-safe dummy-hash constant) as
+  its resolved value. One transient failure poisons the cache permanently —
+  every later call fails the same way until process restart.
+- Local e2e servers bind `127.0.0.1` explicitly, never `listen(0)` on the
+  default host. On macOS an ephemeral port picked against `0.0.0.0` can
+  collide with another process already bound to `127.0.0.1` on that port,
+  producing flaky, unrelated-looking failures.
