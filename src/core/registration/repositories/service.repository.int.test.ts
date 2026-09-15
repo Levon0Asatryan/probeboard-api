@@ -185,6 +185,38 @@ describe('list', () => {
     expect(page2).toHaveLength(1);
     expect(new Set([...page1, ...page2].map((s) => s.id))).toEqual(new Set(matches));
   });
+
+  it('still returns a page when the match set is larger than Postgres can bind as one IN list', async () => {
+    // Behavioral, not just structural: service.repository.test.ts's
+    // compiled-query check proves the query never binds one parameter per
+    // matching row, but it cannot prove the query actually succeeds
+    // against real Postgres, or that .list() still calls that query
+    // builder at all -- only this, run for real, closes that gap.
+    //
+    // A generous 90s timeout, not the 30s the same test used before it was
+    // briefly removed for flaking on a slow CI runner: the insert and
+    // query themselves are fast (under 2s locally), so the margin is
+    // headroom against a loaded runner, not evidence the test is slow.
+    const rowCount = 70_000;
+    await ctx.pool.query(
+      `INSERT INTO services (user_id, name, base_url)
+         SELECT $1, 'bulk ' || gs, 'https://bulk-' || gs || '.example.com'
+         FROM generate_series(1, $2) AS gs`,
+      [userId, rowCount],
+    );
+    await ctx.pool.query(
+      `INSERT INTO tags (service_id, key, value)
+         SELECT id, 'load', 'test' FROM services
+         WHERE user_id = $1 AND name LIKE 'bulk %'`,
+      [userId],
+    );
+
+    const page = await services.list(userId, {
+      limit: 10,
+      tag: { key: 'load', value: 'test' },
+    });
+    expect(page).toHaveLength(10);
+  }, 90_000);
 });
 
 describe('update', () => {

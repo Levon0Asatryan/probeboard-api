@@ -407,6 +407,39 @@ describe('the tag filter (B-5)', () => {
     expect(page2).toHaveLength(1);
     expect(new Set([...page1, ...page2].map((e) => e.id))).toEqual(new Set(matches));
   });
+
+  it('still returns a page when the match set is larger than Postgres can bind as one IN list', async () => {
+    // Behavioral, not just structural: endpoint.repository.test.ts's
+    // compiled-query check proves the query never binds one parameter per
+    // matching row, but it cannot prove the query actually succeeds
+    // against real Postgres, or that .list() still calls that query
+    // builder at all -- only this, run for real, closes that gap.
+    //
+    // A generous 90s timeout, not the 30s the same test used before it was
+    // briefly removed for flaking on a slow CI runner: the insert and
+    // query themselves are fast (under 2s locally), so the margin is
+    // headroom against a loaded runner, not evidence the test is slow.
+    const rowCount = 70_000;
+    await ctx.pool.query(
+      `INSERT INTO endpoints
+           (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
+         SELECT $1, $2, 'GET', '/bulk-' || gs, 60, 10000, 5
+         FROM generate_series(1, $3) AS gs`,
+      [serviceId, userId, rowCount],
+    );
+    await ctx.pool.query(
+      `INSERT INTO tags (endpoint_id, key, value)
+         SELECT id, 'load', 'test' FROM endpoints
+         WHERE service_id = $1 AND path LIKE '/bulk-%'`,
+      [serviceId],
+    );
+
+    const page = await endpoints.list(userId, {
+      limit: 10,
+      tag: { key: 'load', value: 'test' },
+    });
+    expect(page).toHaveLength(10);
+  }, 90_000);
 });
 
 describe('countForUser', () => {
