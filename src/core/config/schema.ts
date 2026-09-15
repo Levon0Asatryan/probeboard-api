@@ -2,6 +2,9 @@ import { hostname } from 'node:os';
 import { z } from 'zod';
 import { parseByteSize } from './byte-size.js';
 
+/** PostgreSQL `integer` column range -- `timeout_ms` has no other bound. */
+const POSTGRES_INT4_MAX = 2_147_483_647;
+
 /**
  * An absolute `http://` or `https://` URL, or unset.
  *
@@ -259,7 +262,7 @@ const probing = {
     .int()
     .min(1024)
     .default(64 * 1024),
-  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).max(POSTGRES_INT4_MAX).default(30_000),
   PROBE_CONCURRENCY: z.coerce.number().int().min(1).default(50),
   // FR-7: interval is chosen from a bounded set, not an arbitrary integer --
   // an unbounded per-endpoint interval is itself an abuse vector (NFR-6/7).
@@ -276,7 +279,7 @@ const probing = {
   // FR-8: "bounded by a system maximum" -- PROBE_MAX_TIMEOUT_MS above is that
   // ceiling; this is only the value applied when an endpoint does not name
   // its own.
-  PROBE_DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
+  PROBE_DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).max(POSTGRES_INT4_MAX).default(10_000),
   // FR-21: redirect-following is per-monitor, but the count itself stays
   // system-bounded.
   PROBE_MAX_REDIRECTS_CAP: z.coerce.number().int().min(0).max(50).default(10),
