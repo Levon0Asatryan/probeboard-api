@@ -15,7 +15,7 @@ round left unreplied, fixed what those threads found, and was itself
 reviewed twice more -- defects #9, #10 and #11 below are from those two
 follow-up rounds on this same branch.
 
-Date: 2026-09-15 · branch `fix/m2-review-findings` at `59d060d` (this record
+Date: 2026-09-15 · branch `fix/m2-review-findings` at `eeb1a0d` (this record
 is its own next commit) · Postgres 17-alpine · Node 22-alpine · NestJS 12
 
 ## Method
@@ -316,7 +316,7 @@ the now-blocked `192.88.99.0/24`, and should stay reachable the way
 `192.0.0.9/32`/`.10/32` do. Checked against IANA's own published CSV rather
 than trusting the claim:
 
-```
+```sh
 $ curl -s https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry-1.csv | grep 192.88.99
 192.88.99.0/24,Deprecated (6to4 Relay Anycast),[RFC7526],2001-06,2015-03,,,,,
 192.88.99.2/32,6a44-relay anycast address,[RFC6751],2012-10,N/A,True,True,True,False,False
@@ -371,3 +371,20 @@ then restored).
   through an actual DNS record resolving into one of them, though the guard's
   own address-classification code path does not distinguish a literal from a
   resolved address.
+- **A self-updating blocklist.** Review of this PR's SSRF fix raised, as a
+  P1, that the blocklist is still hand-maintained `BlockList` entries rather
+  than generated from the full registry data or a maintained library, so a
+  future IANA addition or reclassification needs a code change to take
+  effect here. True, and worth doing, but out of scope for this PR: the task
+  this round was auditing and fixing the _current_ hand-maintained list
+  against the _current_ registries (done, with the comparison table above
+  for exactly this kind of future audit), not replacing the mechanism.
+  The same staleness risk already existed for every pre-existing rule
+  (RFC1918, loopback, link-local, CGNAT) before this PR touched anything,
+  without it being raised then; generating from vendored registry data, or
+  adopting a third-party SSRF library (several exist -- `ssrf-req-filter`,
+  `got-ssrf`, `ssrf-guard`, `@tak-ps/node-safeurl` -- none confirmed to cover
+  the full IANA special-purpose registries this fix now does, and swapping
+  the mechanism would need its own security review, not a fold-in here) is
+  a separately-scoped follow-up, not a blocker on this one. Not fixed;
+  pushed back on the thread with this reasoning.
