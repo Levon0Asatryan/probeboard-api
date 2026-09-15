@@ -168,7 +168,14 @@ const tagParam = {
   description:
     'B-5: "key:value", split on the first colon only. Matches services/endpoints ' +
     'carrying that exact tag; no match returns an empty list, not an error.',
-  schema: { type: 'string' as const, example: 'env:prod' },
+  // Matches tagFilterSchema's own grammar: at least one non-colon character
+  // (the key), then a colon, then anything at all (the value, which may
+  // itself contain colons -- only the *first* one is the split point).
+  schema: {
+    type: 'string' as const,
+    pattern: '^[^:]+:.*$',
+    example: 'env:prod',
+  },
 };
 
 /** Shared by every authenticated route. */

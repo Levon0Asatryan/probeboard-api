@@ -185,6 +185,24 @@ describe('the cursor parameter', () => {
   });
 });
 
+describe('the tag filter parameter', () => {
+  it('documents the "key:value" grammar as a pattern, matching tagFilterSchema', () => {
+    const doc = buildOpenApiDocument();
+    const paths = doc.paths as Record<
+      string,
+      Record<string, { parameters?: { name: string; schema: { pattern?: string } }[] }>
+    >;
+    for (const [path, method] of [
+      ['/v1/services', 'get'],
+      ['/v1/endpoints', 'get'],
+      ['/v1/services/{id}/endpoints', 'get'],
+    ] as const) {
+      const tag = paths[path][method].parameters!.find((p) => p.name === 'tag')!;
+      expect(tag.schema.pattern, path).toBe('^[^:]+:.*$');
+    }
+  });
+});
+
 describe('the error contract', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;

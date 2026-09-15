@@ -1323,6 +1323,7 @@ paths:
           description: 'B-5: "key:value", split on the first colon only. Matches services/endpoints carrying that exact tag; no match returns an empty list, not an error.'
           schema:
             type: string
+            pattern: ^[^:]+:.*$
             example: env:prod
       responses:
         "200":
