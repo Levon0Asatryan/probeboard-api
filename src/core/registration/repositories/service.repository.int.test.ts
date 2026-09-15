@@ -193,30 +193,60 @@ describe('list', () => {
     // against real Postgres, or that .list() still calls that query
     // builder at all -- only this, run for real, closes that gap.
     //
-    // A generous 90s timeout, not the 30s the same test used before it was
-    // briefly removed for flaking on a slow CI runner: the insert and
-    // query themselves are fast (under 2s locally), so the margin is
-    // headroom against a loaded runner, not evidence the test is slow.
-    const rowCount = 70_000;
-    await ctx.pool.query(
-      `INSERT INTO services (user_id, name, base_url)
-         SELECT $1, 'bulk ' || gs, 'https://bulk-' || gs || '.example.com'
-         FROM generate_series(1, $2) AS gs`,
-      [userId, rowCount],
-    );
-    await ctx.pool.query(
-      `INSERT INTO tags (service_id, key, value)
-         SELECT id, 'load', 'test' FROM services
-         WHERE user_id = $1 AND name LIKE 'bulk %'`,
-      [userId],
-    );
+    // autovacuum is disabled for these two tables for the duration of this
+    // test, not left to race: production sees exactly this "just
+    // bulk-inserted, not yet autoanalyzed" window on every write, and a
+    // plan that only holds once ANALYZE has run is not a fix for it (see
+    // docs/m2-verification.md). Disabling autovacuum here makes that
+    // worst case the *only* case, deterministically, instead of an
+    // intermittent race the test wins or loses depending on runner speed --
+    // which is what made this test hang for 80s+ on CI before the LATERAL
+    // join + composite index fix (m2-verification.md defect #12). With the
+    // fix, the plan does not depend on statistics at all, so this passes
+    // well inside the default 20s timeout regardless.
+    await ctx.pool.query(`ALTER TABLE services SET (autovacuum_enabled = false)`);
+    await ctx.pool.query(`ALTER TABLE tags SET (autovacuum_enabled = false)`);
+    try {
+      const rowCount = 70_000;
+      await ctx.pool.query(
+        `INSERT INTO services (user_id, name, base_url)
+           SELECT $1, 'bulk ' || gs, 'https://bulk-' || gs || '.example.com'
+           FROM generate_series(1, $2) AS gs`,
+        [userId, rowCount],
+      );
+      await ctx.pool.query(
+        `INSERT INTO tags (service_id, key, value)
+           SELECT id, 'load', 'test' FROM services
+           WHERE user_id = $1 AND name LIKE 'bulk %'`,
+        [userId],
+      );
 
-    const page = await services.list(userId, {
-      limit: 10,
-      tag: { key: 'load', value: 'test' },
-    });
-    expect(page).toHaveLength(10);
-  }, 90_000);
+      const page = await services.list(userId, {
+        limit: 10,
+        tag: { key: 'load', value: 'test' },
+      });
+      expect(page).toHaveLength(10);
+
+      // MAX_LIST_LIMIT permits up to 1,000, not just this suite's usual 10:
+      // at 10, the LATERAL's per-iteration tag lookup runs few enough times
+      // that a wrong per-iteration index choice stayed cheap by accident.
+      // At 1,000 it doesn't -- tags_key_value_idx let the planner rescan
+      // this tag's ~35,000 non-matching-service rows on every one of the
+      // outer loop's iterations instead of using the unique (owner, key)
+      // index, reproducing the same class of hang this test already guards
+      // (81s locally, 24.9M buffer hits) at a limit production actually
+      // allows. Fixed by dropping that index (migration
+      // 0006_drop_tags_key_value_idx); docs/m2-verification.md, defect #12.
+      const largePage = await services.list(userId, {
+        limit: 1000,
+        tag: { key: 'load', value: 'test' },
+      });
+      expect(largePage).toHaveLength(1000);
+    } finally {
+      await ctx.pool.query(`ALTER TABLE services RESET (autovacuum_enabled)`);
+      await ctx.pool.query(`ALTER TABLE tags RESET (autovacuum_enabled)`);
+    }
+  });
 });
 
 describe('update', () => {

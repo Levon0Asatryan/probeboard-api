@@ -71,8 +71,8 @@ removal against the code they guard, not only by passing once.
 | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `?tag=key:value` on all three list routes                                 | matches only tagged rows, paginates with `cursor`/`limit`                                           |
 | Tag key containing a colon (`team:region`)                                | `400 VALIDATION_FAILED` -- unfilterable otherwise                                                   |
-| 70,000 rows carrying the same tag (integration test, not a live curl run) | still returns one page -- see "Defects found" #2                                                    |
-| `WHERE EXISTS` compiled parameter count for a tag filter                  | fixed (5 or 6, by route), independent of the number of matching rows -- fast unit test, no database |
+| 70,000 rows carrying the same tag (integration test, not a live curl run) | still returns one page -- see "Defects found" #2, superseded by #12                                 |
+| Compiled parameter count for a tag filter (`LATERAL` join, since #12)     | fixed (6 or 7, by route), independent of the number of matching rows -- fast unit test, no database |
 
 ### OpenAPI document
 
@@ -358,6 +358,228 @@ rejected) and seven new tests for the IPv6 exceptions this round made
 explicit. Proven by removal: reverting either wholesale block back to its
 narrower, named-only predecessor fails both gap tests (confirmed for both,
 then restored).
+
+### 12. The tag-filter `EXISTS` query hung on `main` CI after PR #37 merged -- a statistics race, not a slow runner
+
+PR #37 merged clean (`c2f577d`), but the very next `main` CI run
+(35004850255) timed out at 90s in
+`service.repository.int.test.ts > list > still returns a page when the
+match set is larger than Postgres can bind as one IN list`. Its endpoint
+twin passed in 7s in the same run; the test normally takes 2-7s. It had
+failed on 2 of the last 3 `main` pushes, always the service version --
+a hang, not flakiness, and the 90s timeout that test already carried was
+never a fix for it.
+
+**Hypothesis and reproduction.** The suspect was the tag-filter `WHERE
+EXISTS` query getting a pathological plan when the planner has no fresh
+statistics on rows the test just bulk-inserted -- autovacuum's autoanalyze
+runs asynchronously and had not caught up. Manually timing that query
+right after a bulk insert gave inconsistent results between attempts
+(sometimes fast) because autoanalyze was racing my own queries and
+sometimes won first, confirmed via `pg_stat_user_tables.last_autoanalyze`.
+Setting `ALTER TABLE ... SET (autovacuum_enabled = false)` before the
+insert removed the race and made the bad plan reproduce every time:
+
+```sql
+-- services.list: EXISTS query, single-column user_id index, no ANALYZE, 70,000 rows
+Limit  (actual time=75.167..75.168 rows=10 loops=1)
+  Buffers: shared hit=280712
+  ->  Sort  (actual time=75.166..75.167 rows=10 loops=1)
+        Sort Key: services.id
+        Sort Method: top-N heapsort  Memory: 27kB
+        ->  Nested Loop  (actual time=10.956..71.436 rows=70000 loops=1)
+              ->  HashAggregate (rows=70000)     -- tags materialized whole
+                    ->  Index Scan using tags_key_value_idx on tags (rows=70000)
+              ->  Index Scan using services_user_id_id_idx on services (loops=70000)
+Execution Time: 75.397 ms
+```
+
+Confirmed the same shape for `endpoints.listForService` (two equality
+filters, `service_id` and `user_id`): 280,712 buffer hits, 70.982 ms, same
+materialize-then-sort shape. Both are real, deterministic, and match the
+CI symptom exactly: the planner underestimates `tags`' selectivity (no
+statistics yet), so it drives the join from the smaller apparent side --
+`tags` -- materializing every match before `LIMIT` can trim anything,
+instead of walking `services`/`endpoints` in `id` order and stopping after 10. Locally this is only 70-90ms because the machine is cache-hot
+(`Buffers: shared hit=...`, no `read=`); at 500,000 rows the same shape
+still only reached 825ms locally (`shared hit=1996628`). CI's runner
+storage is slower and more contended, so the same O(row-count) buffer
+count that costs under 100ms on a warm local SSD is what crosses a 90s
+timeout there -- `pg_stat_activity` during a hung local attempt (forced
+with `pg_sleep` in a second session) showed the query itself active, not
+waiting on a lock, ruling out lock contention as the mechanism.
+
+An earlier investigative dead end, recorded because it nearly shipped:
+replacing `services_service_id_idx`/`endpoints_service_id_idx` with a
+_two_-column composite `(service_id, id)` for `endpoints.listForService`
+(one filter column short of the query's two) let Postgres choose a
+`BitmapAnd` across that index and the separate `user_id` index instead of
+either one alone, discarding index order entirely -- reproduced as an
+actual 80.6-second local hang (`Execution Time: 80591.617 ms`,
+`Buffers: shared hit=24967720`) even on a cache-hot machine, not just a
+worse estimate. That ruled out "add _an_ index" as sufficient; the fix
+needed to cover every equality filter the query applies, together.
+
+**Fix.** Two changes, applied together (neither alone was reliable under
+retest -- see below):
+
+- **`LATERAL` instead of `EXISTS`**
+  (`src/core/registration/repositories/{service,endpoint}.repository.ts`):
+  a correlated subquery referencing the outer row can only be evaluated as
+  the driven side of a nested loop -- Postgres has no plan where it starts
+  from `tags` and materializes matches first. This removes the planner's
+  _choice_, rather than trying to bias a choice that depends on an
+  estimate the planner cannot have yet.
+- **Composite indexes ending in `id`, covering every equality filter**
+  (migration `0005_list_query_indexes`): `services (user_id, id)`,
+  `endpoints (user_id, id)`, `endpoints (service_id, user_id, id)`. A
+  single-column filter index gives the filter but not the sort order, so
+  even with `LATERAL` driving correctly, the planner still needed a
+  separate `Sort` node that waits for the full result before `LIMIT`
+  applies; a composite index ending in `id` gives filter and sort order
+  together, so the index scan itself can stop at the first 10 matches.
+
+Re-running the same `EXPLAIN (ANALYZE, BUFFERS)` under the same forced
+unanalyzed-statistics condition, with the fix:
+
+```sql
+-- services.list: LATERAL, composite (user_id, id) index, no ANALYZE, 70,000 rows
+Limit  (actual time=1.838..10.526 rows=10 loops=1)
+  Buffers: shared hit=3193
+  ->  Nested Loop  (actual time=1.838..10.524 rows=10 loops=1)
+        ->  Index Scan using services_user_id_id_idx on services (rows=10 loops=1)
+        ->  Limit  (actual time=1.050..1.051 rows=1 loops=10)   -- driven side, per outer row
+              ->  Index Scan using tags_key_value_idx on tags (rows=1 loops=10)
+Execution Time: 10.537 ms
+
+-- endpoints.listForService: LATERAL, composite (service_id, user_id, id) index, no ANALYZE
+Limit  (actual time=0.976..12.768 rows=10 loops=1)
+  Buffers: shared hit=3986
+  ->  Nested Loop  (actual time=0.975..12.767 rows=10 loops=1)
+        ->  Index Scan using endpoints_service_id_user_id_id_idx on endpoints (rows=10 loops=1)
+        ->  Limit (loops=10) -> Index Scan using tags_key_value_idx on tags
+Execution Time: 12.783 ms
+```
+
+280,712 -> 3,193 buffer hits for `services.list` (88x fewer); 70.982 ms ->
+12.783 ms for `endpoints.listForService`; both bounded by `LIMIT 10`
+regardless of how many rows match, not by the match-set size -- the plan
+does not depend on fresh statistics at all, so it holds identically before
+and after `ANALYZE`, which closes the "adding `ANALYZE` to the test alone
+is not a fix, production has the same window" gap: nothing in production
+runs `ANALYZE` between a bulk write and the next read either, and now
+nothing needs to.
+
+The remaining per-outer-iteration index choice inside the `LATERAL`
+subquery (`tags_key_value_idx`, `Rows Removed by Filter: 39028` per loop)
+is itself still an estimate-dependent choice that `ANALYZE` corrects
+(confirmed: `tags_endpoint_key_key`, `Buffers: shared hit=53`,
+`Execution Time: 0.185 ms` once real statistics exist) -- but it is now
+bounded by `LIMIT` (at most 10 outer loops) rather than by the total match
+count, so the same unanalyzed-statistics window that used to cost
+280,712 buffer touches now costs at most a few thousand, a different and
+much smaller class of risk that self-heals on the next autoanalyze.
+
+**A rejected alternative.** `SET LOCAL enable_bitmapscan = off` inside a
+transaction fixed `endpoints.list()` on first try (forced an `Index Scan`,
+0.134 ms) but failed a clean retest for `services.list()`: Postgres picked
+a different bad plan the GUC does not address (driving the nested loop
+from `tags_key_value_idx` instead of a bitmap scan), 78-84 ms across 3
+consistent trials. A cost-based tie-break toggle is not structural --
+abandoned for `LATERAL`, which was reliable across every query shape and
+retest.
+
+**Determinism.** Both bulk-insert integration tests
+(`service.repository.int.test.ts`, `endpoint.repository.int.test.ts`,
+`"still returns a page when the match set is larger..."`) now wrap their
+insert and query in `ALTER TABLE ... SET (autovacuum_enabled = false)` /
+`RESET` for the tables they bulk-insert into, forcing the worst-case
+unanalyzed condition on every run instead of leaving it to an autoanalyze
+race the test could win or lose depending on runner speed -- the same
+condition confirmed above to reproduce the bad plan 100% of the time
+against the pre-fix code. Confirmed against the pre-fix `EXISTS` code
+(reverted locally, migration `0005` rolled back, re-verified with
+`EXPLAIN`, then restored) that this condition reliably reproduces the
+pathological plan; confirmed against the fixed code that the plan holds
+regardless. The timeout is back to the suite's default 20s
+(`vitest.integration.mts`'s `testTimeout`) — the 90s value was never a fix
+and is not needed once the plan does not depend on statistics.
+
+**A methodological trap, found while writing this up.** Re-running the same
+`EXPLAIN` reproduction against a Postgres container that had already run
+other tests did not reproduce the bad plan -- `TRUNCATE` resets
+`pg_class.reltuples`/`relpages` but does not clear `pg_statistic` (it keeps
+the table's OID, only the physical storage is replaced), so a table that
+had ever been `ANALYZE`d before, even with different data, keeps
+old-but-present column statistics across a `TRUNCATE`, and the planner's
+estimate from those stale-but-nonzero statistics happened to be good enough
+to avoid the bad plan. Every reproduction in this defect's writeup was
+re-confirmed against a genuinely fresh container (`docker compose down -v`
+
+- `up -d`, migrated from empty, nothing else run first) -- the condition
+  that actually matches CI, which never reuses a container between runs.
+  This is also why the integration tests disable autovacuum explicitly
+  instead of relying on freshness alone: a long-lived local Postgres (or a
+  CI cache that reused a volume) would silently stop exercising this defect
+  otherwise.
+
+**Codex review follow-up (PR #38).** Review on this PR's head commit
+(`7869d52`) found a real second instance of the same class of bug: the
+regression tests above use `limit: 10`, but `MAX_LIST_LIMIT` permits up to
+1,000. At `limit: 10` the LATERAL's per-iteration tag lookup only ran 10
+times, so a wrong per-iteration index choice stayed cheap by accident; at
+`limit: 1000` it didn't. Confirmed on a fresh container: the same 70,000-row
+setup at `limit: 1000` reproduced a 79.8s hang (`Execution Time:
+79813.811 ms`, `Buffers: shared hit=24966507`) -- `tags_key_value_idx`
+(`key`, `value`), created in migration `0004` and with no caller other than
+this LATERAL lookup, let the planner rescan every tag sharing this test's
+`key`/`value` (about 35,000 of them, per `Rows Removed by Filter`) on each
+of the outer loop's 70,000 iterations, instead of using the unique
+`tags_service_key_key`/`tags_endpoint_key_key` index (`(owner, key)`,
+migration `0004`) that already bounds the lookup to exactly one row per
+iteration regardless of statistics.
+
+Fixed the same way as the outer join, by removing the choice rather than
+biasing it: migration `0006_drop_tags_key_value_idx` drops the index, since
+nothing else in the codebase queries `tags` by `key`/`value` without an
+owner filter (`TagRepository`'s own queries filter by `service_id`/
+`endpoint_id`). Re-verified on the same fresh container after dropping it:
+63ms (`Buffers: shared hit=281609`), using `tags_service_key_key`, 1,268x
+faster and 89x fewer buffer hits than the pre-fix plan at the same
+`limit: 1000`. The residual `Bitmap Heap Scan` on the _outer_ table this
+plan still shows at `limit: 1000` (not present at `limit: 10`, where the
+outer side uses an ordered `Index Scan`) is the same statistics-dependent
+choice as the base fix above, now bounded to `O(match count)` rather than
+`O(match count × non-matching tags)` -- a real but far smaller residual
+that self-heals on the next autoanalyze, not a new instance of the
+unbounded defect.
+
+Both bulk-insert tests now also assert a page at `limit: 1000` in the same
+autovacuum-disabled block, proven by removal on a fresh container the same
+way as the base fix: recreating `tags_key_value_idx` alone (migration
+`0005`'s composite indexes and the `LATERAL` join both still in place)
+made both tests fail with a 20s test timeout and cascading 30s hook
+timeouts in the next file (the hung query kept holding a pool connection
+well past vitest's own timeout, exactly matching the original CI symptom
+of one slow query starving the rest of the run) -- restoring the migration
+made both pass again.
+
+**10x integration run.** `npm run test:int` (18 files, 303 tests) run 10
+consecutive times, each against a freshly recreated Postgres container
+(`docker compose down -v` + `up -d`, migrated from empty), no failures,
+re-run after the `limit: 1000` regression coverage above was added:
+
+| Run | Duration | Run | Duration |
+| --- | -------- | --- | -------- |
+| 1   | 17.61s   | 6   | 17.67s   |
+| 2   | 17.83s   | 7   | 17.85s   |
+| 3   | 17.74s   | 8   | 17.68s   |
+| 4   | 17.34s   | 9   | 17.57s   |
+| 5   | 17.85s   | 10  | 17.72s   |
+
+303/303 passed on every run; total suite duration stayed in a 17.34s-17.85s
+band, no run approached the 20s default per-test timeout on any single
+test.
 
 ## What this does not cover
 

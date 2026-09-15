@@ -1,0 +1,21 @@
+-- The tag-filter LATERAL lookup in ServiceRepository.listQuery and
+-- EndpointRepository.{listQuery,listForServiceQuery} is correlated on
+-- (service_id|endpoint_id, key, value). tags_service_key_key and
+-- tags_endpoint_key_key (both UNIQUE on (owner, key), migration 0004) already
+-- satisfy that lookup in exactly one row per outer iteration, regardless of
+-- planner statistics -- uniqueness bounds it, not a cost estimate.
+--
+-- tags_key_value_idx (key, value) has no other caller (TagRepository's own
+-- queries filter by owner, not key/value), but under stale statistics right
+-- after a bulk insert the planner sometimes preferred it for the LATERAL
+-- lookup anyway, using it to scan every tag with a matching key/value and
+-- filter each by the correlated owner column instead of the other way
+-- around. At MAX_LIST_LIMIT's permitted scale (up to 1000, not just the
+-- regression test's 10) that turned into a real, reproduced 81-second local
+-- hang (24.9M buffer hits) on the same shape defect #12's LATERAL/composite
+-- index fix was meant to close -- Codex review finding on PR #38, confirmed
+-- and recorded in docs/m2-verification.md. Dropping the only index that
+-- offered that choice removes it the same way the earlier fix removed the
+-- outer join-order choice: not by biasing a cost estimate, but by leaving
+-- no plan for the estimate to get wrong.
+DROP INDEX tags_key_value_idx;
