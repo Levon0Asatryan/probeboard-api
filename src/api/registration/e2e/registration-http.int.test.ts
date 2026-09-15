@@ -27,6 +27,7 @@ beforeAll(async () => {
   process.env.COOKIE_SECURE = 'false';
   process.env.LOG_LEVEL = 'fatal';
   process.env.ENDPOINT_QUOTA_PER_USER = '2';
+  process.env.MAX_LIST_LIMIT = '2';
 
   app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
   configureApp(app, (await import('../../../core/config/index.js')).loadConfig());
@@ -145,6 +146,16 @@ describe('services: create, read, list, update, delete', () => {
     expect(names).toEqual(['Alice API']);
   });
 
+  it('clamps ?limit to the configured MAX_LIST_LIMIT (2 for this test file)', async () => {
+    for (const ip of ['93.184.216.34', '93.184.216.35', '93.184.216.36']) {
+      await call('/services', { cookie: alice, body: { name: ip, baseUrl: `http://${ip}` } });
+    }
+
+    const list = await call('/services?limit=50', { method: 'GET', cookie: alice });
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(2);
+  });
+
   it('deletes a service, cascading to its endpoints', async () => {
     const created = await call('/services', {
       cookie: alice,
@@ -243,6 +254,21 @@ describe('SSRF guard on save', () => {
     });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ code: 'ADDRESS_NOT_ALLOWED' });
+  });
+});
+
+describe('header value validation', () => {
+  it('rejects a value with a character above U+00FF', async () => {
+    const res = await call('/services', {
+      cookie: alice,
+      body: {
+        name: 'x',
+        baseUrl: 'http://93.184.216.34',
+        headers: [{ name: 'X-Foo', value: '\u{1F600}', isSecret: false }],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'HEADER_INVALID' });
   });
 });
 
@@ -393,6 +419,49 @@ describe('malformed ids', () => {
       const res = await call(path, { method: 'GET', cookie: alice });
       expect(res.status).toBe(400);
     }
+  });
+
+  it('400s rather than 500ing on a non-UUID ?cursor', async () => {
+    const res = await call('/services?cursor=not-a-uuid', { method: 'GET', cookie: alice });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('endpoint path canonicalization', () => {
+  it('treats "orders" and "/orders" as the same duplicate target', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const id = (created.body as { service: { id: string } }).service.id;
+
+    const first = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: 'orders' },
+    });
+    expect(first.status).toBe(201);
+    expect((first.body as { path: string }).path).toBe('/orders');
+
+    const dup = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/orders' },
+    });
+    expect(dup.status).toBe(409);
+  });
+
+  it('resolves dot-segments to the same canonical target', async () => {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    const id = (created.body as { service: { id: string } }).service.id;
+
+    await call(`/services/${id}/endpoints`, { cookie: alice, body: { path: '/orders' } });
+    const dup = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a/../orders' },
+    });
+    expect(dup.status).toBe(409);
   });
 });
 
