@@ -10,10 +10,12 @@ registry lookup found it.
 
 M2 shipped as five PRs (#28–#35, `docs/m2-plan.md` §8) across two review
 rounds this record covers together: the five PRs themselves, and a sixth,
-`fix/m2-review-findings`, that closed every Codex thread the first round left
-unreplied and fixed what those threads found.
+`fix/m2-review-findings` (PR #37), that closed every Codex thread the first
+round left unreplied, fixed what those threads found, and was itself
+reviewed once more -- defects #9 and #10 below are from that second round on
+this same branch.
 
-Date: 2026-09-15 · branch `fix/m2-review-findings` at `000f30f` (this record
+Date: 2026-09-15 · branch `fix/m2-review-findings` at `35b5b3d` (this record
 is its own next commit) · Postgres 17-alpine · Node 22-alpine · NestJS 12
 
 ## Method
@@ -80,14 +82,14 @@ removal against the code they guard, not only by passing once.
 
 ### Suites and tooling
 
-| Check                                               | Result                                                                             |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `npm run typecheck`                                 | clean                                                                              |
-| `npm run lint`                                      | clean                                                                              |
-| `npx vitest run` (unit)                             | 627 passed, 55 files                                                               |
-| `npm run test:coverage`                             | 97.44% stmts / 91.49% branches / 98.31% fns / 98.01% lines -- above the 90% floor  |
-| `npm run test:int` (real Postgres)                  | 301 passed, 18 files, 14.9s (was timing out intermittently before defect #6 below) |
-| `docker compose up -d --build` from an empty volume | postgres, migrate, api, worker healthy                                             |
+| Check                                               | Result                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `npm run typecheck`                                 | clean                                                                             |
+| `npm run lint`                                      | clean                                                                             |
+| `npx vitest run` (unit)                             | 627 passed, 55 files                                                              |
+| `npm run test:coverage`                             | 97.44% stmts / 91.49% branches / 98.31% fns / 98.01% lines -- above the 90% floor |
+| `npm run test:int` (real Postgres)                  | 303 passed, 18 files, ~18s (was timing out intermittently -- see defect #8)       |
+| `docker compose up -d --build` from an empty volume | postgres, migrate, api, worker healthy                                            |
 
 ## Defects found
 
@@ -268,19 +270,68 @@ fail to typecheck (an "Unused '@ts-expect-error' directive" error), in both
 The two tests proving #2's fix (`WHERE EXISTS` vs a materialized id list)
 each bulk-inserted 70,000 rows via `generate_series` to force the old
 implementation past Postgres's bind-parameter ceiling. On a slow runner the
-insert plus the subsequent query occasionally exceeded the test timeout,
-failing a `main` CI run that a re-run then passed -- a flake, not a real
-regression, but one that made `main`'s CI signal unreliable. Replaced with a
-fast, database-free unit test per repository that `.compile()`s the tag-filtered
-query and asserts its bind-parameter count (5 or 6, by route) is fixed
-regardless of anything -- the actual property the slow test was trying to
-observe at execution time is visible in the query's shape alone, without
-running it. `npm run test:int`'s own suite for these two repositories now
-runs in the same time as any other file (previously 30s allotted for the two
-slow tests alone), and each fast test is proven by removal (reverting the
-`EXISTS` clause to a literal 1000-element `IN (...)` array -- no database
-needed for that either -- fails the parameter-count assertion, confirmed
-then restored).
+insert plus the subsequent query occasionally exceeded the test's 30s
+timeout, failing a `main` CI run that a re-run then passed -- a flake, not a
+real regression, but one that made `main`'s CI signal unreliable.
+
+First fix: replaced both with a fast, database-free unit test per repository
+that `.compile()`s the tag-filtered query and asserts its bind-parameter
+count (5 or 6, by route) is fixed regardless of anything -- the property the
+slow test tried to observe at execution time is visible in the query's shape
+alone, without running it (proven by removal: reverting the `EXISTS` clause
+to a literal 1000-element `IN (...)` array -- no database needed for that
+either -- fails the assertion). Review of this fix (this PR's own head
+commit) correctly pointed out the fast test alone lost real behavioral
+coverage: it stays green even if `.list()` stops calling the query builder
+it checks, or if the generated SQL fails against real Postgres for some
+other reason -- exactly the property the original 70,000-row test proved and
+a compiled-query check cannot.
+
+Second fix, in response: restored both 70,000-row tests **alongside** the
+fast ones, not instead of them, with the timeout raised from 30s to 90s. The
+insert and query are fast on their own (under 2s locally); the flake was
+margin against a loaded CI runner, not underlying slowness, so a larger
+margin is the correct fix rather than removing the behavioral proof. Proven
+by removal: reverting either repository's tag filter to a materialized id
+list built from a real query against the 70,000 inserted rows fails with a
+genuine Postgres bind-parameter error (confirmed for both, then restored) --
+the same error the original defect produced.
+
+### 9. A "compile-time-only" proof executed a real database call
+
+`void headers.replaceForService(serviceId, userId, [], ctx.db)`, meant to
+prove `Transaction<Database>` typing rejects a non-transactional executor
+(defect #7) at compile time, discards the returned promise but still
+_starts_ it: the synchronous `it()` completes immediately and `afterAll`
+closes the shared pool, racing a real delete/insert against real rows
+outside any transaction. Fixed by wrapping the call in a function that is
+declared but never invoked -- TypeScript still type-checks an unreachable
+function body, so the `@ts-expect-error` still does its job, but nothing
+runs. Same pattern in both repositories' int test files. Proven by removal:
+reverting either repository's `Transaction<Database>` tightening still fails
+typecheck the same way as before.
+
+### 10. A named SSRF finding turned out to be incorrect on inspection
+
+Review of this PR's SSRF fix (#4) claimed `192.88.99.2/32` ("6a44-relay
+anycast address") is a more-specific, globally reachable exception inside
+the now-blocked `192.88.99.0/24`, and should stay reachable the way
+`192.0.0.9/32`/`.10/32` do. Checked against IANA's own published CSV rather
+than trusting the claim:
+
+```
+$ curl -s https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry-1.csv | grep 192.88.99
+192.88.99.0/24,Deprecated (6to4 Relay Anycast),[RFC7526],2001-06,2015-03,,,,,
+192.88.99.2/32,6a44-relay anycast address,[RFC6751],2012-10,N/A,True,True,True,False,False
+```
+
+The ninth column is "Globally Reachable"; it reads `False` for
+`192.88.99.2/32`, the same as its parent. The finding was incorrect --
+pushed back on the thread with this evidence, no code change made. Not
+counted as a fixed defect; recorded here because it is exactly the kind of
+claim this milestone's own review process (checking against the primary
+source instead of trusting either party) exists to catch, including a
+review's own mistakes.
 
 ## What this does not cover
 
