@@ -501,6 +501,26 @@ cross-origin redirect; probeboard applies it to the whole header map, since
 every one of them can carry a secret (M2 §5.4), not only a header named
 `Authorization`.
 
+**Every intermediate hop's response body and dispatcher are disposed of
+before following the next redirect (D26 — Codex finding, PR #40).** The
+first draft's redirect loop called `fetch()` for the next hop as soon as
+the current one resolved with a `3xx`, without doing anything to the
+current hop's response body or its per-hop `Agent` (§3.3's step 4). A
+`3xx` response can still carry a body (streaming or stalled), and `fetch()`
+resolves once headers arrive regardless — moving on immediately leaves
+that body's underlying socket open and the per-hop dispatcher never
+closed. Repeated redirected probes would retain one socket and one
+dispatcher per hop until the OS or GC eventually reclaimed them, scaling
+worker connection usage with the redirect cap on every redirected probe.
+Fixed: each hop's `finally` block cancels the response body
+(`response.body?.cancel()`) and destroys that hop's `Agent`
+(`agent.close()`/`destroy()`) before the loop proceeds to validate and
+fetch the next hop — success, failure, or another redirect alike. Tested
+(§7): a redirect whose `3xx` response body never ends — asserts the
+intermediate socket is observed closed (the local test server's own
+`close` event) before the next hop's request goes out, not merely
+eventually.
+
 ### 3.4 Timing (D16, D17 — both Codex findings, PR #40)
 
 `timing.ts` records absolute timestamps at each boundary in
@@ -575,9 +595,12 @@ later one — no `dns_done` yet → `DNS_FAILURE` (D5, **not**
 `CONNECTION_TIMEOUT`: the first version of this rule checked
 `connect_done` first and would have misclassified a deadline firing mid-DNS
 -resolve, Codex finding, PR #40); `dns_done` set but no `connect_done` →
-`CONNECTION_TIMEOUT`; `connect_done`/`tls_done` set but no `first_byte` →
-`RESPONSE_TIMEOUT`; `first_byte` set but no `transfer_done` → `BODY_TIMEOUT`.
-Tested directly (§7): a scenario where DNS and connect together consume
+`CONNECTION_TIMEOUT`; for an `https:` target, `connect_done` set but no
+`tls_done` → also `CONNECTION_TIMEOUT` (D25 below — a stalled handshake,
+not yet a response); `tls_done` (or `connect_done` for a plain `http:`
+target) set but no `first_byte` → `RESPONSE_TIMEOUT`; `first_byte` set but
+no `transfer_done` → `BODY_TIMEOUT`. Tested directly (§7): a scenario where
+DNS and connect together consume
 most of the budget, headers then stall past what's left — asserts
 `RESPONSE_TIMEOUT`, not `UNKNOWN_ERROR`, and that elapsed time never
 exceeds `timeout_ms` by
@@ -645,6 +668,24 @@ actually fired for that outcome. Tested (§7): one row per §6 failure class
 asserts a valid, non-null `total_ms` — pre-connect (`CONNECTION_REFUSED`)
 and mid-body (`BODY_TIMEOUT` after a partial chunk) explicitly named, since
 those are the two shapes the first draft's formula could not reach at all.
+
+**A stalled TLS handshake is not a response timeout (D25 — Codex finding,
+PR #40).** D16's boundary check, before this fix, went straight from
+`connect_done` to `first_byte`, treating `connect_done`/`tls_done` as
+interchangeable. For an `https:` peer that accepts the TCP connection but
+never completes its TLS handshake, `connect_done` is set while `tls_done`
+stays unset — the rule as first written would still report
+`RESPONSE_TIMEOUT`, implying an HTTP request was sent and the server
+simply never answered, when in fact no HTTP request could have been sent
+at all. Fixed: the boundary check now consults `tls_done` explicitly for
+an `https:` target (above); a deadline firing in this window classifies
+`CONNECTION_TIMEOUT`. The taxonomy (§2.6) has no class named specifically
+"handshake stalled" — `TLS_HANDSHAKE_FAILED`'s Node signal is `EPROTO`, a
+protocol/cipher mismatch, not a timeout — so this is the same kind of
+disclosed gap D5 already names for DNS timeouts, folded into the closest
+existing class rather than inventing an undocumented one (§9). Tested
+(§7): a local `https:` server that completes the TCP accept and then never
+sends a ServerHello — asserts `CONNECTION_TIMEOUT`, not `RESPONSE_TIMEOUT`.
 
 ### 3.5 TLS classification and certificate expiry (FR-22) — D6
 
@@ -793,6 +834,8 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D16 | The outer per-probe `AbortSignal`'s failure is classified by the last boundary `timing.ts` had recorded, checked in temporal order (DNS → connect → headers → body), not left as `UNKNOWN_ERROR` or misread by checking a later phase first                                                                                                                                                                                   | Trusting undici's own phase-timeout error types alone; an earlier draft that checked `connect_done` before `dns_done`          | The outer signal (D4) can fire first when an earlier phase ate most of the budget; its `AbortError` carries none of `UND_ERR_CONNECT_TIMEOUT`/`_HEADERS_TIMEOUT`/`_BODY_TIMEOUT`, and checking boundaries out of order misclassified a deadline firing mid-DNS-resolve as `CONNECTION_TIMEOUT` instead of `DNS_FAILURE` (two separate Codex findings, PR #40)                                                           |
 | D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` is unaffected by hop count once anchored on `probe_start` (D24)                                                                                                                                                                                                                                                                      | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; deriving `total_ms` per hop would understate it by dropping earlier hops — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                                   |
 | D24 | `probe_start`, recorded before any validation runs, is the sole anchor for `total_ms`; `dns_start`/`dns_done` stay DNS-phase-only                                                                                                                                                                                                                                                                                             | Anchoring `total_ms` on `dns_start`                                                                                            | An IP-literal target skips DNS resolution entirely, and a scheme/credential/port/hostname rejection fails before resolution is attempted — both left `dns_start` unset, making `total_ms` uncomputable for ordinary successful probes and the cheapest policy rejections (Codex finding, PR #40, P1)                                                                                                                    |
+| D25 | A stalled TLS handshake (`connect_done` set, `tls_done` not) classifies `CONNECTION_TIMEOUT`, checked explicitly and separately from a post-handshake stall                                                                                                                                                                                                                                                                   | Treating `connect_done`/`tls_done` as interchangeable in the boundary check                                                    | The taxonomy has no distinct "handshake stalled" class (`TLS_HANDSHAKE_FAILED` is `EPROTO`, a protocol mismatch, not a timeout — the same kind of gap D5 already discloses for DNS); the first draft reported `RESPONSE_TIMEOUT`, implying an HTTP request was sent when none could have been (Codex finding, PR #40)                                                                                                   |
+| D26 | Each redirect hop's response body is cancelled and its per-hop dispatcher closed in a `finally`, before the loop proceeds                                                                                                                                                                                                                                                                                                     | Moving to the next hop as soon as a `3xx` resolves                                                                             | A `3xx` can carry a body, and `fetch()` resolves once headers arrive regardless of what happens to it — without this, repeated redirected probes would retain one socket and dispatcher per hop until GC, scaling connection usage with the redirect cap (Codex finding, PR #40)                                                                                                                                        |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
 | D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
@@ -868,6 +911,8 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | Overall abort during DNS resolution classifies `DNS_FAILURE`, not `CONNECTION_TIMEOUT`    | D16: the deadline fires while `resolver.resolve4/6` is still pending (only `dns_start` recorded); asserts `DNS_FAILURE`; removal: check `connect_done` before `dns_done` (the first draft's order) and watch it wrongly report `CONNECTION_TIMEOUT`                                         |
 | Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                         | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value |
 | `total_ms` present for an IP-literal target and a pre-DNS policy rejection (D24)          | An IP-literal URL (no DNS call at all) and a scheme-rejected URL (`ftp://...`, fails before resolution); both assert a present, correct `total_ms`; removal: anchor on `dns_start` instead of `probe_start` and watch both report a missing value                                           |
+| A stalled TLS handshake classifies `CONNECTION_TIMEOUT`, not `RESPONSE_TIMEOUT` (D25)     | Local `https:` server accepts the TCP connect, never sends a ServerHello; asserts `CONNECTION_TIMEOUT`; removal: treat `connect_done`/`tls_done` as interchangeable (the first draft's bug) and watch it wrongly report `RESPONSE_TIMEOUT`                                                  |
+| Redirect hops close their body and dispatcher before the next hop (D26)                   | A redirect whose `3xx` body never ends; asserts the intermediate socket is observed closed before the next hop's request is sent; removal: skip the `finally` cleanup and watch the intermediate socket stay open past the next hop's request                                               |
 | Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                   | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                |
 | A real local server is reachable with `SSRF_GUARD_ENABLED=false` (D19)                    | Every D12 real-server test in §7 depends on this; a dedicated test asserts a probe against a plain loopback server succeeds under the disabled flag; removal: reuse the disabled guard's empty address list as the pin target and watch every real-server test fail with no address to dial |
 | Headers-arrived-then-stall classifies `BODY_TIMEOUT`, not `RESPONSE_TIMEOUT` (D21)        | Local server writes headers immediately, then stalls past the deadline; asserts `BODY_TIMEOUT` and that `ttfb_ms` reflects only the pre-headers wait; removal: define `first_byte` at the body reader's first chunk (the first draft's bug) and watch it misreport `RESPONSE_TIMEOUT`       |
