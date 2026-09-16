@@ -431,6 +431,24 @@ are the same event). `endpoint.follow_redirects === false` skips the loop
 entirely — the first `3xx` response is evaluated as-is (status/assertions
 run against it), matching FR-21's "configurable per monitor."
 
+**The monitor's effective headers are not replayed across an origin change
+(D15 — Codex finding, PR #40).** `probe()` receives a flat, already-decrypted
+header map (§3.8) that can contain the monitor's own secret API key for the
+_intended_ origin. The first draft's redirect loop reused that map
+unconditionally on every hop; a redirect to an unrelated public host named
+in `Location` would have sent that key there. Fixed: on each hop, the
+effective header map carried forward is the original one only when the new
+target's scheme, hostname, and port are all identical to the _original_
+request's (not merely the previous hop's, so a two-hop chain back to the
+original origin does not re-admit headers that were already stripped on
+hop one); any difference — including an `https:` → `http:` downgrade —
+drops every configured header (except what `fetch` itself sets) for that
+hop and all hops after it, once dropped they stay dropped. Standard
+practice for `Authorization` specifically in mainstream HTTP clients on a
+cross-origin redirect; probeboard applies it to the whole header map, since
+every one of them can carry a secret (M2 §5.4), not only a header named
+`Authorization`.
+
 ### 3.4 Timing (D nothing new — this is ADR-0004, implemented)
 
 `timing.ts` records absolute timestamps at each boundary in
@@ -570,6 +588,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D12 | Real local servers (§7) for timeout/reset/TLS/status/assertion/redirect-mechanics tests, run with `SSRF_GUARD_ENABLED=false`; guard-specific tests (rejection, pin-holds-under-rebinding, per-hop re-validation) use `probe()`'s injected `resolver`/`dispatcherFactory`, no real reachable target needed | One test mode for everything                                 | A loopback-bound local test server (CLAUDE.md's own binding rule) is itself inside the SSRF blocklist — running it with the guard enabled is structurally impossible for tests that need a working connection; §7 explains the split and how the rebinding proof stays real despite disabling the address-classification guard for that one test |
 | D13 | `assertSaveableUrl` gains an optional, backward-compatible third `resolver` parameter (default: the real `dns.promises` calls it already makes)                                                                                                                                                           | A second, M3-only copy of the resolve step                   | Lets `probe()`'s injected `deps.resolver` (§3.1) actually reach the guard it calls, instead of silently doing nothing past that boundary — the gap Codex's PR #40 review found at the rebinding-proof test; every M2 call site keeps its current, unchanged behaviour by relying on the default                                                  |
 | D14 | `SsrfValidationError` codes map to distinct failure classes, not all to `BLOCKED_BY_POLICY` — table in §3.3                                                                                                                                                                                               | Collapsing every rejection into `BLOCKED_BY_POLICY`          | The first draft did exactly that (Codex finding, PR #40): it made `URL_UNRESOLVABLE` — a genuine DNS failure — indistinguishable from a real policy refusal, silently turning real outages into `UNKNOWN` at M6                                                                                                                                  |
+| D15 | The effective header map is dropped (not replayed) on any redirect hop that changes scheme, host, or port from the _original_ request                                                                                                                                                                     | Reusing the same header map on every hop, unconditionally    | A redirect to an unrelated host would otherwise carry the monitor's own secret headers to it (Codex finding, PR #40) — the same class of leak `Authorization`-stripping already prevents in mainstream HTTP clients, generalized to every header since any of them can be a secret (M2 §5.4)                                                     |
 
 ## 5. Config
 
@@ -620,6 +639,8 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | SSRF: every §2.4 (M2) corpus item still rejects through the connect-time path          | Re-run the M2 bypass-corpus table's address/hostname cases through `ssrf-pin.ts`, not just `assertSaveableUrl` directly — proves the connect-time wrapper doesn't accidentally loosen anything M2 already closed                                                                         |
 | Pin holds under DNS rebinding                                                          | §6's rebinding row; removal: bypass the custom `connect` (use plain hostname-based connect) and watch the test fail deterministically                                                                                                                                                    |
 | Every redirect hop is re-validated                                                     | §6's redirect-hop `BLOCKED_BY_POLICY` row; removal: skip the guard on hop ≥2 and watch it pass through to a blocked target undetected                                                                                                                                                    |
+| Effective headers are dropped on a cross-origin or scheme-downgrade redirect           | D15: second local server records every header it receives; a redirect from server A (with a secret header configured) to server B on a different port asserts B never received it; removal: skip the origin check and watch B receive it                                                 |
+| Effective headers survive a same-origin redirect                                       | A redirect back to the _same_ scheme/host/port (e.g. a path-only redirect) still carries the configured headers — proves D15 doesn't over-strip                                                                                                                                          |
 | `URL_UNRESOLVABLE` is never reported as `BLOCKED_BY_POLICY`                            | D14's mapping table, one test per row (clean-empty → `DNS_NXDOMAIN`, `cause.code==='EAI_AGAIN'` → `DNS_FAILURE`, unmapped cause → `UNKNOWN_ERROR` with the raw code retained); removal: collapse the mapping back to one class (the first draft's bug) and watch these fail              |
 | `follow_redirects=false` does not follow                                               | A `3xx` is evaluated as-is; `Location` is never fetched (spy on the dispatcher, assert exactly one request)                                                                                                                                                                              |
 | Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`        | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                |
@@ -648,10 +669,14 @@ against synthetic Node error objects and canned response/body values — no
 sockets, no DB. Establishes the taxonomy mapping and assertion semantics
 §3.4/§3.7/§6 depend on, reviewable in isolation.
 
-**PR 2 — the connect-time SSRF guard and pinning.** `ssrf-pin.ts`: reuse of
-`core/ssrf`'s resolve/classify, the pinned custom-`connect` dispatcher
-builder, the redirect-hop re-validation loop. No real HTTP request is sent
-yet — tested via the injected `resolver`/`dispatcherFactory` fakes only
+**PR 2 — the connect-time SSRF guard and pinning.** A small, additive
+change to `core/ssrf/host-validator.ts` (D13's injectable `resolver`
+parameter, default-preserving), then `worker/probing/ssrf-pin.ts`: the
+rejection-code-to-failure-class mapping (D14), the pinned custom-`connect`
+dispatcher builder proved in isolation (D12's corrected design), and the
+redirect-hop re-validation loop including the cross-origin header-stripping
+rule (D15). No real HTTP request is sent yet — tested via the injected
+`resolver`/`dispatcherFactory` fakes and the isolated pin-application test
 (§6/§7's guard rows), plus the M2-corpus re-run. Security-critical, reviewed
 alone, matching M2's own PR2 precedent (the guard before anything is built
 on top of it).
