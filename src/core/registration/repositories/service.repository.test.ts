@@ -13,7 +13,7 @@ describe('ServiceRepository.listQuery', () => {
   it('binds a fixed number of parameters for a tag filter, not one per matching row', () => {
     // The regression this guards: a materialized id list joined in as
     // `id IN (...ids)` binds one parameter per matching row, eventually
-    // exceeding Postgres's 65535 bind-parameter limit. `WHERE EXISTS`
+    // exceeding Postgres's 65535 bind-parameter limit. The LATERAL join
     // never does -- its parameter count is the same whether zero rows or a
     // million rows in `tags` match, which this compiles to check without
     // needing a database or any rows at all.
@@ -25,8 +25,9 @@ describe('ServiceRepository.listQuery', () => {
       })
       .compile();
 
-    // userId, cursor, key, value, limit -- five literal parameters.
-    expect(compiled.parameters).toHaveLength(5);
+    // userId, cursor, key, value, the LATERAL subquery's own LIMIT 1,
+    // limit -- six literal parameters.
+    expect(compiled.parameters).toHaveLength(6);
   });
 
   it('binds three parameters with no tag filter', () => {

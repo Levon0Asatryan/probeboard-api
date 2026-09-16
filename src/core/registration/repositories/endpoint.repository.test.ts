@@ -14,7 +14,7 @@ describe('EndpointRepository.listForServiceQuery / listQuery', () => {
     // The regression this guards: a materialized id list joined in as
     // `id IN (...ids)` binds one parameter per matching row, eventually
     // exceeding Postgres's 65535 bind-parameter limit -- ENDPOINT_QUOTA_PER_USER
-    // permits up to 100,000. `WHERE EXISTS` never does; this compiles to
+    // permits up to 100,000. The LATERAL join never does; this compiles to
     // check that without needing a database or any rows at all.
     const compiled = endpoints
       .listForServiceQuery(
@@ -28,8 +28,9 @@ describe('EndpointRepository.listForServiceQuery / listQuery', () => {
       )
       .compile();
 
-    // serviceId, userId, cursor, key, value, limit -- six literal parameters.
-    expect(compiled.parameters).toHaveLength(6);
+    // serviceId, userId, cursor, key, value, the LATERAL subquery's own
+    // LIMIT 1, limit -- seven literal parameters.
+    expect(compiled.parameters).toHaveLength(7);
   });
 
   it('list binds a fixed number of parameters for a tag filter, not one per matching row', () => {
@@ -41,7 +42,8 @@ describe('EndpointRepository.listForServiceQuery / listQuery', () => {
       })
       .compile();
 
-    // userId, cursor, key, value, limit -- five literal parameters.
-    expect(compiled.parameters).toHaveLength(5);
+    // userId, cursor, key, value, the LATERAL subquery's own LIMIT 1,
+    // limit -- six literal parameters.
+    expect(compiled.parameters).toHaveLength(6);
   });
 });

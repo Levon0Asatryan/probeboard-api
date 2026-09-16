@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Kysely } from 'kysely';
+import type { ExpressionBuilder, Kysely } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database, NewService, Service, ServiceUpdate } from '../../db/types.js';
 
@@ -56,12 +56,23 @@ export class ServiceRepository {
   }
 
   /**
-   * The tag filter (B-5) is a `WHERE EXISTS` subquery, not a materialized
-   * id list joined in as `id IN (...)`: an account with many matches would
-   * otherwise bind one parameter per match before `limit` ever trims the
+   * The tag filter (B-5) is a `LATERAL` join, not a `WHERE EXISTS`
+   * subquery or a materialized id list joined in as `id IN (...)`: an id
+   * list would bind one parameter per match before `limit` ever trims the
    * result, eventually exceeding Postgres's bind-parameter ceiling instead
-   * of returning a page. `EXISTS` lets the planner filter and paginate in
-   * one query, with cursor/limit applied exactly as without a tag.
+   * of returning a page (the defect `services_user_id_id_idx` below and
+   * this join shape together replace). `EXISTS` does not have that
+   * problem, but it leaves the planner free to choose which side of the
+   * join drives -- and a row-count estimate that is wrong immediately
+   * after a bulk insert (before autovacuum's autoanalyze catches up) can
+   * make it start from `tags` and materialize every match before `limit`
+   * ever applies, rather than walking `services` in id order and stopping
+   * at the first few matches. `LATERAL`'s correlated subquery can only be
+   * the inner side of a nested loop -- Postgres has no plan where it
+   * drives -- so the choice that estimate error gets wrong does not exist
+   * to make. Confirmed against real data with EXPLAIN (ANALYZE, BUFFERS)
+   * under artificially unanalyzed statistics, recorded in
+   * docs/m2-verification.md.
    *
    * Split out from `list()`, unexecuted, so `service.repository.test.ts`
    * can `.compile()` it and assert on parameter count without a database --
@@ -71,25 +82,31 @@ export class ServiceRepository {
   listQuery(userId: string, options: ListServicesOptions) {
     let query = this.db.kysely
       .selectFrom('services')
-      .selectAll()
+      .selectAll('services')
       .where('user_id', '=', userId)
-      .orderBy('id', 'asc')
+      .orderBy('services.id', 'asc')
       .limit(options.limit);
 
     if (options.cursor) {
-      query = query.where('id', '>', options.cursor);
+      // Qualified, not bare `id`: once the tag branch below joins in
+      // `matching_tag` (itself selecting `tags.id`), an unqualified `id`
+      // is ambiguous between the two -- confirmed by removal, Postgres
+      // rejects it outright rather than silently picking one.
+      query = query.where('services.id', '>', options.cursor);
     }
     if (options.tag) {
       const { key, value } = options.tag;
-      query = query.where((eb) =>
-        eb.exists(
+      query = query.innerJoinLateral(
+        (eb: ExpressionBuilder<Database, 'services'>) =>
           eb
             .selectFrom('tags')
             .select('tags.id')
             .whereRef('tags.service_id', '=', 'services.id')
             .where('tags.key', '=', key)
-            .where('tags.value', '=', value),
-        ),
+            .where('tags.value', '=', value)
+            .limit(1)
+            .as('matching_tag'),
+        (join) => join.onTrue(),
       );
     }
 
