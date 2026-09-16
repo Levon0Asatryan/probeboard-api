@@ -70,8 +70,8 @@ Full text in `probeboard-docs/en/02-requirements.md`, `03-api-health.md`,
   worker-side pool where "a hung endpoint occupies one slot... never the
   loop" — pool-wait time is a scheduler-level (M4) queueing delay the
   architecture doc never says how to keep out of `total_ms`. Resolution,
-  stated here since the plan does not: `probe()`'s own `dns_start` is
-  recorded the instant `probe()` begins running, which by construction
+  stated here since the plan does not: `probe()`'s own `probe_start` (§3.4
+  D24) is recorded the instant `probe()` begins running, which by construction
   excludes any time the config spent waiting for a free concurrency-pool
   slot (that wait happens entirely _before_ `probe()` is invoked, in M4's
   code, not inside it). NFR-5 is therefore closed by M3 for everything
@@ -509,8 +509,14 @@ step 4's custom `connect` function is in place — we own the socket
 construction, so we own the instrumentation points directly rather than
 needing undici's `diagnostics_channel`:
 
+- `probe_start`: **the first line of `probe()`**, before scheme/credential/
+  port checks, before DNS, before anything else (D24 below) — the
+  unconditional anchor `total_ms` is measured from.
 - `dns_start`/`dns_done`: around the `resolver.resolve4/6` calls inside the
-  guard step above.
+  guard step above — for an IP-literal target (`isIP(hostname)` true in
+  `assertSaveableUrl`, no resolver call made at all) both equal the moment
+  the guard reaches that check, so `dns_ms` reads `0`, honestly, rather
+  than being undefined.
 - `connect_start`: immediately before `net.connect`/`tls.connect` inside the
   custom `connect` function.
 - `connect_done`: the underlying socket's `'connect'` event (for `https:`,
@@ -531,9 +537,26 @@ needing undici's `diagnostics_channel`:
   reset). `end_at` is simply whichever of these actually fired; every path
   through `probe()` sets one before returning (corrected — see D22 below).
 
-`total_ms` is `end_at - dns_start`, measured directly per ADR-0004 — never
-summed from the derived phases, which `03-api-health.md` §3.3.2 explicitly
-says will not add up to it (~10% discrepancy is expected and not a bug).
+`total_ms` is `end_at - probe_start`, measured directly per ADR-0004 —
+never summed from the derived phases, which `03-api-health.md` §3.3.2
+explicitly says will not add up to it (~10% discrepancy is expected and
+not a bug).
+
+**`total_ms` needs a boundary that exists on every path, including ones
+DNS never touches (D24 — Codex finding, PR #40, P1).** The first draft
+anchored `total_ms` on `dns_start`, which is only set once the guard
+actually reaches its resolve step — an IP-literal target skips resolution
+entirely (`isIP(hostname)` short-circuits in `assertSaveableUrl`), and a
+scheme/credential/port/blocked-hostname rejection fails _before_
+resolution is attempted at all. Both left `dns_start` unset, so `total_ms`
+was uncomputable for ordinary successful IP-literal probes and for the
+earliest, cheapest policy rejections — exactly the paths D22 was supposed
+to make whole. Fixed: `probe_start` is the true unconditional anchor,
+recorded before any validation runs; `dns_start`/`dns_done` stay as the
+DNS-phase-specific pair (now explicitly defined for the IP-literal case
+too, above) used only for `dns_ms`, never for `total_ms`. Tested (§7): an
+IP-literal target and a scheme-rejected URL (`ftp://...`) each assert a
+present, correct `total_ms`.
 
 **Classifying the overall deadline firing mid-phase (D16).** §4 D4 sets
 undici's `connectTimeout`/`headersTimeout`/`bodyTimeout` each to the full
@@ -568,16 +591,18 @@ resolution and connect, and neither "keep the first hop's boundaries" nor
 every later hop's real connect/TLS/TTFB cost from the derived phases the
 architecture doc's own table says should blame _something_ specific (a
 spike in `connect_ms` blaming "network path," not "redirect processing"
-silently folded in); the latter makes `total_ms = transfer_done − dns_start`
-understate the probe by excluding every earlier hop's DNS/connect/TLS time
-entirely, which is worse than the ~10% discrepancy ADR-0004 already
-accepts as normal — it is not noise, it is missing, real time the probe
-spent. Resolution: **`dns_ms`/`connect_ms`/`tls_ms`/`ttfb_ms`/`transfer_ms`
-describe only the final hop** — the one whose response was actually
-evaluated for status/assertions, matching what an operator investigating a
-slow probe actually wants to know about; **`total_ms` spans the first hop's
-`dns_start` to the final hop's `transfer_done`**, so the user-facing number
-stays honest about the whole probe including every redirect, and the
+silently folded in); the latter would, if `total_ms` were computed from a
+per-hop boundary, understate the probe by excluding every earlier hop's
+DNS/connect/TLS time entirely — worse than the ~10% discrepancy ADR-0004
+already accepts as normal, since it is not noise, it is missing, real time
+the probe spent. Resolution: **`dns_ms`/`connect_ms`/`tls_ms`/`ttfb_ms`/
+`transfer_ms` describe only the final hop** — the one whose response was
+actually evaluated for status/assertions, matching what an operator
+investigating a slow probe actually wants to know about; **`total_ms`**
+needs no per-hop reasoning at all once D24 anchors it on `probe_start`,
+set once before the first hop even begins — it **already** spans the
+whole probe including every redirect, so the user-facing number stays
+honest by construction, not by a redirect-specific rule, and the
 existing "phases don't sum to total" caveat (ADR-0004, §3.3.2) now also
 covers redirect-hop time as one more disclosed reason they don't — a
 natural extension of a decision already made, not a new inconsistency.
@@ -766,7 +791,8 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D14 | `SsrfValidationError` codes map to distinct failure classes, not all to `BLOCKED_BY_POLICY` — table in §3.3                                                                                                                                                                                                                                                                                                                   | Collapsing every rejection into `BLOCKED_BY_POLICY`                                                                            | The first draft did exactly that (Codex finding, PR #40): it made `URL_UNRESOLVABLE` — a genuine DNS failure — indistinguishable from a real policy refusal, silently turning real outages into `UNKNOWN` at M6                                                                                                                                                                                                         |
 | D15 | The effective header map is dropped (not replayed) on any redirect hop that changes scheme, host, or port from the _original_ request                                                                                                                                                                                                                                                                                         | Reusing the same header map on every hop, unconditionally                                                                      | A redirect to an unrelated host would otherwise carry the monitor's own secret headers to it (Codex finding, PR #40) — the same class of leak `Authorization`-stripping already prevents in mainstream HTTP clients, generalized to every header since any of them can be a secret (M2 §5.4)                                                                                                                            |
 | D16 | The outer per-probe `AbortSignal`'s failure is classified by the last boundary `timing.ts` had recorded, checked in temporal order (DNS → connect → headers → body), not left as `UNKNOWN_ERROR` or misread by checking a later phase first                                                                                                                                                                                   | Trusting undici's own phase-timeout error types alone; an earlier draft that checked `connect_done` before `dns_done`          | The outer signal (D4) can fire first when an earlier phase ate most of the budget; its `AbortError` carries none of `UND_ERR_CONNECT_TIMEOUT`/`_HEADERS_TIMEOUT`/`_BODY_TIMEOUT`, and checking boundaries out of order misclassified a deadline firing mid-DNS-resolve as `CONNECTION_TIMEOUT` instead of `DNS_FAILURE` (two separate Codex findings, PR #40)                                                           |
-| D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` spans the first hop's `dns_start` to the final hop's `transfer_done`                                                                                                                                                                                                                                                                 | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; overwriting each hop understates `total_ms` by dropping earlier hops entirely — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                              |
+| D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` is unaffected by hop count once anchored on `probe_start` (D24)                                                                                                                                                                                                                                                                      | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; deriving `total_ms` per hop would understate it by dropping earlier hops — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                                   |
+| D24 | `probe_start`, recorded before any validation runs, is the sole anchor for `total_ms`; `dns_start`/`dns_done` stay DNS-phase-only                                                                                                                                                                                                                                                                                             | Anchoring `total_ms` on `dns_start`                                                                                            | An IP-literal target skips DNS resolution entirely, and a scheme/credential/port/hostname rejection fails before resolution is attempted — both left `dns_start` unset, making `total_ms` uncomputable for ordinary successful probes and the cheapest policy rejections (Codex finding, PR #40, P1)                                                                                                                    |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
 | D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
@@ -841,6 +867,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | Overall abort mid-phase classifies by the last recorded boundary, not `UNKNOWN_ERROR`     | D16: DNS+connect consume most of the budget, headers then stall past what's left; asserts `RESPONSE_TIMEOUT`; removal: classify every outer-abort by Node's raw `AbortError` alone and watch it report `UNKNOWN_ERROR` instead                                                              |
 | Overall abort during DNS resolution classifies `DNS_FAILURE`, not `CONNECTION_TIMEOUT`    | D16: the deadline fires while `resolver.resolve4/6` is still pending (only `dns_start` recorded); asserts `DNS_FAILURE`; removal: check `connect_done` before `dns_done` (the first draft's order) and watch it wrongly report `CONNECTION_TIMEOUT`                                         |
 | Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                         | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value |
+| `total_ms` present for an IP-literal target and a pre-DNS policy rejection (D24)          | An IP-literal URL (no DNS call at all) and a scheme-rejected URL (`ftp://...`, fails before resolution); both assert a present, correct `total_ms`; removal: anchor on `dns_start` instead of `probe_start` and watch both report a missing value                                           |
 | Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                   | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                |
 | A real local server is reachable with `SSRF_GUARD_ENABLED=false` (D19)                    | Every D12 real-server test in §7 depends on this; a dedicated test asserts a probe against a plain loopback server succeeds under the disabled flag; removal: reuse the disabled guard's empty address list as the pin target and watch every real-server test fail with no address to dial |
 | Headers-arrived-then-stall classifies `BODY_TIMEOUT`, not `RESPONSE_TIMEOUT` (D21)        | Local server writes headers immediately, then stalls past the deadline; asserts `BODY_TIMEOUT` and that `ttfb_ms` reflects only the pre-headers wait; removal: define `first_byte` at the body reader's first chunk (the first draft's bug) and watch it misreport `RESPONSE_TIMEOUT`       |
