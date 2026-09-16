@@ -682,13 +682,30 @@ normally — a `body_contains`/`json_path` assertion against an empty buffer
 fails as `ASSERTION_FAILED` (§3.7), not a crash. Tested (§7) with both a
 `HEAD` probe and a `204` response.
 
-### 3.7 Assertions (ADR-0005) — D10
+### 3.7 Assertions (ADR-0005) — D10, D23
 
 `assertions/evaluate.ts` implements exactly the three `EndpointAssertion`
 variants already typed in `src/core/db/types.ts:128-131`:
 
-- `body_contains` / `body_not_contains`: substring check against the
-  (possibly-truncated, §3.6) body buffer, decoded as UTF-8.
+- `body_contains`: substring check against the (possibly-truncated, §3.6)
+  body buffer, decoded as UTF-8. A truncated body failing to contain the
+  target is the correct, conservative answer — the target might have been
+  in the unread tail, but "found nothing so far" is a sound reason to fail
+  a _positive_ claim.
+- `body_not_contains` (**D23 — Codex finding, PR #40, P1**): the same
+  substring check is unsound in the _negative_ direction. The first draft
+  ran it identically to `body_contains`, which means a truncated body that
+  happens not to contain the target **in its read prefix** reports success
+  — "the forbidden string is absent" — from data that provably did not
+  cover the whole response; the string could be sitting in the unread
+  tail. Fixed: `body_not_contains` checks the truncation flag (§3.6) first.
+  If the body was truncated, the assertion fails as `ASSERTION_FAILED`
+  regardless of what the partial buffer contains — absence cannot be
+  proven from an incomplete read, so it is never asserted. Only an
+  untruncated body's substring check can produce a `body_not_contains`
+  success. Tested (§7): a response larger than the cap with the forbidden
+  string placed _after_ the cap boundary — asserts failure, not the false
+  "healthy" the first draft would have reported.
 - `json_path`: `JSON.parse` the body buffer (failure to parse is itself
   `ASSERTION_FAILED`, not a crash), then evaluate `path` against it with a
   minimal subset — dot notation and integer array indices
@@ -755,6 +772,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
 | D21 | `first_byte` is recorded when `fetch()` resolves with the `Response` (headers received), not at the body reader's first chunk                                                                                                                                                                                                                                                                                                 | Defining `first_byte` at first body data                                                                                       | Left `first_byte` unset whenever a server sent headers and stalled before any body, misclassifying that as `RESPONSE_TIMEOUT` instead of `BODY_TIMEOUT` and letting `ttfb_ms` silently absorb body-wait time (Codex finding, PR #40)                                                                                                                                                                                    |
 | D22 | Every terminal path — success, guard rejection, or any caught error — records a boundary (`transfer_done`/`blocked_at`/`failed_at`); `total_ms` uses whichever fired                                                                                                                                                                                                                                                          | Only `transfer_done`/`blocked_at`, no boundary for any other failure                                                           | `total_ms` had no way to be computed for the majority of the failure taxonomy — `CONNECTION_REFUSED`, TLS failures, phase timeouts, mid-transfer resets — silently breaking FR-18 for those classes (Codex finding, PR #40, P1)                                                                                                                                                                                         |
+| D23 | `body_not_contains` fails as `ASSERTION_FAILED` whenever the body was truncated, regardless of what the partial buffer contains                                                                                                                                                                                                                                                                                               | Running the same substring check as `body_contains`                                                                            | Absence cannot be proven from an incomplete read — a truncated buffer that happens not to contain the forbidden string in its read prefix does not mean the string is absent from the unread tail (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 
 ## 5. Config
 
@@ -812,6 +830,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`           | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                   |
 | Body never exceeds `PROBE_MAX_BODY_BYTES` in memory                                       | Local server streams far more than the cap (e.g. 10×); assert the reader loop's accumulated buffer never exceeds the cap and the server observes an early socket close (§2.4's verified pattern)                                                                                            |
 | Assertion against truncated body fails predictably, not silently passes                   | A `body_contains` target that only appears past the cap; asserts `ASSERTION_FAILED`, documents D10's limitation with a real test rather than only prose                                                                                                                                     |
+| `body_not_contains` fails conservatively on a truncated body (D23), never a false pass    | A response larger than the cap with the forbidden string placed after the cap boundary; asserts `ASSERTION_FAILED`, not success; removal: run the same check as `body_contains` and watch it wrongly report the endpoint healthy                                                            |
 | `expected_status` checks every range, not just the first                                  | Two-range `expected_status` (`[{200,299},{404,404}]`); a `404` response passes; removal: check only `ranges[0]` and watch it wrongly fail                                                                                                                                                   |
 | `json_path` evaluates the documented minimal subset correctly                             | Dot path, bracket array index, missing path (fails, not throws), malformed JSON body (fails as `ASSERTION_FAILED`, not a crash)                                                                                                                                                             |
 | TLS classification matches the exact taxonomy Node signal                                 | One test per `TLS_*` row in §6, asserting `authorizationError`/`error.code` maps to the documented class                                                                                                                                                                                    |
