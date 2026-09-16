@@ -204,8 +204,21 @@ describe('list', () => {
     // join + composite index fix (m2-verification.md defect #12). With the
     // fix, the plan does not depend on statistics at all, so this passes
     // well inside the default 20s timeout regardless.
+    //
+    // ANALYZE on the still-empty tables, not just autovacuum off: `TRUNCATE`
+    // resets `pg_class.reltuples`/`relpages` but does not clear
+    // `pg_statistic` -- a database that has ever analyzed these tables
+    // before (a reused container, or an earlier test run in the same
+    // container) keeps old-but-present column statistics across
+    // `truncateAll`, which can be accurate enough to dodge the bad plan and
+    // let this test pass even with the production fix reverted. Explicitly
+    // analyzing the empty table overwrites that with a definitive
+    // "zero rows, no histogram" snapshot regardless of history, matching
+    // Codex review on PR #38.
     await ctx.pool.query(`ALTER TABLE services SET (autovacuum_enabled = false)`);
     await ctx.pool.query(`ALTER TABLE tags SET (autovacuum_enabled = false)`);
+    await ctx.pool.query(`ANALYZE services`);
+    await ctx.pool.query(`ANALYZE tags`);
     try {
       const rowCount = 70_000;
       await ctx.pool.query(

@@ -564,20 +564,73 @@ well past vitest's own timeout, exactly matching the original CI symptom
 of one slow query starving the rest of the run) -- restoring the migration
 made both pass again.
 
+**Second Codex finding, addressed by hardening the tests (PR #38, commit
+93200e5).** The bulk-insert tests' `ALTER TABLE ... SET (autovacuum_enabled
+= false)` prevents a _future_ autoanalyze, but does not clear statistics a
+table already has: `TRUNCATE` resets `pg_class.reltuples`/`relpages` but
+not `pg_statistic` (tied to the table's OID, not its storage), so a
+database that had ever analyzed `services`/`tags`/`endpoints` before --
+exactly the "methodological trap" above -- keeps old-but-present column
+statistics across `truncateAll`, which can be accurate enough that these
+regression tests pass even with the production fix reverted. Confirmed:
+on the polluted container from that trap, recreating `tags_key_value_idx`
+alone did _not_ fail the tests, reproducing the same false negative.
+
+Both tests now run `ANALYZE <table>; ANALYZE tags;` immediately after
+disabling autovacuum, while the tables are still empty (before the bulk
+insert) -- this overwrites whatever statistics existed with a definitive
+"zero rows, no histogram" snapshot regardless of container history, so the
+test no longer depends on freshness at all. Re-verified on the same
+polluted container: with this change, recreating `tags_key_value_idx`
+alone reliably reproduced the failure again (20s test timeout, cascading
+30s hook timeout in the next file from the hung query still holding a
+pool connection) -- restoring the fix made both pass again, also on the
+polluted container.
+
+**Third Codex finding, addressed by measurement, not a code change (PR
+#38, commit 93200e5).** Forcing the tag lookup onto the driven side of a
+nested loop makes a sparse-or-absent tag filter scan every one of the
+owner's rows instead of letting the planner start from a selective tags
+match -- a real trade-off against the pre-fix `EXISTS` query, which could
+invert the join order when stats showed the tag was rare. Measured the
+worst case directly: 100,000 owned services (`ENDPOINT_QUOTA_PER_USER`'s
+ceiling, reused as the same cap in the implicit-creation path), zero
+matching tags, unanalyzed statistics -- `47.886 ms`, `Buffers: shared
+hit=300709`, `Nested Loop` -> `Index Scan using
+services_user_id_id_idx`/`tags_service_key_key`, bounded and linear
+(`O(owned rows)`, one `O(1)` unique-index probe each), nothing like the
+`O(owned rows × non-matching tags)` shape defect #12 fixes.
+
+`EndpointRepository.{list,listForService}` are bounded by this same
+measurement -- `ENDPOINT_QUOTA_PER_USER` (max 100,000) applies directly.
+`ServiceRepository.list` is not: `ServicesService.createExplicit` has no
+quota check at all (only the _implicit_-creation path checks the endpoint
+quota, `services.service.ts:130`), so a user could in principle exceed
+100,000 services and grow this query past what was measured -- linearly,
+not catastrophically, but with no enforced ceiling. That gap is
+pre-existing, not introduced by this PR (the old `EXISTS` query had the
+same unbounded row count available to it; it only avoided touching all of
+it when the planner happened to estimate the tag as selective), and adding
+a services creation quota is a separate change outside a query-hang fix --
+not made here. Reversing the `LATERAL` join to recover the old plan's
+adaptive best case would also recover its proven-catastrophic worst case
+(defect #12's original 79.8s hang), which this PR exists to close; kept
+the fix, documented the trade-off instead of reverting it.
+
 **10x integration run.** `npm run test:int` (18 files, 303 tests) run 10
 consecutive times, each against a freshly recreated Postgres container
 (`docker compose down -v` + `up -d`, migrated from empty), no failures,
-re-run after the `limit: 1000` regression coverage above was added:
+re-run after the `ANALYZE`-while-empty determinism fix above was added:
 
 | Run | Duration | Run | Duration |
 | --- | -------- | --- | -------- |
-| 1   | 17.61s   | 6   | 17.67s   |
-| 2   | 17.83s   | 7   | 17.85s   |
-| 3   | 17.74s   | 8   | 17.68s   |
-| 4   | 17.34s   | 9   | 17.57s   |
-| 5   | 17.85s   | 10  | 17.72s   |
+| 1   | 18.06s   | 6   | 19.41s   |
+| 2   | 17.60s   | 7   | 19.73s   |
+| 3   | 17.93s   | 8   | 19.82s   |
+| 4   | 18.29s   | 9   | 19.98s   |
+| 5   | 18.01s   | 10  | 19.17s   |
 
-303/303 passed on every run; total suite duration stayed in a 17.34s-17.85s
+303/303 passed on every run; total suite duration stayed in a 17.60s-19.98s
 band, no run approached the 20s default per-test timeout on any single
 test.
 
