@@ -407,6 +407,28 @@ On a `BLOCKED_BY_POLICY`/`DNS_*` rejection, `probe()` returns immediately —
 no connection is ever attempted, so those outcomes need no real socket and
 no reachable target to test (§7).
 
+**`SSRF_GUARD_ENABLED=false` must still leave something to connect to
+(D19 — Codex finding, PR #40).** `assertSaveableUrl` short-circuits when
+disabled and returns `{ hostname, addresses: [], port }` _without_
+resolving (`host-validator.ts:283-285`) — the existing, correct behaviour
+for M2's save-time check, where "valid" is all that's needed. The first
+draft of this plan reused that return value as step 4's pin target
+unconditionally, which means every real-local-server test running under
+`SSRF_GUARD_ENABLED=false` (the entire non-guard slice of D12's test
+strategy) would have had no address to dial at all. Fixed: `ssrf-pin.ts`
+branches on `addresses.length === 0` after a _disabled_ guard specifically
+(never after an _enabled_ one — an enabled guard with zero addresses is
+the `URL_UNRESOLVABLE`/`DNS_*` path above, a real rejection) and falls
+back to an **unpinned** connector for that one hop: a plain undici
+`connect` using the hostname directly, letting the normal system resolver
+run at connect time, exactly what any ordinary HTTP client does. This is
+the correct reading of "disabled," not a workaround — the flag's own
+config comment already says "False is for tests against a local server
+only," i.e. skip probeboard's own SSRF machinery entirely, not pin to
+nothing. Tested (§7): a real local server probed with the guard disabled
+succeeds normally; the same target with the guard enabled and no
+resolver override still goes through the pinned path.
+
 Step 4, new in this plan: build a per-hop undici `Agent` whose `connect`
 function ignores the system resolver entirely and connects straight to the
 one validated address `assertSaveableUrl` returned (first in resolution
@@ -651,6 +673,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D16 | The outer per-probe `AbortSignal`'s failure is classified by the last boundary `timing.ts` had recorded when it fired, not left as `UNKNOWN_ERROR`                                                                                                                                                                                                                                                                            | Trusting undici's own phase-timeout error types alone                                                                          | The outer signal (D4) can fire first when an earlier phase ate most of the budget, and its `AbortError` carries none of `UND_ERR_CONNECT_TIMEOUT`/`_HEADERS_TIMEOUT`/`_BODY_TIMEOUT` — without this it silently fell through to the catch-all class (Codex finding, PR #40)                                                                                                                                             |
 | D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` spans the first hop's `dns_start` to the final hop's `transfer_done`                                                                                                                                                                                                                                                                 | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; overwriting each hop understates `total_ms` by dropping earlier hops entirely — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                              |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
+| D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
 
 ## 5. Config
 
@@ -718,6 +741,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | Overall abort mid-phase classifies by the last recorded boundary, not `UNKNOWN_ERROR`  | D16: DNS+connect consume most of the budget, headers then stall past what's left; asserts `RESPONSE_TIMEOUT`; removal: classify every outer-abort by Node's raw `AbortError` alone and watch it report `UNKNOWN_ERROR` instead                                                              |
 | Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                      | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value |
 | Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                |
+| A real local server is reachable with `SSRF_GUARD_ENABLED=false` (D19)                 | Every D12 real-server test in §7 depends on this; a dedicated test asserts a probe against a plain loopback server succeeds under the disabled flag; removal: reuse the disabled guard's empty address list as the pin target and watch every real-server test fail with no address to dial |
 | `RESPONSE_TIMEOUT` vs `BODY_TIMEOUT` vs `CONNECTION_TIMEOUT` are distinguishable       | Three local-server variants (§6), each asserting the _other two_ classes are not produced — proves the phases are actually distinguished, not that one label happens to appear                                                                                                              |
 | `UNKNOWN_ERROR` never silently coerces                                                 | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                             |
 | Config bounds already covered by M2's own tests are not re-tested here                 | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                            |
