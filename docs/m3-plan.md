@@ -555,7 +555,7 @@ A raw protocol-level failure (garbled handshake bytes, cipher mismatch)
 throws before `authorized` is ever assigned and is caught separately —
 `error.code === 'EPROTO'` → `TLS_HANDSHAKE_FAILED`.
 
-### 3.6 Body cap (NFR-13) — D8
+### 3.6 Body cap (NFR-13) — D8, D18
 
 `body-cap.ts` implements the verified streaming-reader pattern (§2.4): a
 manual `response.body.getReader()` loop, counting bytes, calling
@@ -567,6 +567,20 @@ run against (§3.7) and what a truncated failure excerpt is drawn from —
 itself is produced here, bounded from the start, never by truncating an
 already-fully-read buffer the way three of the four reference
 implementations do (§2.3).
+
+**Bodyless responses (D18 — Codex finding, PR #40).** The first draft's
+unconditional `response.body.getReader()` assumed a body always exists.
+Per the Fetch spec (and Node's implementation of it), `response.body` is
+`null` for a `HEAD` request's response and for any status the spec defines
+as having no body (`204`, `205`, `304`; probeboard's own taxonomy has no
+row for these being an error — they are a normal, successful shape).
+`body-cap.ts` checks `response.body === null` before ever calling
+`getReader()`: when null, the body buffer is empty, `transfer_done` is
+recorded immediately (equal to `first_byte`, since there is nothing to
+wait for after headers), and status/assertion evaluation proceeds
+normally — a `body_contains`/`json_path` assertion against an empty buffer
+fails as `ASSERTION_FAILED` (§3.7), not a crash. Tested (§7) with both a
+`HEAD` probe and a `204` response.
 
 ### 3.7 Assertions (ADR-0005) — D10
 
@@ -636,6 +650,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D15 | The effective header map is dropped (not replayed) on any redirect hop that changes scheme, host, or port from the _original_ request                                                                                                                                                                                                                                                                                         | Reusing the same header map on every hop, unconditionally                                                                      | A redirect to an unrelated host would otherwise carry the monitor's own secret headers to it (Codex finding, PR #40) — the same class of leak `Authorization`-stripping already prevents in mainstream HTTP clients, generalized to every header since any of them can be a secret (M2 §5.4)                                                                                                                            |
 | D16 | The outer per-probe `AbortSignal`'s failure is classified by the last boundary `timing.ts` had recorded when it fired, not left as `UNKNOWN_ERROR`                                                                                                                                                                                                                                                                            | Trusting undici's own phase-timeout error types alone                                                                          | The outer signal (D4) can fire first when an earlier phase ate most of the budget, and its `AbortError` carries none of `UND_ERR_CONNECT_TIMEOUT`/`_HEADERS_TIMEOUT`/`_BODY_TIMEOUT` — without this it silently fell through to the catch-all class (Codex finding, PR #40)                                                                                                                                             |
 | D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` spans the first hop's `dns_start` to the final hop's `transfer_done`                                                                                                                                                                                                                                                                 | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; overwriting each hop understates `total_ms` by dropping earlier hops entirely — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                              |
+| D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 
 ## 5. Config
 
@@ -702,6 +717,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | Overall timeout bounds DNS + connect + headers + body combined, not each independently | A scenario where DNS resolution alone consumes most of the budget, then connect is also slow; assert the **total** time-to-failure never exceeds `timeout_ms` by more than a small, stated margin — removal: remove the outer `AbortSignal` and watch phase timeouts sum past the budget    |
 | Overall abort mid-phase classifies by the last recorded boundary, not `UNKNOWN_ERROR`  | D16: DNS+connect consume most of the budget, headers then stall past what's left; asserts `RESPONSE_TIMEOUT`; removal: classify every outer-abort by Node's raw `AbortError` alone and watch it report `UNKNOWN_ERROR` instead                                                              |
 | Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                      | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value |
+| Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                |
 | `RESPONSE_TIMEOUT` vs `BODY_TIMEOUT` vs `CONNECTION_TIMEOUT` are distinguishable       | Three local-server variants (§6), each asserting the _other two_ classes are not produced — proves the phases are actually distinguished, not that one label happens to appear                                                                                                              |
 | `UNKNOWN_ERROR` never silently coerces                                                 | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                             |
 | Config bounds already covered by M2's own tests are not re-tested here                 | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                            |
