@@ -329,7 +329,7 @@ intent isn't lost by the time M7 is built.
 ### 3.1 Signature and dependencies
 
 ```ts
-// src/worker/probing/probe.executor.ts
+// src/worker/probing/utils/probe.ts
 export interface ProbeDeps {
   resolver: {
     resolve4(host: string): Promise<string[]>;
@@ -356,22 +356,52 @@ touches Kysely, `Endpoint`, or any repository type directly, keeping the
 "core depends on nothing... probing depends on nothing else in the tree"
 property literal, not just directional.
 
-### 3.2 Module layout — resolving the §7.9 staleness (D1)
+### 3.2 Module layout — resolving the §7.9 staleness, and role folders (D1, D20)
 
 ```
 src/worker/probing/
-  probe.executor.ts     the pure function (§3.1)
-  ssrf-pin.ts            resolve → classify → pin (reuses core/ssrf) + redirect re-validation
-  timing.ts              phase-boundary capture, absolute timestamps
-  body-cap.ts            streaming body read with a byte cap
-  tls-inspect.ts         rejectUnauthorized:false + authorizationError classification (§3.5)
-  failure-classes.ts     Node error/code -> §2.6 taxonomy, UNKNOWN_ERROR fallback
+  index.ts                 re-exports probe() for M4 to import (§8 PR4)
+  utils/
+    probe.ts                the pure function (§3.1)
+    probe.test.ts           unit: failure-class/timing wiring — no I/O
+    probe.int.test.ts       integration: real local servers, every failure class (§7)
+    ssrf-pin.ts             resolve → classify → pin (reuses core/ssrf) + redirect re-validation
+    ssrf-pin.test.ts
+    timing.ts               phase-boundary capture, absolute timestamps
+    timing.test.ts
+    body-cap.ts             streaming body read with a byte cap
+    body-cap.test.ts
+    tls-inspect.ts          rejectUnauthorized:false + authorizationError classification (§3.5)
+    tls-inspect.test.ts
+    failure-classes.ts      Node error/code -> §2.6 taxonomy, UNKNOWN_ERROR fallback
+    failure-classes.test.ts
   assertions/
-    evaluate.ts           the 3 EndpointAssertion variants
-    json-path.ts          minimal dot/bracket-index path subset
-  probe.executor.test.ts       unit: assertions, failure-class mapping, timing math — no I/O
-  probe.executor.int.test.ts   integration: real local servers, every failure class (§7)
+    evaluate.ts              the 3 EndpointAssertion variants
+    evaluate.test.ts
+    json-path.ts             minimal dot/bracket-index path subset
+    json-path.test.ts
 ```
+
+**Everything here is a `utils/`-role pure helper, not a NestJS construct
+(D20 — Codex finding, PR #40).** The first draft put `ssrf-pin.ts`,
+`timing.ts`, `body-cap.ts`, `tls-inspect.ts`, and `failure-classes.ts`
+directly at the module root, and named the executor `probe.executor.ts` —
+both violate `CLAUDE.md`'s structure rules directly: a supporting file left
+at a module's root instead of its role folder, and a `.<role>.ts` suffix
+that isn't one of the NestJS constructs the naming convention names
+(`module`, `controller`, `service`, `repository`, `guard`, `decorator`,
+`pipe`, `filter`, `interceptor`, `middleware`, `strategy`, `dto`).
+`probe()` and every module it depends on are deliberately plain functions
+with **no** framework role — that is the entire point of "no database, no
+scheduler, no global state" (architecture §7.4) — so the correct home is
+`utils/`, plain kebab-case names, per the same rule M1's `session-token.ts`/
+`client-ip.ts` already follow. Renamed `probe.executor.ts` → `utils/probe.ts`
+accordingly. `assertions/` is kept as its own folder rather than flattened
+into `utils/`: it is not claiming a NestJS role, it is a cohesive
+sub-concern grouping in the same spirit as `dto/`'s `fields.ts` pattern
+(CLAUDE.md's own example of a legitimate non-role subfolder), and keeping
+the three `EndpointAssertion` variants together is more readable than
+interleaving them with the connection-layer helpers in `utils/`.
 
 `src/worker/probing/` depends only on `src/core/ssrf`, `src/core/crypto`,
 and `src/core/db/types.ts` (for `EndpointAssertion`'s shape) — never on
@@ -679,6 +709,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D17 | Derived phases (`dns_ms`…`transfer_ms`) describe only the final redirect hop; `total_ms` spans the first hop's `dns_start` to the final hop's `transfer_done`                                                                                                                                                                                                                                                                 | One boundary set for the whole probe, or overwriting each hop                                                                  | The first draft left multi-hop timing undefined (Codex finding, PR #40): keeping only the first hop's boundaries hides every later hop's real cost; overwriting each hop understates `total_ms` by dropping earlier hops entirely — worse than the disclosed ~10% phase/total gap ADR-0004 already accepts                                                                                                              |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
+| D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
 
 ## 5. Config
 
@@ -758,8 +789,8 @@ Four PRs — a naturally different shape than M2's five, since M3 has one
 security-critical layer (the guard) and one integration layer (the executor
 itself), not a CRUD surface to build up.
 
-**PR 1 — pure logic, no networking.** `src/worker/probing/timing.ts`,
-`failure-classes.ts`, `assertions/` (including `json-path.ts`). Unit-tested
+**PR 1 — pure logic, no networking.** `src/worker/probing/utils/timing.ts`,
+`utils/failure-classes.ts`, `assertions/` (including `json-path.ts`). Unit-tested
 against synthetic Node error objects and canned response/body values — no
 sockets, no DB. Establishes the taxonomy mapping and assertion semantics
 §3.4/§3.7/§6 depend on, reviewable in isolation.
@@ -776,7 +807,7 @@ rule (D15). No real HTTP request is sent yet — tested via the injected
 alone, matching M2's own PR2 precedent (the guard before anything is built
 on top of it).
 
-**PR 3 — `probe.executor.ts` itself.** Wires PR1+PR2 together with
+**PR 3 — `utils/probe.ts` itself.** Wires PR1+PR2 together with
 `body-cap.ts` and `tls-inspect.ts` into the real `probe(config, deps)`
 against real local test servers (§6's hang/reset/bad-TLS/redirect/timeout
 fixtures, one small server-with-faults module per family, following the
