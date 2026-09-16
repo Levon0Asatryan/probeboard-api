@@ -113,8 +113,9 @@ Full text in `probeboard-docs/en/02-requirements.md`, `03-api-health.md`,
 
 ### 2.2 Code on `main` this touches
 
-- **`src/core/ssrf/host-validator.ts`** (M2, unchanged by this plan except
-  possibly exporting one more symbol — see §4 D2). `assertSaveableUrl`
+- **`src/core/ssrf/host-validator.ts`** (M2; gains one small,
+  backward-compatible addition — an injectable `resolver` parameter, §3.3
+  D13). `assertSaveableUrl`
   already does exactly steps 1–3 of chapter 7.4's four-step guard: scheme/
   credentials/port, `dns.resolve4`/`resolve6` (every A/AAAA record, not
   `dns.lookup`'s one), and `net.BlockList` classification against the full
@@ -376,16 +377,35 @@ src/worker/probing/
 and `src/core/db/types.ts` (for `EndpointAssertion`'s shape) — never on
 `src/api/`, matching ADR-0006 and `src/architecture.test.ts`.
 
-### 3.3 SSRF guard: resolve → classify → pin → connect, re-run per redirect hop (D2, D3, D7)
+### 3.3 SSRF guard: resolve → classify → pin → connect, re-run per redirect hop (D2, D3, D7, D13, D14)
 
-`ssrf-pin.ts` calls `core/ssrf`'s existing `assertSaveableUrl` (or a
-renamed-but-identical export — see §9 open question) for steps 1–3
-verbatim: scheme/credentials/port, resolve every A/AAAA record via the
-injected `resolver`, classify every address against the shared `BlockList`.
-On rejection, `probe()` returns `{ success: false, failureClass:
-'BLOCKED_BY_POLICY' }` immediately — no connection is ever attempted, so a
-`BLOCKED_BY_POLICY` outcome needs no real socket and no reachable target to
-test (§7).
+`ssrf-pin.ts` calls `core/ssrf`'s existing `assertSaveableUrl` for steps
+1–3: scheme/credentials/port, resolve every A/AAAA record, classify every
+address against the shared `BlockList`. `assertSaveableUrl` gains one small,
+backward-compatible addition (D13): an optional third `resolver` parameter
+defaulting to the real `node:dns` `promises.resolve4`/`resolve6` it already
+calls — every M2 call site and test is unaffected, and M3 is the first
+caller to pass a fake one, threading `probe()`'s own injected
+`deps.resolver` (§3.1) all the way through instead of stopping at the
+boundary of a module that could not previously be handed one.
+
+**Rejection codes do not collapse into one class (D14 — Codex finding,
+PR #40).** The first draft of this plan mapped every `SsrfValidationError`
+from `assertSaveableUrl` straight to `BLOCKED_BY_POLICY`, including
+`URL_UNRESOLVABLE` — which is thrown for a genuine DNS failure, not a
+policy decision, and would have made `DNS_NXDOMAIN`/`DNS_FAILURE`
+unreachable through the real resolve path and told M6 to treat real outages
+as `UNKNOWN`. Corrected mapping:
+
+| `SsrfValidationError.code`                                                                                                                             | Failure class                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SCHEME_NOT_ALLOWED`, `CREDENTIALS_IN_URL`, `PORT_NOT_ALLOWED`, `ADDRESS_NOT_ALLOWED`                                                                  | `BLOCKED_BY_POLICY` — probeboard refused, per NFR-11                                                                                                                                                                                                                                  |
+| `URL_UNRESOLVABLE`, no `cause` set (both address families cleanly empty — `resolveAll`'s `addresses.length === 0` branch, `host-validator.ts:294-296`) | `DNS_NXDOMAIN` — closest match: the name has no usable record, whether the underlying per-family code was `ENOTFOUND` or `ENODATA`; `resolveAll` does not currently preserve which, a small information loss inside `core/ssrf` worth noting rather than silently working around (§9) |
+| `URL_UNRESOLVABLE`, `cause` set (`host-validator.ts:344-349`'s "some other resolver error" branch)                                                     | `DNS_FAILURE` if `cause.code === 'EAI_AGAIN'`; otherwise `UNKNOWN_ERROR` with the raw `cause.code` retained, per architecture §7.4's "never silently coerced to a generic failure"                                                                                                    |
+
+On a `BLOCKED_BY_POLICY`/`DNS_*` rejection, `probe()` returns immediately —
+no connection is ever attempted, so those outcomes need no real socket and
+no reachable target to test (§7).
 
 Step 4, new in this plan: build a per-hop undici `Agent` whose `connect`
 function ignores the system resolver entirely and connects straight to the
@@ -548,6 +568,8 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D10 | `json_path` assertions: minimal dot/bracket-index subset only                                                                                                                                                                                                                                             | A full JSONPath implementation/library                       | ADR-0005 commits only to a versioned structured format, not a grammar; FR-15 is priority C; gatus's own hand-rolled JSONPath is explicitly "half-baked" in its own source comment — not a pattern worth matching in full                                                                                                                         |
 | D11 | `probe()` receives only decrypted, plain headers — decryption happens in the thin caller wiring, not inside the pure core                                                                                                                                                                                 | Passing ciphertext/key into `probe()`                        | Keeps "which headers were secret" entirely outside `probe()`'s reachable state, so no code path inside it can leak a value it never distinguishes as secret in the first place                                                                                                                                                                   |
 | D12 | Real local servers (§7) for timeout/reset/TLS/status/assertion/redirect-mechanics tests, run with `SSRF_GUARD_ENABLED=false`; guard-specific tests (rejection, pin-holds-under-rebinding, per-hop re-validation) use `probe()`'s injected `resolver`/`dispatcherFactory`, no real reachable target needed | One test mode for everything                                 | A loopback-bound local test server (CLAUDE.md's own binding rule) is itself inside the SSRF blocklist — running it with the guard enabled is structurally impossible for tests that need a working connection; §7 explains the split and how the rebinding proof stays real despite disabling the address-classification guard for that one test |
+| D13 | `assertSaveableUrl` gains an optional, backward-compatible third `resolver` parameter (default: the real `dns.promises` calls it already makes)                                                                                                                                                           | A second, M3-only copy of the resolve step                   | Lets `probe()`'s injected `deps.resolver` (§3.1) actually reach the guard it calls, instead of silently doing nothing past that boundary — the gap Codex's PR #40 review found at the rebinding-proof test; every M2 call site keeps its current, unchanged behaviour by relying on the default                                                  |
+| D14 | `SsrfValidationError` codes map to distinct failure classes, not all to `BLOCKED_BY_POLICY` — table in §3.3                                                                                                                                                                                               | Collapsing every rejection into `BLOCKED_BY_POLICY`          | The first draft did exactly that (Codex finding, PR #40): it made `URL_UNRESOLVABLE` — a genuine DNS failure — indistinguishable from a real policy refusal, silently turning real outages into `UNKNOWN` at M6                                                                                                                                  |
 
 ## 5. Config
 
@@ -598,6 +620,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | SSRF: every §2.4 (M2) corpus item still rejects through the connect-time path          | Re-run the M2 bypass-corpus table's address/hostname cases through `ssrf-pin.ts`, not just `assertSaveableUrl` directly — proves the connect-time wrapper doesn't accidentally loosen anything M2 already closed                                                                         |
 | Pin holds under DNS rebinding                                                          | §6's rebinding row; removal: bypass the custom `connect` (use plain hostname-based connect) and watch the test fail deterministically                                                                                                                                                    |
 | Every redirect hop is re-validated                                                     | §6's redirect-hop `BLOCKED_BY_POLICY` row; removal: skip the guard on hop ≥2 and watch it pass through to a blocked target undetected                                                                                                                                                    |
+| `URL_UNRESOLVABLE` is never reported as `BLOCKED_BY_POLICY`                            | D14's mapping table, one test per row (clean-empty → `DNS_NXDOMAIN`, `cause.code==='EAI_AGAIN'` → `DNS_FAILURE`, unmapped cause → `UNKNOWN_ERROR` with the raw code retained); removal: collapse the mapping back to one class (the first draft's bug) and watch these fail              |
 | `follow_redirects=false` does not follow                                               | A `3xx` is evaluated as-is; `Location` is never fetched (spy on the dispatcher, assert exactly one request)                                                                                                                                                                              |
 | Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`        | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                |
 | Body never exceeds `PROBE_MAX_BODY_BYTES` in memory                                    | Local server streams far more than the cap (e.g. 10×); assert the reader loop's accumulated buffer never exceeds the cap and the server observes an early socket close (§2.4's verified pattern)                                                                                         |
@@ -649,14 +672,24 @@ untouched, per §2.2; M4 is the first caller.
 
 ## 9. Open questions / tensions to flag, not resolve quietly
 
-- **`assertSaveableUrl`'s naming and error type are save-time-flavored**
+- **`assertSaveableUrl`'s naming and error type are still save-time-flavored**
   (`SsrfValidationError`, codes like `SCHEME_NOT_ALLOWED` meant for an HTTP
-  400 body). M3 reuses the function but must catch and re-map every one of
-  its rejection codes to the single `BLOCKED_BY_POLICY` failure class — a
-  small adapter in `ssrf-pin.ts`, not a change to `core/ssrf` itself unless
-  PR2's implementation finds the reuse awkward enough to warrant exporting a
-  lower-level `resolveAndClassify` alongside the existing save-time wrapper.
-  Left as an implementation-time call, not a blocking decision.
+  400 body) even after D13/D14 — M3 catches and remaps every rejection code
+  per §3.3's table in a small adapter in `ssrf-pin.ts`, not a change to
+  `core/ssrf`'s error type itself unless PR2's implementation finds the
+  reuse awkward enough to warrant exporting a lower-level
+  `resolveAndClassify` alongside the existing save-time wrapper. Left as an
+  implementation-time call, not a blocking decision.
+- **`resolveAll` (`core/ssrf/host-validator.ts:326-354`) discards which
+  per-family DNS code produced a clean "no addresses" result** (D14's
+  `URL_UNRESOLVABLE`-with-no-`cause` branch) — `ENOTFOUND` and `ENODATA`
+  are folded together before `assertSaveableUrl` ever throws, so M3 cannot
+  distinguish "name does not exist" from "name exists, wrong record type"
+  and maps both to `DNS_NXDOMAIN` (§3.3). Defensible (the taxonomy doesn't
+  name a class for the latter either) but a real information loss inside
+  M2's shipped code, not something this plan can fix without touching
+  `core/ssrf` beyond D13's resolver parameter — left for PR2 to decide
+  whether it's worth a small follow-up to `resolveAll` or is fine as-is.
 - **DNS-timeout has no taxonomy class** (D5) — classified `DNS_FAILURE`,
   which is defensible (both are "the resolver itself is failing") but is a
   real gap between what `03-api-health.md` enumerates and what can actually
