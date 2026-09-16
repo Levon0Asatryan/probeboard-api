@@ -1,0 +1,715 @@
+# M3 — Probe executor: implementation plan
+
+Delivers FR-18…FR-22, NFR-5, NFR-11, NFR-13 (`docs/tracker.md`, `probeboard-docs/en/08-plan.md`
+row M3). A pure `probe()` function: phase boundaries, the failure taxonomy,
+assertions, the connect-time SSRF guard with IP pinning, a bounded body. Exit
+criterion: probe one URL from a test, every failure class reproduced locally.
+Nothing here schedules, persists, or evaluates incidents — M4/M5/M6.
+
+## 1. Scope
+
+| In                                                                          | Out, and why                                                                     |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `probe(config, deps): Promise<ProbeOutcome>` — pure, no DB, no scheduler    | Scheduling, leases, `endpoint_runtime`, claim loop — M4 (FR-17, NFR-1…4/7)       |
+| Absolute phase-boundary timestamps, derived `total_ms`/`dns_ms`/etc.        | Persisting `probe_results`, aggregates, retention — M5 (NFR-8/9)                 |
+| Failure taxonomy: 14 classes (`03-api-health.md` §3.4), Node-signal mapping | Incident state machine, `UNKNOWN` sweep, maintenance windows — M6                |
+| Assertions: `body_contains`, `body_not_contains`, `json_path` (ADR-0005)    | Notifications — M7                                                               |
+| Connect-time SSRF guard: resolve → classify → **pin** → connect             | "Check now" on-demand HTTP endpoint (FR-23, priority C) — not in FR-18…22        |
+| Redirect-following, re-validated (guard steps 2–4) on every hop             | Per-monitor "skip TLS verification" — not in FR-18…22; TLS is always verified    |
+| Bounded body read, streamed, never fully buffered (NFR-13)                  | Multi-address ("happy eyeballs") fallback — single validated address, documented |
+| TLS certificate expiry capture (FR-22)                                      | Domain/WHOIS expiry — not requested                                              |
+| Secret-header decryption for the outbound request, never re-exposed         | New config — M3 needs none; §4 explains why                                      |
+
+## 2. Investigation
+
+### 2.1 Requirements and architecture read together — contradictions and gaps
+
+Full text in `probeboard-docs/en/02-requirements.md`, `03-api-health.md`,
+`07-architecture.md` §7.2–7.5/7.9, `08-plan.md`, ADR-0004, ADR-0005.
+
+- **FR-18…22, NFR-5/11/13, verbatim:**
+  - FR-18: "Each probe records: monitor, timestamp, success flag, HTTP status
+    code, response time in milliseconds, and on failure a failure
+    classification."
+  - FR-19: "Each probe is bounded by the monitor's timeout. Exceeding it is
+    recorded as a timeout failure."
+  - FR-20: "Failures are classified into distinguishable kinds: DNS
+    resolution failure, connection refused, connection timeout, read
+    timeout, TLS error, unexpected status code, failed body assertion."
+  - FR-21: "Redirect-following is configurable per monitor, with a bounded
+    redirect count."
+  - FR-22: "For HTTPS monitors the system records the TLS certificate's
+    expiry date."
+  - NFR-5: "The response time recorded is the endpoint's, not the system's:
+    queueing delay inside probeboard must not be counted in the
+    measurement."
+  - NFR-11: "The probe executor refuses URLs that resolve to loopback,
+    link-local, or private address ranges, and to cloud metadata addresses.
+    Validation occurs after DNS resolution, immediately before connecting,
+    so that DNS rebinding cannot bypass it."
+  - NFR-13: "The response body is read only up to a bounded size; it is used
+    for assertions and is never persisted in full."
+  - Acceptance criterion 4: "A security test demonstrates NFR-11 against
+    each blocked address class, including a DNS-rebinding attempt."
+
+- **"Records" (FR-18) vs. M3's pure-function scope.** Read literally, FR-18
+  sounds like a persistence requirement. `08-plan.md`'s own milestone table
+  assigns "partitioned `probe_results`, atomic rollups" to M5, and
+  architecture §7.4 is explicit — "No database, no scheduler, no global
+  state." Resolution: `probe()` **returns** everything FR-18 lists
+  (`ProbeOutcome` — monitor id passed in by the caller, `startedAt`,
+  `success`, `status`, `totalMs`, `failureClass` on failure); _writing_ the
+  row is M4/M5's job (worker's scheduler loop calls `probe()`, then inserts).
+  This plan's exit criterion ("probe one URL from a test") is satisfied by
+  the return value, not a database row.
+
+- **NFR-5's queueing-delay guarantee spans two milestones, not stated
+  explicitly.** ADR-0004 ties NFR-5 to phase-boundary design (executor-side,
+  M3) — gaps between phases stay visible instead of folding into a
+  neighbour. But architecture §7.3 "Concurrency" describes a bounded
+  worker-side pool where "a hung endpoint occupies one slot... never the
+  loop" — pool-wait time is a scheduler-level (M4) queueing delay the
+  architecture doc never says how to keep out of `total_ms`. Resolution,
+  stated here since the plan does not: `probe()`'s own `dns_start` is
+  recorded the instant `probe()` begins running, which by construction
+  excludes any time the config spent waiting for a free concurrency-pool
+  slot (that wait happens entirely _before_ `probe()` is invoked, in M4's
+  code, not inside it). NFR-5 is therefore closed by M3 for everything
+  inside the function, and M4 must not call `probe()` until a slot is free
+  — recorded as a constraint on M4, not something M3 can enforce itself.
+
+- **`BLOCKED_BY_POLICY` → `UNKNOWN` mapping is never spelled out as a
+  literal combination.** Architecture line 162 says "a blocked probe
+  records `BLOCKED_BY_POLICY`, which is `UNKNOWN`, not `DOWN`"; the
+  `probe_results.outcome` enum (§7.5) is `up | down | degraded | unknown`;
+  `failure_class` is a separate column, "null on success." Combining these:
+  a policy-blocked probe's `ProbeOutcome` has `success: false`,
+  `failureClass: 'BLOCKED_BY_POLICY'`, and it is the **caller's**
+  responsibility (M6's incident evaluator, reading `failure_class`) to map
+  that specific class to the `unknown` outcome rather than `down` — `probe()`
+  itself has no `outcome` enum to set, only `success`/`failureClass`. Stated
+  explicitly here so M6 does not have to re-derive it.
+
+- **Module layout: architecture §7.9 vs. the actual repo.** §7.9 shows a
+  flat `src/{common,auth,services,endpoints,probing,scheduler,...}` tree.
+  The real repo (and `probeboard-api/CLAUDE.md`, ADR-0006) uses
+  `src/{core,api,worker,testing}`, enforced by `src/architecture.test.ts`.
+  §7.9 predates that split and is stale, the same gap M2's plan hit for
+  `services/`/`endpoints/` (its D8) and resolved in `CLAUDE.md`'s favor.
+  §4's D1 does the same here: `src/worker/probing/`, not a new top-level
+  `src/probing/`.
+
+- **No explicit "M3 does not do X" sentence in `08-plan.md`.** The boundary
+  is inferred entirely from the Delivers column of M3 vs. M4 (scheduling)
+  vs. M5 (storage) rows, plus the "Order rationale" line: "M3 before M4
+  because the executor is a pure function and needs no scheduler to test."
+  Recorded here as the scope table in §1, so it isn't re-derived per PR.
+
+- **`endpoints.enabled` is explicitly inert to M3.** `src/core/db/types.ts`
+  comments it "Inert until M4's scheduler reads it" — `probe()` takes an
+  already-selected endpoint config and has no opinion on whether it should
+  have been probed at all. Confirms the scheduler, not the executor, gates
+  on pause/resume.
+
+### 2.2 Code on `main` this touches
+
+- **`src/core/ssrf/host-validator.ts`** (M2, unchanged by this plan except
+  possibly exporting one more symbol — see §4 D2). `assertSaveableUrl`
+  already does exactly steps 1–3 of chapter 7.4's four-step guard: scheme/
+  credentials/port, `dns.resolve4`/`resolve6` (every A/AAAA record, not
+  `dns.lookup`'s one), and `net.BlockList` classification against the full
+  IANA special-purpose registries (86 tests, `docs/m2-verification.md`'s
+  comparison table). Its own doc comment already names this plan: "M3
+  reuses this module's classification and resolution but adds its own
+  connect-time pin." `SsrfGuardConfig.enabled`/`blockedPorts` map straight
+  onto `SSRF_GUARD_ENABLED`/`SSRF_BLOCKED_PORTS`, both already in
+  `src/core/config/schema.ts:289-301`, no new config needed.
+
+- **`src/core/crypto/header-cipher.ts`** (M2 PR3). `decryptSecret(secret,
+key)` is exactly what M3 needs to put a secret header's real value on the
+  wire. Its own doc comment already anticipates this: "M3's probe executor
+  has to send the actual header value on the wire." `parseHeaderEncryptionKey`
+  decodes `HEADER_ENCRYPTION_KEY` (already validated at boot).
+
+- **`src/core/config/schema.ts:259-302`**, the `probing` block, already
+  has everything this plan needs: `PROBE_MAX_BODY_BYTES` (default 65536),
+  `PROBE_MAX_TIMEOUT_MS` (30000, the system ceiling), `PROBE_DEFAULT_TIMEOUT_MS`
+  (10000), `PROBE_MAX_REDIRECTS_CAP` (10), `PROBE_DEFAULT_MAX_REDIRECTS` (5),
+  `SSRF_GUARD_ENABLED`, `SSRF_BLOCKED_PORTS`. `PROBE_CONCURRENCY` (M4) and
+  `PROBE_ALLOWED_INTERVALS_S`/`PROBE_DEFAULT_INTERVAL_S` (also M4) are not
+  M3's concern. **No new config value is added by this plan** — see §4 D4/D5
+  for why the existing single `timeout_ms` bound is sufficient.
+
+- **`src/core/db/types.ts:121-160`**, the `EndpointsTable`/`EndpointAssertion`
+  types M3 consumes but never writes: `method`, `path`, `timeout_ms`,
+  `expected_status: StatusRange[]` (an array of `{min,max}` — probe() must
+  check membership across all ranges, not just the first), `follow_redirects`,
+  `max_redirects`, `assertions: EndpointAssertion[]` — exactly the 3-variant
+  discriminated union (`body_contains`, `body_not_contains`, `json_path`)
+  ADR-0005 decided on. `latency_warn_ms`, `failure_threshold`,
+  `success_threshold` are M6 concerns (incident/degraded evaluation), not
+  read by `probe()`.
+
+- **`src/worker/worker.module.ts`, `main.ts`**: currently DB + config +
+  logging only, comment "Loops are added in M4... M5... M6... M7." M3 adds
+  no loop — `probe()` is exported for M4 to call, and this plan's own tests
+  invoke it directly. No change to `worker.module.ts` is needed.
+
+- **Test-fixture precedent, `src/testing/oauth-provider-stub.ts`.** A local
+  `node:http` server, `listen(0, '127.0.0.1', ...)` (never `listen(0)` alone,
+  per `CLAUDE.md`'s macOS ephemeral-port collision rule), with deliberate
+  per-test faults as named boolean/field toggles (`hangTokenEndpoint`,
+  `oversizedTokenResponseBytes`, `tokenErrorWith200`) rather than one
+  monolithic fixture. §7's local test servers follow this exact shape: one
+  small server-with-faults module per failure family, not a single
+  do-everything fixture.
+
+### 2.3 How the four reference implementations solve this (read directly, not from memory)
+
+All four cloned locally under `~/Dev/university/probeboard/references/`.
+
+|                                | uptime-kuma                                                                        | gatus                                                                            | openstatus                                                              | blackbox_exporter                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Core check fn                  | `Monitor.prototype.beat()`, `server/model/monitor.js:431`                          | `Endpoint.call()`, `config/endpoint/endpoint.go:450-568`                         | `checker.Http()`, `apps/checker/checker/http.go:56`                     | `ProbeHTTP()`, `prober/http.go:287`                                                                                             |
+| HTTP client                    | axios                                                                              | Go `net/http`                                                                    | Go `net/http`                                                           | Go `net/http`                                                                                                                   |
+| Timeout structure              | **one** overall (`axios.timeout` + a backstop `AbortSignal`, `monitor.js:566,579`) | **one** overall `http.Client.Timeout` (`client/config.go:219-243`), no per-phase | **one** overall `http.Client.Timeout` (`handlers/checker.go:77-79`)     | **one** overall `context.WithTimeout` (`prober/handler.go:69-77`), phases _measured_ via `httptrace` but not separately bounded |
+| Redirect re-validation per hop | **none** — `maxRedirects` only                                                     | **none** — `CheckRedirect` only follows/refuses                                  | **none** — `CheckRedirect` only counts hops                             | **none** — `CheckRedirect` only counts/logs                                                                                     |
+| TLS verify by default          | yes, skippable (`getIgnoreTls()` → `rejectUnauthorized`)                           | yes, skippable (`Insecure` config)                                               | yes, **not** skippable (no custom `tls.Config` in the HTTP path at all) | yes, skippable in test code only                                                                                                |
+| Cert expiry reported           | yes, `daysRemaining` via `dayjs` diff (`util-server.js:446`)                       | yes, `time.Until(cert.NotAfter)` (`endpoint.go:554-556`)                         | **no** — no cert-expiry code anywhere in `apps/checker`                 | yes, as a Unix-time gauge (`prober/tls.go:25-33`)                                                                               |
+| Failure classification         | single generic catch, one special case (`CanceledError` → timeout)                 | single generic `Result.Errors []string`, no type switch                          | single generic `err.Error()`, one special case (`urlErr.Timeout()`)     | single generic log line; only body/CEL/status/HTTP-version assertions get distinct messages                                     |
+| SSRF at probe time             | **none** (confirmed: none at save time either)                                     | **none** (config-file-driven, different threat model)                            | **none** (save-time-only, M2's own finding)                             | **none** (deliberately trusts caller)                                                                                           |
+| Body handling                  | fully buffered (`res.data`)                                                        | fully buffered (`io.ReadAll`, only if a condition needs it)                      | fully buffered (`io.ReadAll`, `checker/http.go:146-148`)                | **capped**, `http.MaxBytesReader` (`prober/http.go:631-637`), still `io.ReadAll`s inside regex/CEL checks up to that cap        |
+
+Conclusions that shape §4:
+
+1. **Every one of the four uses exactly one overall timeout**, never
+   separate DNS/connect/TLS/body budgets — direct support for §4 D4's
+   choice not to add new phase-specific config.
+2. **None of the four re-validates a redirect target.** This is not an
+   oversight this plan can quietly repeat: chapter 7.4 explicitly requires
+   it ("Re-run steps 2–4 on every redirect hop"), and §2.5 below has three
+   2026 CVEs of exactly this shape. §4 D7.
+3. **Only blackbox_exporter caps the body**; the other three fully buffer.
+   probeboard already decided NFR-13 the other way; blackbox_exporter's
+   `MaxBytesReader` pattern (wrap, don't post-hoc truncate) is the one worth
+   following, not the three that don't cap at all.
+4. **None has any SSRF guard at probe time.** probeboard is the outlier by
+   design (NFR-11) — there is no reference implementation to adapt here,
+   only chapter 7.4's own four-step spec and the CVE corpus in §2.5.
+5. Gatus's `Result.CertificateExpiration` (a `time.Duration`, computed once
+   from `response.TLS.PeerCertificates[0]`) and blackbox_exporter's
+   `getEarliestCertExpiry` (`prober/tls.go:25-33`, minimum `NotAfter` across
+   the whole chain) are the two viable models for FR-22; §4 D6 explains why
+   probeboard needs a third approach (`rejectUnauthorized: false` +
+   `authorizationError`) neither of them needs, because neither classifies
+   TLS failures at all.
+
+### 2.4 Node/undici mechanics — verified directly against this project's own Node version
+
+Verified live (Node v24.20.0, project's own version; undici 7.29.0 bundled,
+cross-checked against standalone `undici@7.29.1`), not taken from
+documentation alone — the same standard M2's SSRF investigation set for
+`new URL()` behaviour.
+
+- **Pinning a connection to a validated IP while keeping correct SNI/cert
+  hostname verification for the _original_ hostname**: a custom `connect`
+  function passed as `Agent`/`Client`/`Pool`'s `connect` option (source read
+  directly, `undici/lib/core/connect.js:62-118`). The function receives
+  `options.hostname` (the **original** request hostname — confirmed live,
+  both for `fetch()` with a custom `dispatcher` and for plain
+  `undici.request()`) and must build the socket itself:
+  `tls.connect({ host: PINNED_IP, servername: options.hostname, port })`
+  for `https:`, `net.connect({ host: PINNED_IP, port })` for `http:`. The
+  default connector's automatic SNI-from-hostname fallback (`servername =
+servername || options.servername || util.getServerName(host) || null`)
+  only runs _inside_ the default connector — a replacement `connect`
+  function must set `servername` itself, confirmed live
+  (`options.servername` arrives `null` unless explicitly set upstream).
+  `http.Agent`'s `options.lookup` is a narrower, unsuitable alternative: it
+  overrides only the DNS step inside the normal connect flow and re-runs at
+  connect time — it cannot hand the transport an address that was already
+  resolved and validated earlier the way a custom `connect` can.
+- **Timeout phases, confirmed live:** `connectTimeout` (default 10s) bounds
+  TCP connect _and_ the DNS lookup that precedes it inside the default
+  connector (verified: a connect to an unroutable `192.0.2.1:81` fires
+  `ConnectTimeoutError` at exactly the configured bound). `headersTimeout`
+  bounds time-to-first-response-headers _after_ connect (verified: a server
+  that accepts the connection and sends nothing fires `HeadersTimeoutError`
+  at its own configured bound, independent of `connectTimeout`).
+  `bodyTimeout` is an **inter-chunk** timeout, not a total-body timeout — it
+  resets on every chunk received (`nodejs/undici` docs, `docs/api/Client.md`).
+  None of the three is a total-request budget; `AbortSignal`/`AbortController`
+  passed to `fetch()` is, and does cover the whole lifecycle including body
+  drain (confirmed against `nodejs/undici#1926`, which is exactly this
+  distinction being reported as surprising).
+- **Bounding the body without buffering it, with a real early close**:
+  verified end-to-end (`response.body.getReader()`, a manual read loop
+  counting bytes, `controller.abort()` once the cap is hit). The server side
+  genuinely observed a `close` event immediately, not after streaming the
+  rest — `abort()` on the `fetch()` call propagates through undici and tears
+  down the socket, it does not merely stop the client from reading further
+  bytes the server keeps sending.
+- **`dns.promises.resolve4`/`resolve6` vs. `dns.lookup`**: reconfirmed —
+  `resolve4`/`resolve6` return **every** record (6 for a real multi-A
+  hostname tested), `dns.lookup` returns one unless `{ all: true }`. Handing
+  a resolved literal straight to `tls.connect`/`net.connect`'s `host` needs
+  no reformatting for IPv4 or bare IPv6 — but a bracketed IPv6 literal
+  pulled from `new URL(...).hostname` (`"[::1]"`) is **not** a valid `net`/
+  `tls` host (`net.isIP('[::1]')` → `0`); brackets must be stripped first.
+  `core/ssrf/host-validator.ts` already does this stripping (`unbracketed`,
+  lines 267-269) — its `ValidatedUrl.hostname` is already the bare form,
+  safe to reuse directly.
+
+### 2.5 SSRF/DNS-rebinding: redirect-specific bypass corpus
+
+M2's plan (`docs/m2-plan.md` §2.4/§6) already covers plain DNS-rebinding
+(resolve-then-connect TOCTOU) in depth, with sources (NCC Group, Postiz,
+link-preview-js). This milestone's own new surface is the **redirect hop**,
+and it has its own, more recent corpus:
+
+- **MLflow, CVE-2026-64849**: `_validate_webhook_url` validates the
+  original webhook URL only; an attacker's endpoint answers with `302` to
+  `http://169.254.169.254/...`, followed unrevalidated.
+  ([GitHub advisory](https://github.com/mlflow/mlflow/security/advisories/GHSA-7gwp-5pfp-969j))
+- **Papra, CVE-2026-48051**: an SSRF guard checks the original URL against a
+  loopback/link-local/RFC1918 blocklist; the HTTP client auto-follows `3xx`
+  and the redirect target is never re-checked.
+  ([GitHub advisory](https://github.com/papra-hq/papra/security/advisories/GHSA-5g86-85rp-f9hx))
+- **Budibase**, "SSRF Bypass via HTTP Redirect in REST Datasource
+  Integration" — same shape.
+  ([GHSA-fgqv-jh4g-pvg2](https://github.com/Budibase/budibase/security/advisories/GHSA-fgqv-jh4g-pvg2))
+- **Squidex**, SSRF in webhook configuration, same shape.
+  ([GHSA-wxg2-953m-fg2w](https://github.com/Squidex/squidex/security/advisories/GHSA-wxg2-953m-fg2w))
+- Cross-protocol redirect research: a guard that checks scheme/host but not
+  what a redirect can _change_ (http→https across origins, or vice versa).
+  ([Doyensec — SSRF remediation bypass](https://blog.doyensec.com/2023/03/16/ssrf-remediation-bypass.html))
+
+Common pattern: the guard runs once, on the request-time URL; the `Location`
+header is never re-validated. Chapter 7.4's "re-run steps 2–4 on every
+redirect hop" is the correct closure and is not optional design flourish —
+it is the exact fix every one of these advisories names. §4 D7, §6 test
+matrix.
+
+### 2.6 The failure taxonomy (already fully specified — `03-api-health.md` §3.4)
+
+This is not new design; it is the full, already-decided taxonomy, quoted
+verbatim because it _is_ the spec `probe()`'s failure-classification code
+implements directly:
+
+| Class                   | Dimension | Node signal                                                      | Operational meaning                                     |
+| ----------------------- | --------- | ---------------------------------------------------------------- | ------------------------------------------------------- |
+| `DNS_NXDOMAIN`          | H1        | `ENOTFOUND`                                                      | name does not exist — usually config, not outage        |
+| `DNS_FAILURE`           | H1        | `EAI_AGAIN`                                                      | resolver itself is failing                              |
+| `CONNECTION_REFUSED`    | H1        | `ECONNREFUSED`                                                   | host up, nothing listening — process is down            |
+| `CONNECTION_TIMEOUT`    | H1        | `UND_ERR_CONNECT_TIMEOUT`, `ETIMEDOUT`                           | packets dropped — firewall or dead host                 |
+| `CONNECTION_RESET`      | H1        | `ECONNRESET`, `EPIPE`                                            | peer killed the connection mid-flight                   |
+| `TLS_EXPIRED`           | H1/H6     | `CERT_HAS_EXPIRED`                                               | certificate lapsed — foreseeable, therefore preventable |
+| `TLS_UNTRUSTED`         | H1        | `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `DEPTH_ZERO_SELF_SIGNED_CERT` | chain incomplete or self-signed                         |
+| `TLS_HOSTNAME_MISMATCH` | H1        | `ERR_TLS_CERT_ALTNAME_INVALID`                                   | certificate is for a different name                     |
+| `TLS_HANDSHAKE_FAILED`  | H1        | `EPROTO`                                                         | protocol/cipher mismatch                                |
+| `RESPONSE_TIMEOUT`      | H2        | `UND_ERR_HEADERS_TIMEOUT`                                        | connected, server never answered                        |
+| `BODY_TIMEOUT`          | H2        | `UND_ERR_BODY_TIMEOUT`                                           | headers arrived, body stalled                           |
+| `STATUS_MISMATCH`       | H2        | status ∉ accepted set                                            | the endpoint answered, with the wrong answer            |
+| `ASSERTION_FAILED`      | H3        | assertion evaluation                                             | the payload is wrong                                    |
+| `TOO_MANY_REDIRECTS`    | H2        | redirect budget exhausted                                        | redirect loop                                           |
+| `BLOCKED_BY_POLICY`     | —         | SSRF guard (NFR-11)                                              | _probeboard refused_, not an endpoint failure           |
+
+Plus, per architecture §7.4: "Unmapped codes become `UNKNOWN_ERROR` with the
+raw code retained — never silently coerced to a generic failure." That is
+the 15th, catch-all class this plan's `failure-classes.ts` must implement.
+
+`BLOCKED_BY_POLICY` is excluded from uptime arithmetic by the caller (§2.1);
+"the class determines the alert, not just the label" (`03-api-health.md`
+line 145) — out of scope for M3 itself (M7), noted so the taxonomy's design
+intent isn't lost by the time M7 is built.
+
+## 3. `probe()` design
+
+### 3.1 Signature and dependencies
+
+```ts
+// src/worker/probing/probe.executor.ts
+export interface ProbeDeps {
+  resolver: {
+    resolve4(host: string): Promise<string[]>;
+    resolve6(host: string): Promise<string[]>;
+  };
+  clock: { now(): number };
+  dispatcherFactory: (opts: PinnedConnectOptions) => Dispatcher;
+}
+
+export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promise<ProbeOutcome>;
+```
+
+Matches architecture §7.4's signature exactly. The three dependencies are
+what make every non-network-condition test deterministic and fast (§7):
+`resolver` replaces real DNS, `clock` replaces `Date.now()`/timers,
+`dispatcherFactory` replaces the real undici transport for orchestration
+tests that don't need a real socket at all (redirect-hop re-validation,
+DNS-rebinding-pin proof). Production wiring (M4) supplies real
+`dns.promises`, `Date`, and the real pinned-dispatcher builder.
+
+`EndpointProbeConfig` is a plain object built by the caller from an
+`Endpoint` row (plus its decrypted effective headers) — `probe()` never
+touches Kysely, `Endpoint`, or any repository type directly, keeping the
+"core depends on nothing... probing depends on nothing else in the tree"
+property literal, not just directional.
+
+### 3.2 Module layout — resolving the §7.9 staleness (D1)
+
+```
+src/worker/probing/
+  probe.executor.ts     the pure function (§3.1)
+  ssrf-pin.ts            resolve → classify → pin (reuses core/ssrf) + redirect re-validation
+  timing.ts              phase-boundary capture, absolute timestamps
+  body-cap.ts            streaming body read with a byte cap
+  tls-inspect.ts         rejectUnauthorized:false + authorizationError classification (§3.5)
+  failure-classes.ts     Node error/code -> §2.6 taxonomy, UNKNOWN_ERROR fallback
+  assertions/
+    evaluate.ts           the 3 EndpointAssertion variants
+    json-path.ts          minimal dot/bracket-index path subset
+  probe.executor.test.ts       unit: assertions, failure-class mapping, timing math — no I/O
+  probe.executor.int.test.ts   integration: real local servers, every failure class (§7)
+```
+
+`src/worker/probing/` depends only on `src/core/ssrf`, `src/core/crypto`,
+and `src/core/db/types.ts` (for `EndpointAssertion`'s shape) — never on
+`src/api/`, matching ADR-0006 and `src/architecture.test.ts`.
+
+### 3.3 SSRF guard: resolve → classify → pin → connect, re-run per redirect hop (D2, D3, D7)
+
+`ssrf-pin.ts` calls `core/ssrf`'s existing `assertSaveableUrl` (or a
+renamed-but-identical export — see §9 open question) for steps 1–3
+verbatim: scheme/credentials/port, resolve every A/AAAA record via the
+injected `resolver`, classify every address against the shared `BlockList`.
+On rejection, `probe()` returns `{ success: false, failureClass:
+'BLOCKED_BY_POLICY' }` immediately — no connection is ever attempted, so a
+`BLOCKED_BY_POLICY` outcome needs no real socket and no reachable target to
+test (§7).
+
+Step 4, new in this plan: build a per-hop undici `Agent` whose `connect`
+function ignores the system resolver entirely and connects straight to the
+one validated address `assertSaveableUrl` returned (first in resolution
+order — §4 D9), setting `servername`/TLS `host` verification to the
+_original_ hostname (§2.4). This is the exact mechanism that closes the
+rebinding window: the address that was checked is structurally the address
+the socket dials, because nothing between validation and connect can
+re-resolve.
+
+`probe()` runs its own redirect loop rather than delegating to undici's
+built-in follow-redirect behaviour (§2.3/§2.5 — no reference implementation
+does this safely, and it is exactly the bypass class in §2.5's CVEs):
+`fetch(url, { redirect: 'manual', dispatcher })`; on a `3xx` with a
+`Location` header, resolve it against the current URL, run the **entire**
+guard (steps 1–4 again, fresh `resolver` call) on the new target before
+following, increment a hop counter capped at
+`min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`. Exceeding it is
+`TOO_MANY_REDIRECTS`; a hop that fails the guard is `BLOCKED_BY_POLICY`
+(never silently treated as a redirect failure — same class as a
+directly-blocked initial target, since from the guard's point of view they
+are the same event). `endpoint.follow_redirects === false` skips the loop
+entirely — the first `3xx` response is evaluated as-is (status/assertions
+run against it), matching FR-21's "configurable per monitor."
+
+### 3.4 Timing (D nothing new — this is ADR-0004, implemented)
+
+`timing.ts` records absolute timestamps at each boundary in
+`03-api-health.md` §3.3.1's table, using the sources already available once
+step 4's custom `connect` function is in place — we own the socket
+construction, so we own the instrumentation points directly rather than
+needing undici's `diagnostics_channel`:
+
+- `dns_start`/`dns_done`: around the `resolver.resolve4/6` calls inside the
+  guard step above.
+- `connect_start`: immediately before `net.connect`/`tls.connect` inside the
+  custom `connect` function.
+- `connect_done`: the underlying socket's `'connect'` event (for `https:`,
+  the raw TCP socket connect, before TLS begins).
+- `tls_start`/`tls_done`: `'connect_done'`/the `TLSSocket`'s `'secureConnect'`
+  event (or, per §3.5, the point where `authorizationError` is read, since
+  the handshake itself always completes under `rejectUnauthorized: false`).
+- `first_byte`: the first chunk read from `response.body`'s reader.
+- `transfer_done`: the reader's `done: true`, or the moment the body cap
+  (§3.6) is hit — whichever first; a capped read still produces a real
+  `transfer_done`, with the outcome separately marked truncated.
+
+`total_ms` is `transfer_done - dns_start` (or `blocked_at - dns_start` for
+a guard rejection), measured directly per ADR-0004 — never summed from the
+derived phases, which `03-api-health.md` §3.3.2 explicitly says will not add
+up to it (~10% discrepancy is expected and not a bug).
+
+### 3.5 TLS classification and certificate expiry (FR-22) — D6
+
+Every `https:` connect sets `rejectUnauthorized: false` at the `tls.connect`
+level, then inspects `socket.authorized`/`socket.authorizationError`
+immediately after the handshake completes, before any HTTP request bytes
+are written. This is a deliberate departure from "just let Node reject it":
+
+- It gives **precise** classification matching `03-api-health.md`'s exact
+  Node-signal column — `authorizationError` is literally the string
+  `'CERT_HAS_EXPIRED'` / `'UNABLE_TO_VERIFY_LEAF_SIGNATURE'` /
+  `'DEPTH_ZERO_SELF_SIGNED_CERT'` / `'ERR_TLS_CERT_ALTNAME_INVALID'` — no
+  reference implementation classifies TLS failures at all (§2.3), so there
+  was no existing pattern to copy; letting Node reject automatically only
+  yields a generic thrown error, collapsing four distinguishable taxonomy
+  rows into one.
+- It gives **always-available** certificate info for FR-22: the peer
+  certificate is read from the socket regardless of whether the chain
+  validated, so `cert_expires_at` (from the earliest `notAfter` across the
+  chain, blackbox_exporter's `getEarliestCertExpiry` pattern,
+  `prober/tls.go:25-33`) is captured even on a `TLS_EXPIRED` outcome — where
+  it is most useful, since that is precisely the probe recording _why_ the
+  cert is a problem.
+- **The moment `authorized` is false, `probe()` aborts before sending the
+  HTTP request** — the socket is destroyed, nothing is written. The trust
+  boundary is identical to Node's automatic rejection; only the diagnostics
+  improve. This is stated as its own guard in the test matrix (§7): "an
+  untrusted/expired-cert target never receives the monitored request,"
+  proved by asserting the local test server's request handler is never
+  invoked when `authorizationError` is set.
+
+A raw protocol-level failure (garbled handshake bytes, cipher mismatch)
+throws before `authorized` is ever assigned and is caught separately —
+`error.code === 'EPROTO'` → `TLS_HANDSHAKE_FAILED`.
+
+### 3.6 Body cap (NFR-13) — D8
+
+`body-cap.ts` implements the verified streaming-reader pattern (§2.4): a
+manual `response.body.getReader()` loop, counting bytes, calling
+`controller.abort()` the moment `PROBE_MAX_BODY_BYTES` is reached. The
+buffer accumulated up to that point (not the full body) is what assertions
+run against (§3.7) and what a truncated failure excerpt is drawn from —
+"only assertion outcomes and a truncated excerpt on failure are stored"
+(architecture §7.4) is a statement about what M5 persists, but the excerpt
+itself is produced here, bounded from the start, never by truncating an
+already-fully-read buffer the way three of the four reference
+implementations do (§2.3).
+
+### 3.7 Assertions (ADR-0005) — D10
+
+`assertions/evaluate.ts` implements exactly the three `EndpointAssertion`
+variants already typed in `src/core/db/types.ts:128-131`:
+
+- `body_contains` / `body_not_contains`: substring check against the
+  (possibly-truncated, §3.6) body buffer, decoded as UTF-8.
+- `json_path`: `JSON.parse` the body buffer (failure to parse is itself
+  `ASSERTION_FAILED`, not a crash), then evaluate `path` against it with a
+  minimal subset — dot notation and integer array indices
+  (`data.items[0].id`), no wildcards, filters, or recursive descent. ADR-0005
+  commits only to a `version: "v1"` structured format and an explicit
+  `type` field, not a JSONPath grammar; FR-15 (JSON-path assertions) is
+  priority **C** (could-have). A minimal, fully-specified subset is
+  sufficient and avoids adopting gatus's own characterization of its
+  hand-rolled JSONPath as "half-baked" (`jsonpath.go:10`) for a feature this
+  system does not need to over-build.
+- Status-code check (not itself an `EndpointAssertion` variant, but the same
+  evaluation moment): `expected_status: StatusRange[]` — the response
+  status must fall inside **any** range in the array, `STATUS_MISMATCH`
+  otherwise. `StatusRange[]` being an array (not one `{min,max}`) means this
+  must iterate, not just check the first entry — a one-line but real
+  correctness detail worth stating since it is easy to get wrong silently.
+
+**Documented limitation**: an assertion that needs content past
+`PROBE_MAX_BODY_BYTES` cannot be satisfied and fails as `ASSERTION_FAILED`
+— NFR-13 bounds the read; a truncated body silently failing a content check
+is the deliberate trade-off NFR-13 makes, not a bug to work around.
+
+### 3.8 Secret headers on the wire (D11)
+
+The caller (M4, or this plan's own integration tests) passes `probe()` an
+already-**decrypted** effective header map — decryption itself
+(`decryptSecret`, `src/core/crypto/header-cipher.ts`, existing) happens
+immediately before building the outbound request, in the thin wiring layer,
+not inside `probe()`'s pure core. `probe()` never receives ciphertext, an
+encryption key, or a "this header is secret" flag — only plain
+`Record<string, string>` headers to send, which is what keeps a decrypted
+value from ever being assignable to a field `ProbeOutcome`, an error, or a
+log statement could pick up: there is no code path inside `probe()` that
+holds a reference to which values were secret in the first place. Proven
+the same way M2 proved this for save-time (`docs/m2-plan.md` §5.4/§5.6):
+force a request failure (e.g. `CONNECTION_REFUSED`) with a secret header in
+the request and the log captured, assert the plaintext value appears in no
+line, no field of the returned `ProbeOutcome`, and no thrown error's
+`message`/`details`.
+
+## 4. Decisions
+
+| #   | Decision                                                                                                                                                                                                                                                                                                  | Rejected                                                     | Because                                                                                                                                                                                                                                                                                                                                          |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | `src/worker/probing/`, not a new top-level `src/probing/`                                                                                                                                                                                                                                                 | Architecture §7.9's literal flat tree                        | §7.9 predates ADR-0006's `core/api/worker` split (§2.1); only `worker` ever calls `probe()`, matching CLAUDE.md's feature-module rule the same way M2's D8 resolved `services/`/`endpoints/`                                                                                                                                                     |
+| D2  | Reuse `core/ssrf`'s `assertSaveableUrl` verbatim for guard steps 1–3; add step 4 (pin) and per-hop re-invocation in `worker/probing/ssrf-pin.ts`                                                                                                                                                          | Duplicating resolution/classification in `worker/`           | One `BlockList`, one resolution path, one place the 86-test IANA comparison table (`docs/m2-verification.md`) has to stay correct — `core/ssrf`'s own doc comment already names this as M3's job                                                                                                                                                 |
+| D3  | Pin via a custom undici `connect` function per hop                                                                                                                                                                                                                                                        | `http.Agent`'s `lookup` option                               | `lookup` re-resolves at connect time inside the normal flow and cannot hand the transport a pre-validated literal the way a full custom `connect` can (§2.4, verified live)                                                                                                                                                                      |
+| D4  | One overall timeout (`endpoint.timeout_ms`, ≤ `PROBE_MAX_TIMEOUT_MS`), applied to undici's `connectTimeout`/`headersTimeout`/`bodyTimeout` **and** an overall `AbortSignal` from probe start                                                                                                              | Separate configured DNS/connect/TLS/body sub-budgets         | FR-8/FR-19 specify exactly one bound; all four reference implementations use exactly one (§2.3); undici's three phase timeouts, left independent, could each consume the full budget and sum past it — the outer `AbortSignal` closes that (§2.4, `AbortSignal` verified to cover the whole lifecycle)                                           |
+| D5  | DNS resolution races against the same overall deadline; a timeout there classifies `DNS_FAILURE`                                                                                                                                                                                                          | Inventing a `DNS_TIMEOUT` class                              | `03-api-health.md`'s taxonomy has no distinct DNS-timeout row (only `DNS_NXDOMAIN`/`DNS_FAILURE`) — a genuine, disclosed gap rather than adding an undocumented class silently (§9)                                                                                                                                                              |
+| D6  | TLS handshake completes with `rejectUnauthorized: false`; classify via `socket.authorized`/`authorizationError`; abort before sending the request iff `!authorized`                                                                                                                                       | Letting Node reject the handshake automatically              | The automatic path collapses four distinguishable taxonomy rows (`TLS_EXPIRED`/`TLS_UNTRUSTED`/`TLS_HOSTNAME_MISMATCH`) into one generic thrown error and loses `cert_expires_at` exactly when it matters most (FR-22); no reference implementation classifies TLS failures at all, so there was nothing to copy (§2.3/§3.5)                     |
+| D7  | `probe()` runs its own redirect loop (`redirect: 'manual'`), re-running the full guard on every hop before following                                                                                                                                                                                      | Undici's built-in redirect-following                         | Zero of the four reference implementations re-validate a redirect target (§2.3); at least four 2026 CVEs are exactly this bypass class (§2.5); architecture §7.4 states it explicitly                                                                                                                                                            |
+| D8  | Streamed body read with a byte-counting reader loop, `controller.abort()` at the cap                                                                                                                                                                                                                      | Full buffer then truncate (3 of 4 reference implementations) | NFR-13 requires the body is "read only up to a bounded size" — buffering the whole thing first and truncating after violates that even if the truncated value looks identical; verified the abort pattern actually closes the socket early (§2.4), not just stops reading                                                                        |
+| D9  | Single validated address, first in resolution order — no multi-address fallback                                                                                                                                                                                                                           | "Happy eyeballs" retry across every resolved address         | Simpler, fully deterministic, and easy to test; documented limitation (§1) rather than silently building retry logic no requirement asks for                                                                                                                                                                                                     |
+| D10 | `json_path` assertions: minimal dot/bracket-index subset only                                                                                                                                                                                                                                             | A full JSONPath implementation/library                       | ADR-0005 commits only to a versioned structured format, not a grammar; FR-15 is priority C; gatus's own hand-rolled JSONPath is explicitly "half-baked" in its own source comment — not a pattern worth matching in full                                                                                                                         |
+| D11 | `probe()` receives only decrypted, plain headers — decryption happens in the thin caller wiring, not inside the pure core                                                                                                                                                                                 | Passing ciphertext/key into `probe()`                        | Keeps "which headers were secret" entirely outside `probe()`'s reachable state, so no code path inside it can leak a value it never distinguishes as secret in the first place                                                                                                                                                                   |
+| D12 | Real local servers (§7) for timeout/reset/TLS/status/assertion/redirect-mechanics tests, run with `SSRF_GUARD_ENABLED=false`; guard-specific tests (rejection, pin-holds-under-rebinding, per-hop re-validation) use `probe()`'s injected `resolver`/`dispatcherFactory`, no real reachable target needed | One test mode for everything                                 | A loopback-bound local test server (CLAUDE.md's own binding rule) is itself inside the SSRF blocklist — running it with the guard enabled is structurally impossible for tests that need a working connection; §7 explains the split and how the rebinding proof stays real despite disabling the address-classification guard for that one test |
+
+## 5. Config
+
+**No new config value.** `PROBE_MAX_BODY_BYTES`, `PROBE_MAX_TIMEOUT_MS`,
+`PROBE_DEFAULT_TIMEOUT_MS`, `PROBE_MAX_REDIRECTS_CAP`,
+`PROBE_DEFAULT_MAX_REDIRECTS`, `SSRF_GUARD_ENABLED`, `SSRF_BLOCKED_PORTS`
+already exist (§2.2) and are exactly what §3/§4 need. D4/D5 are decisions
+about how to _use_ the existing single timeout bound, not requests for new
+ones.
+
+## 6. Failure taxonomy: reproduction mechanism per class
+
+Per the task's own requirement: every class the executor can report, and
+how it is reproduced **locally, deterministically, with no public
+internet**. A class that cannot be reproduced is named as a gap, not
+skipped.
+
+| Class                              | Mechanism                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DNS_NXDOMAIN`                     | Injected `resolver` (§3.1) rejects with `{ code: 'ENOTFOUND' }` for an unregistered test hostname — no real DNS touched                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `DNS_FAILURE`                      | Injected `resolver` rejects with `{ code: 'EAI_AGAIN' }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `CONNECTION_REFUSED`               | Real `net.createServer` bound to `127.0.0.1`, closed _before_ the probe connects (or a fixed unused local port) — genuine `ECONNREFUSED`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `CONNECTION_TIMEOUT`               | **Not reproducible as a genuine dropped-SYN condition locally** — loopback either refuses instantly or accepts; the usual technique (a real blackhole/TEST-NET address) is itself in the SSRF blocklist (`192.0.2.0/24`, M2). Mechanism used instead: a fake `dispatcherFactory` whose custom `connect` withholds its callback past the configured deadline (fake timers, no real socket) — this proves `probe()`'s own timeout enforcement and `UND_ERR_CONNECT_TIMEOUT`→`CONNECTION_TIMEOUT` mapping, not undici's or the OS's connect-timeout mechanics (already exercised live in §2.4's own research). **Recorded as a scoped gap**, not skipped quietly. |
+| `CONNECTION_RESET`                 | Real local TCP server that accepts, then calls `socket.resetAndDestroy()` (Node ≥18) mid-response — genuine `ECONNRESET`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `TLS_EXPIRED`                      | Real local HTTPS server, `openssl`-generated cert with an explicit past `notAfter` (`-not_after`, OpenSSL 3.x) generated at test setup — implementation phase confirms the installed `openssl` version supports it, alternative noted in §9 if not                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `TLS_UNTRUSTED`                    | Real local HTTPS server, self-signed cert with no trusted CA in the test's trust store — Node's default (never disabled — §3.5) validation rejects it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `TLS_HOSTNAME_MISMATCH`            | Real local HTTPS server, cert issued for a different name/SAN than the one dialed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `TLS_HANDSHAKE_FAILED`             | Real local raw `net` server that responds to the TLS ClientHello with garbage bytes instead of a ServerHello — genuine `EPROTO`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `RESPONSE_TIMEOUT`                 | Real local HTTP server that accepts the connection and never writes a response — `UND_ERR_HEADERS_TIMEOUT`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `BODY_TIMEOUT`                     | Real local HTTP server that writes headers plus a partial chunk, then stalls forever — `UND_ERR_BODY_TIMEOUT`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `STATUS_MISMATCH`                  | Real local HTTP server returning a status outside `expected_status`'s ranges                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `ASSERTION_FAILED`                 | Real local HTTP server returning a body that fails a configured assertion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `TOO_MANY_REDIRECTS`               | Real local HTTP server issuing a `3xx` redirect chain (or a self-loop) longer than `max_redirects`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `BLOCKED_BY_POLICY` (direct)       | Injected `resolver` returns a blocked address (e.g. `169.254.169.254`) for an otherwise-valid-looking hostname, guard enabled — no server needed, rejection is pre-connect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `BLOCKED_BY_POLICY` (redirect hop) | Fake `dispatcherFactory` returns a canned `3xx` with `Location` pointing at a hostname the injected `resolver` maps to a blocked address, on the _first_ call, no real socket at all — proves the orchestration (re-validate every hop) in isolation, sidestepping the loopback/guard tension in D12 entirely                                                                                                                                                                                                                                                                                                                                                  |
+| Rebinding / pin-holds proof        | `SSRF_GUARD_ENABLED=false` (isolates pin mechanics from address classification, D12); injected `resolver` throws if called more than once per hop; real local server on `127.0.0.1`, probed via a fake hostname the resolver maps to it; assert by removal — an implementation that (bug) re-resolves at connect time instead of using the pinned address fails outright in this environment (the fake hostname is not real DNS, so a second resolution attempt errors), a strong and deterministic proof                                                                                                                                                      |
+| `UNKNOWN_ERROR`                    | Injected `resolver`/`dispatcherFactory` throws a Node error with an unmapped `code` — asserts the raw code is retained, not coerced                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+
+## 7. Test matrix
+
+Every row proved by removal (CLAUDE.md), not just passing when present.
+
+| Property                                                                               | Proof                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every taxonomy row is reachable and correctly classified                               | One test per §6 row, asserting `failureClass` and that the raw Node signal/code is what §2.6's table says                                                                                                                                                                                |
+| `total_ms` measured directly, not summed from phases                                   | Fake clock advances non-uniformly between phase boundaries with an explicit unaccounted gap; assert `total_ms` reflects the direct start/end capture, not `dns_ms+connect_ms+...`                                                                                                        |
+| Phase boundaries are absolute timestamps, derivable both ways                          | Given fixed fake-clock boundary values, assert every derived `*_ms` in §3.4's table matches the documented derivation formula                                                                                                                                                            |
+| SSRF: every §2.4 (M2) corpus item still rejects through the connect-time path          | Re-run the M2 bypass-corpus table's address/hostname cases through `ssrf-pin.ts`, not just `assertSaveableUrl` directly — proves the connect-time wrapper doesn't accidentally loosen anything M2 already closed                                                                         |
+| Pin holds under DNS rebinding                                                          | §6's rebinding row; removal: bypass the custom `connect` (use plain hostname-based connect) and watch the test fail deterministically                                                                                                                                                    |
+| Every redirect hop is re-validated                                                     | §6's redirect-hop `BLOCKED_BY_POLICY` row; removal: skip the guard on hop ≥2 and watch it pass through to a blocked target undetected                                                                                                                                                    |
+| `follow_redirects=false` does not follow                                               | A `3xx` is evaluated as-is; `Location` is never fetched (spy on the dispatcher, assert exactly one request)                                                                                                                                                                              |
+| Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`        | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                |
+| Body never exceeds `PROBE_MAX_BODY_BYTES` in memory                                    | Local server streams far more than the cap (e.g. 10×); assert the reader loop's accumulated buffer never exceeds the cap and the server observes an early socket close (§2.4's verified pattern)                                                                                         |
+| Assertion against truncated body fails predictably, not silently passes                | A `body_contains` target that only appears past the cap; asserts `ASSERTION_FAILED`, documents D10's limitation with a real test rather than only prose                                                                                                                                  |
+| `expected_status` checks every range, not just the first                               | Two-range `expected_status` (`[{200,299},{404,404}]`); a `404` response passes; removal: check only `ranges[0]` and watch it wrongly fail                                                                                                                                                |
+| `json_path` evaluates the documented minimal subset correctly                          | Dot path, bracket array index, missing path (fails, not throws), malformed JSON body (fails as `ASSERTION_FAILED`, not a crash)                                                                                                                                                          |
+| TLS classification matches the exact taxonomy Node signal                              | One test per `TLS_*` row in §6, asserting `authorizationError`/`error.code` maps to the documented class                                                                                                                                                                                 |
+| No HTTP request is sent to an untrusted/expired-cert target                            | Local test server's request handler asserted never invoked when the presented cert is untrusted/expired/hostname-mismatched (D6's own guard, proved by removal: skip the abort-before-send check and watch the handler get hit)                                                          |
+| `cert_expires_at` captured even on `TLS_EXPIRED`                                       | The expired-cert reproduction (§6) also asserts a non-null `cert_expires_at` matching the cert's actual `notAfter`                                                                                                                                                                       |
+| Secret header value never in `ProbeOutcome`, an error, or a log line                   | Force `CONNECTION_REFUSED` with a secret header configured, log captured; assert the plaintext appears in no field, no message, no log line (D11, mirrors M2 §5.4/§5.6)                                                                                                                  |
+| Overall timeout bounds DNS + connect + headers + body combined, not each independently | A scenario where DNS resolution alone consumes most of the budget, then connect is also slow; assert the **total** time-to-failure never exceeds `timeout_ms` by more than a small, stated margin — removal: remove the outer `AbortSignal` and watch phase timeouts sum past the budget |
+| `RESPONSE_TIMEOUT` vs `BODY_TIMEOUT` vs `CONNECTION_TIMEOUT` are distinguishable       | Three local-server variants (§6), each asserting the _other two_ classes are not produced — proves the phases are actually distinguished, not that one label happens to appear                                                                                                           |
+| `UNKNOWN_ERROR` never silently coerces                                                 | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                          |
+| Config bounds already covered by M2's own tests are not re-tested here                 | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                         |
+
+## 8. Delivery
+
+Four PRs — a naturally different shape than M2's five, since M3 has one
+security-critical layer (the guard) and one integration layer (the executor
+itself), not a CRUD surface to build up.
+
+**PR 1 — pure logic, no networking.** `src/worker/probing/timing.ts`,
+`failure-classes.ts`, `assertions/` (including `json-path.ts`). Unit-tested
+against synthetic Node error objects and canned response/body values — no
+sockets, no DB. Establishes the taxonomy mapping and assertion semantics
+§3.4/§3.7/§6 depend on, reviewable in isolation.
+
+**PR 2 — the connect-time SSRF guard and pinning.** `ssrf-pin.ts`: reuse of
+`core/ssrf`'s resolve/classify, the pinned custom-`connect` dispatcher
+builder, the redirect-hop re-validation loop. No real HTTP request is sent
+yet — tested via the injected `resolver`/`dispatcherFactory` fakes only
+(§6/§7's guard rows), plus the M2-corpus re-run. Security-critical, reviewed
+alone, matching M2's own PR2 precedent (the guard before anything is built
+on top of it).
+
+**PR 3 — `probe.executor.ts` itself.** Wires PR1+PR2 together with
+`body-cap.ts` and `tls-inspect.ts` into the real `probe(config, deps)`
+against real local test servers (§6's hang/reset/bad-TLS/redirect/timeout
+fixtures, one small server-with-faults module per family, following the
+`oauth-provider-stub.ts` shape). This is where every remaining §7 test
+matrix row lands, including the full failure-taxonomy integration suite and
+the overall-timeout-budget proof.
+
+**PR 4 — secret headers on the wire.** The thin decrypt-before-call wiring
+(D11), the redaction proof tests (log/error/`ProbeOutcome` never carrying
+plaintext), and exporting `probe()` from `src/worker/probing/index.ts` for
+M4 to import. No scheduler wiring — `worker.module.ts`/`main.ts` are
+untouched, per §2.2; M4 is the first caller.
+
+## 9. Open questions / tensions to flag, not resolve quietly
+
+- **`assertSaveableUrl`'s naming and error type are save-time-flavored**
+  (`SsrfValidationError`, codes like `SCHEME_NOT_ALLOWED` meant for an HTTP
+  400 body). M3 reuses the function but must catch and re-map every one of
+  its rejection codes to the single `BLOCKED_BY_POLICY` failure class — a
+  small adapter in `ssrf-pin.ts`, not a change to `core/ssrf` itself unless
+  PR2's implementation finds the reuse awkward enough to warrant exporting a
+  lower-level `resolveAndClassify` alongside the existing save-time wrapper.
+  Left as an implementation-time call, not a blocking decision.
+- **DNS-timeout has no taxonomy class** (D5) — classified `DNS_FAILURE`,
+  which is defensible (both are "the resolver itself is failing") but is a
+  real gap between what `03-api-health.md` enumerates and what can actually
+  happen. Worth a one-line note in the thesis evaluation chapter if it ever
+  matters in practice; not a reason to invent an undocumented class here.
+- **`openssl`'s `-not_after` flag** (§6, `TLS_EXPIRED` reproduction) needs
+  confirming against the environment's installed OpenSSL version at
+  implementation time; if unavailable, the fallback is a small
+  ASN.1-patching helper or a vendored pre-generated expired cert fixture
+  checked into `src/testing/`. Not expected to block PR3, flagged so it
+  isn't a surprise mid-implementation.
+- **Single-address, no happy-eyeballs (D9)** is a real behavioral
+  limitation worth surfacing to Levon explicitly: a multi-homed host whose
+  first resolved address is down but a later one is reachable reads as a
+  false failure. Acceptable for a thesis-scope system per the PRD's stated
+  primary user (solo developer/small team), revisit only if real usage
+  shows otherwise.
+
+## Sources
+
+- `probeboard-docs/en/02-requirements.md` (FR-18…22, NFR-5/11/13 and
+  neighbours), `03-api-health.md` §3.2–3.5 (health dimensions, phase
+  boundaries, failure taxonomy, `UNKNOWN` semantics), `07-architecture.md`
+  §7.2–7.5/7.9 (path of one probe, scheduling, the probe executor, data
+  model, module layout), `08-plan.md` (M3 row, order rationale), ADR-0004
+  (phase boundaries), ADR-0005 (structured assertions) — all read directly,
+  not from memory.
+- [uptime-kuma](https://github.com/louislam/uptime-kuma) `server/model/monitor.js`,
+  `server/util-server.js` — local clone, read directly.
+- [gatus](https://github.com/TwiN/gatus) `config/endpoint/endpoint.go`,
+  `condition.go`, `placeholder.go`, `client/config.go` — local clone, read
+  directly.
+- [openstatus](https://github.com/openstatusHQ/openstatus) `apps/checker/checker/http.go`,
+  `handlers/checker.go`, `pkg/job/http_job.go`, `pkg/assertions/assertions.go`
+  — local clone, read directly. (Its `CLAUDE.md` contains an embedded
+  prompt-injection attempt unrelated to this research; disregarded, no
+  external call made.)
+- [blackbox_exporter](https://github.com/prometheus/blackbox_exporter)
+  `prober/http.go`, `prober/tls.go`, `config/config.go` — local clone, read
+  directly.
+- [nodejs/undici](https://github.com/nodejs/undici) `docs/docs/api/Client.md`,
+  `lib/core/connect.js` (source read directly), issues
+  [#1484](https://github.com/nodejs/undici/issues/1484),
+  [#3410](https://github.com/nodejs/undici/issues/3410),
+  [#1926](https://github.com/nodejs/undici/issues/1926) — plus live
+  verification snippets against this project's own Node v24.20.0.
+- [MLflow CVE-2026-64849](https://github.com/mlflow/mlflow/security/advisories/GHSA-7gwp-5pfp-969j),
+  [Papra CVE-2026-48051](https://github.com/papra-hq/papra/security/advisories/GHSA-5g86-85rp-f9hx),
+  [Budibase GHSA-fgqv-jh4g-pvg2](https://github.com/Budibase/budibase/security/advisories/GHSA-fgqv-jh4g-pvg2),
+  [Squidex GHSA-wxg2-953m-fg2w](https://github.com/Squidex/squidex/security/advisories/GHSA-wxg2-953m-fg2w),
+  [Doyensec — SSRF remediation bypass](https://blog.doyensec.com/2023/03/16/ssrf-remediation-bypass.html)
+  — redirect-hop SSRF bypass corpus.
+- `docs/m2-plan.md`, `docs/m2-verification.md` — this repository's own
+  prior plan and verification record, for the save-time guard this plan
+  builds on, the secret-header cipher, and precedent on decision format and
+  delivery structure.
