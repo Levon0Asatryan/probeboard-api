@@ -50,6 +50,11 @@ is a bug.
 - Flag read-modify-write on shared rows. Aggregate counters must be incremented
   inside SQL (`ON CONFLICT DO UPDATE SET x = table.x + 1`), never loaded into a
   worker, mutated and written back.
+- The same applies to a maintenance script, backfill or one-off repair: the
+  API stays up while it runs, so a read-compute-write over a live table needs
+  `SELECT ... FOR UPDATE`, a re-read of the locked value, and a barrier test
+  committing the competing write inside the window. "It only runs once" is
+  not an exemption.
 - Flag work claimed without `FOR UPDATE SKIP LOCKED` and a lease that expires.
   Two workers must never probe the same endpoint for one slot (NFR-3), and a
   dead worker's claim must become reclaimable (NFR-4).
@@ -89,6 +94,12 @@ is a bug.
   so `SSRF_BLOCKED_PORTS` must check the resolved port, not the URL string.
 - Flag a response body read without a byte cap, or a full body persisted.
   Bodies are bounded and used only for assertions (NFR-13).
+- Flag a user-supplied path, key or field name used to index an object
+  without an own-property check. Plain `value[segment]` access walks the
+  prototype chain, so `$.constructor.name` resolves against any object and a
+  JSON-path assertion whose path is absent from the response would report the
+  endpoint healthy. Use `Object.hasOwn()` for every object step and an
+  explicit bounds check for every array index.
 - Flag internal detail reaching an HTTP response: stack traces, SQL text, driver
   messages. Responses carry a stable `code` and a safe message; the cause goes
   to the log.
@@ -122,6 +133,11 @@ is a bug.
   a fatal uncaught exception — it is how a database restart once killed the api
   and every worker at once.
 - Flag a long-running loop that can exit silently when its work throws.
+- Flag traversal of a linked structure a library handed back, with no
+  termination guard. Node's detailed peer certificate makes a self-signed
+  root its own `issuerCertificate`, so "walk the chain" loops forever on an
+  ordinary trusted chain — and synchronously, so no timeout or abort can
+  fire. Stop on identity (issuer === current) or track visited nodes.
 
 ### Structure
 
@@ -187,6 +203,12 @@ is a bug.
 
 - Flag a bug fix with no test that fails without it.
 - Flag a focused or skipped test (`.only`, `.skip`).
+- Flag a `*.int.test.ts` that does not need PostgreSQL, or a socket-only test
+  hidden behind that suffix. `vitest.config.mts` excludes `*.int.test.ts`
+  from `npm test`/`npm run verify`, and `vitest.integration.mts` gives it a
+  Postgres `globalSetup`: here the suffix means "needs the database", not
+  "does I/O". A test that only needs a local socket belongs in the default
+  suite, where `verify` actually runs it.
 - Flag a test asserting on implementation detail rather than behaviour. This
   includes asserting a setup function (e.g. `setGlobalPrefix`) was _called_
   with the right argument instead of exercising the real running server, and
@@ -206,10 +228,10 @@ is a bug.
 
 ### Design docs / plans
 
-M3's plan (`docs/m3-plan.md`) went through nine review rounds and 36 fixed
-findings before a clean pass — most of them the same handful of mistake
-shapes repeating. Check for these explicitly before submitting a plan for
-review, not just after Codex finds them:
+M3's plan (`docs/m3-plan.md`) took twelve review rounds and 46 findings —
+33 of them P1 — before a clean pass, and they were the same handful of
+mistake shapes repeating. Check for these explicitly before submitting a
+plan for review, not just after Codex finds them:
 
 - **Flag a Node/Web-API behaviour claim taken from memory instead of run.**
   `fetch()` wraps transport errors in `.cause` rather than throwing them
@@ -259,3 +281,45 @@ review, not just after Codex finds them:
   edit done — the automated fix-cycle already learned to check
   `grep -rn` project-wide rather than trust a single edit's surrounding
   context; the same discipline applies within a single long document.
+- **Flag a new validation rule with no story for the data that predates it.**
+  M3 constrained the accepted `json_path` grammar at the DTO, which only runs
+  on the next create or update — every row M2 had already stored under the
+  old "any non-empty string" rule would have started failing every probe
+  forever the moment the evaluator read it. A constraint added to a schema
+  needs an answer for rows that already violate it: a repair step, a
+  compatibility path, or an explicit "none exist, and here is the query that
+  says so".
+- **Flag a fix specified in a mechanism that cannot carry it out.** That
+  repair was first written as a `*.up.sql` migration "calling the shared
+  grammar function" — the migrator hands SQL files straight to
+  `client.query` (`src/core/db/migrator/`), so a SQL file can never call
+  TypeScript. Check what the chosen mechanism can actually execute before
+  specifying work inside it.
+- **Flag a fix that writes state the shared contract cannot express.** The
+  same repair then marked bad assertions `enabled: false` — a key
+  `EndpointAssertion` does not have, the DTO schemas reject, and the
+  evaluator never reads, so the write would have changed nothing observable.
+  If a fix needs a new state, either add it to the shared type (with its
+  semantics, docs and tests) or use a state the contract already has.
+- **Flag "it's only a script, so the rules are softer".** That same audit is
+  a read-modify-write on a live table while the API serves traffic: it needs
+  the `SELECT ... FOR UPDATE`, the re-read inside the lock, and the barrier
+  test this file already demands of request-path code. Scripts, backfills
+  and migrations are not exempt from the Concurrency section.
+- **Flag a correction that was never itself reviewed as new work.** Eight of
+  M3's forty-six findings were defects in earlier fixes rather than in the
+  original draft. A fix is new design: run it through the same questions as
+  the thing it replaced — does the mechanism execute it, does it duplicate
+  what it was meant to unify, does it cover every sibling case, does it
+  leave a stale reference behind.
+- **Flag a claim verified against a runtime the project does not pin.** M3's
+  undici connector and timeout research ran on whatever Node the
+  environment happened to have (24) while `.nvmrc`, both `Dockerfile`
+  stages and every CI job pin 22. Check the pin before treating a live
+  experiment as evidence for the deployed runtime.
+- **Flag a design that re-breaks a rule already written in this file.** M3's
+  OpenAPI gap — `z.toJSONSchema` silently drops `.refine()`, so the document
+  advertises what the server rejects — is already a rule under
+  "Configuration and migrations" above, and the plan walked into it anyway.
+  Read the sections of this file that touch the area being designed while
+  designing it, not only while reviewing it.
