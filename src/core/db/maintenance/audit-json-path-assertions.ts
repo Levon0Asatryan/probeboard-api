@@ -63,7 +63,25 @@ export interface AuditOptions {
    * also could not be recorded.
    */
   onRemoved?: (entry: RemovedAssertion) => void;
+
+  /**
+   * Rows per scan page. Exposed so a test can cross a page boundary without
+   * seeding {@link SCAN_PAGE_SIZE} endpoints.
+   */
+  scanPageSize?: number;
 }
+
+/**
+ * Rows read per scan page.
+ *
+ * The scan cannot be one unbounded `SELECT`: it would materialize every
+ * endpoint's full assertions array in this process before repairing a single
+ * row, clean endpoints included. The endpoint quota allows 100,000 per user
+ * and nothing bounds a deployment, so the audit D48 makes mandatory before
+ * M4 starts probing is exactly the run that would exhaust memory, or hand
+ * PostgreSQL one enormous read, on the largest database.
+ */
+export const SCAN_PAGE_SIZE = 500;
 
 function isUnsupported(assertion: EndpointAssertion): boolean {
   return assertion.type === 'json_path' && !isSupportedJsonPath(assertion.path);
@@ -73,53 +91,77 @@ export async function auditJsonPathAssertions(
   db: Db,
   options: AuditOptions = {},
 ): Promise<RemovedAssertion[]> {
-  // An unlocked scan, only to decide which rows are worth locking: every row
-  // it nominates is re-read and re-judged under its own lock below, so a
-  // stale answer here costs at most one wasted lock and can never decide the
-  // rewrite. Locking every endpoint to inspect it would be the alternative.
-  const scanned = await db.selectFrom('endpoints').select(['id', 'assertions']).execute();
-  const candidates = scanned.filter((row) => row.assertions.some(isUnsupported)).map((r) => r.id);
-
+  const pageSize = options.scanPageSize ?? SCAN_PAGE_SIZE;
   const removed: RemovedAssertion[] = [];
+  let after: string | undefined;
 
-  for (const endpointId of candidates) {
-    // One transaction per row rather than one for the whole table: the API
-    // stays up while this runs, and a single long transaction would hold a
-    // lock on every endpoint for the duration.
-    const perRow = await db.transaction().execute(async (trx) => {
-      const row = await trx
-        .selectFrom('endpoints')
-        .select(['id', 'assertions'])
-        .where('id', '=', endpointId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!row) return [];
+  // Paged rather than one unbounded read, and each page is repaired before
+  // the next is fetched, so memory stays bounded by one page however large
+  // the table is.
+  //
+  // Keyset (`ORDER BY id`, `WHERE id > last`) rather than OFFSET: this scan
+  // runs while rows are being rewritten, and OFFSET re-counts from the start
+  // on every page. Paging on the primary key is stable because the audit
+  // never changes an id.
+  for (;;) {
+    // An unlocked scan, only to decide which rows are worth locking: every
+    // row it nominates is re-read and re-judged under its own lock below, so
+    // a stale answer here costs at most one wasted lock and can never decide
+    // the rewrite. Locking every endpoint to inspect it is the alternative.
+    const base = db
+      .selectFrom('endpoints')
+      .select(['id', 'assertions'])
+      .orderBy('id')
+      .limit(pageSize);
+    const page = await (after === undefined ? base : base.where('id', '>', after)).execute();
+    if (page.length === 0) break;
+    after = page[page.length - 1].id;
 
-      // Judged from the locked read, never from the scan above: this is a
-      // read-modify-write on a live table, so a concurrent PATCH committing
-      // between the two would otherwise be overwritten by a stale copy
-      // (docs/m3-plan.md D54, AGENTS.md "read-modify-write on shared rows").
-      const unsupported = row.assertions.filter(isUnsupported);
-      if (unsupported.length === 0) return [];
-      const kept = row.assertions.filter((assertion) => !isUnsupported(assertion));
+    const candidates = page.filter((row) => row.assertions.some(isUnsupported)).map((r) => r.id);
 
-      await options.onRowLocked?.(endpointId);
+    for (const endpointId of candidates) {
+      // One transaction per row rather than one for the whole table: the API
+      // stays up while this runs, and a single long transaction would hold a
+      // lock on every endpoint for the duration.
+      const perRow = await db.transaction().execute(async (trx) => {
+        const row = await trx
+          .selectFrom('endpoints')
+          .select(['id', 'assertions'])
+          .where('id', '=', endpointId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!row) return [];
 
-      await trx
-        .updateTable('endpoints')
-        .set({ assertions: JSON.stringify(kept), updated_at: new Date() })
-        .where('id', '=', endpointId)
-        .execute();
+        // Judged from the locked read, never from the scan above: this is a
+        // read-modify-write on a live table, so a concurrent PATCH committing
+        // between the two would otherwise be overwritten by a stale copy
+        // (docs/m3-plan.md D54, AGENTS.md "read-modify-write on shared rows").
+        const unsupported = row.assertions.filter(isUnsupported);
+        if (unsupported.length === 0) return [];
+        const kept = row.assertions.filter((assertion) => !isUnsupported(assertion));
 
-      return unsupported.map((assertion) => ({ endpointId, removed: assertion }));
-    });
+        await options.onRowLocked?.(endpointId);
 
-    // After the transaction resolves, which is after it commits: the record
-    // is emitted for work that is already durable, never for a rewrite that
-    // might still roll back.
-    for (const entry of perRow) options.onRemoved?.(entry);
+        await trx
+          .updateTable('endpoints')
+          .set({ assertions: JSON.stringify(kept), updated_at: new Date() })
+          .where('id', '=', endpointId)
+          .execute();
 
-    removed.push(...perRow);
+        return unsupported.map((assertion) => ({ endpointId, removed: assertion }));
+      });
+
+      // After the transaction resolves, which is after it commits: the record
+      // is emitted for work that is already durable, never for a rewrite that
+      // might still roll back.
+      for (const entry of perRow) options.onRemoved?.(entry);
+
+      removed.push(...perRow);
+    }
+
+    // A short page is the last one; without this the loop costs one extra
+    // empty round trip per run.
+    if (page.length < pageSize) break;
   }
 
   return removed;

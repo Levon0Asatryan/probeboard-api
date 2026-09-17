@@ -193,6 +193,35 @@ describe('auditJsonPathAssertions', () => {
     }
   });
 
+  it('repairs rows that fall beyond the first scan page', async () => {
+    // The scan is paged, so the rows it has not read yet must still be
+    // repaired. A single unbounded read would pass this trivially; a scan
+    // that reads only its first page silently leaves every later endpoint
+    // reporting permanent false downtime, which is D48's whole problem
+    // reintroduced on large databases.
+    await setAssertions(endpointId, [UNSUPPORTED, BODY]);
+    for (const n of [1, 2, 3, 4]) {
+      const extra = await endpoints.create({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        max_redirects: 5,
+        method: 'GET',
+        path: `/paged-${String(n)}`,
+      });
+      await setAssertions(extra.id, [UNSUPPORTED, BODY]);
+    }
+
+    // Five endpoints, two per page: three pages, the last one short.
+    const removed = await auditJsonPathAssertions(ctx.db, { scanPageSize: 2 });
+
+    expect(removed).toHaveLength(5);
+    const repaired = await ctx.db.selectFrom('endpoints').select(['id', 'assertions']).execute();
+    expect(repaired).toHaveLength(5);
+    for (const row of repaired) expect(row.assertions).toEqual([BODY]);
+  });
+
   it('has already emitted a record for every removal it committed when a run dies partway', async () => {
     // Each removal is permanent the moment its own per-row transaction
     // commits. A record emitted only once the whole scan returns therefore
