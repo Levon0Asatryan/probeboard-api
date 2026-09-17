@@ -205,12 +205,29 @@ Conclusions that shape §4:
    `authorizationError`) neither of them needs, because neither classifies
    TLS failures at all.
 
-### 2.4 Node/undici mechanics — verified directly against this project's own Node version
+### 2.4 Node/undici mechanics — verified directly, against the wrong Node version (correction below)
 
-Verified live (Node v24.20.0, project's own version; undici 7.29.0 bundled,
-cross-checked against standalone `undici@7.29.1`), not taken from
-documentation alone — the same standard M2's SSRF investigation set for
-`new URL()` behaviour.
+Verified live against Node v24.20.0 (undici 7.29.0 bundled, cross-checked
+against standalone `undici@7.29.1`), not taken from documentation alone —
+the same standard M2's SSRF investigation set for `new URL()` behaviour.
+**This was not, as first written here, "the project's own version" — the
+project pins Node 22** (`.nvmrc`, both `Dockerfile` stages, every CI job's
+`node-version: 22`); v24.20.0 was simply whatever the investigation
+environment happened to run, unchecked against the repo's own pin (**D40
+— Codex finding, PR #40, correcting this section's own false claim**).
+Undici's internal connector/timeout/error-wrapping behaviour is bundled
+per Node version and is not guaranteed identical across majors — the live
+findings below (custom-`connect` mechanics, `connectTimeout`/
+`headersTimeout`/`bodyTimeout` phase coverage, the streaming body-cap
+pattern) establish that the _design_ is sound against _a_ real Node/undici
+pair, but do not by themselves prove it against Node 22, the runtime this
+system actually deploys on. Recorded as a required implementation-phase
+step, not re-run here: PR2/PR3 re-verify each snippet below (§7's own test
+suite, run via `npm ci`/`npm test` on the pinned Node 22, already
+guarantees this incidentally — but the specific live-snippet claims this
+section makes are re-confirmed explicitly before being relied on, not
+assumed to transfer unchanged from v24.20.0). §9 records this as a
+standing implementation-phase check.
 
 - **Pinning a connection to a validated IP while keeping correct SNI/cert
   hostname verification for the _original_ hostname**: a custom `connect`
@@ -361,7 +378,7 @@ export interface ProbeDeps {
     resolve4(host: string): Promise<string[]>;
     resolve6(host: string): Promise<string[]>;
   };
-  clock: { now(): number };
+  clock: { wallClock(): number; monotonic(): number };
   dispatcherFactory: (opts: PinnedConnectOptions) => Dispatcher;
 }
 
@@ -370,7 +387,9 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
 
 Matches architecture §7.4's signature exactly. The three dependencies are
 what make every non-network-condition test deterministic and fast (§7):
-`resolver` replaces real DNS, `clock` replaces `Date.now()`/timers,
+`resolver` replaces real DNS, `clock` replaces `Date.now()`/`performance.now()`
+(§3.4, D37 — two functions, not one, since wall-clock and monotonic time
+answer different questions and neither substitutes for the other),
 `dispatcherFactory` replaces the real undici transport for orchestration
 tests that don't need a real socket at all (redirect-hop re-validation,
 DNS-rebinding-pin proof). Production wiring (M4) supplies real
@@ -595,14 +614,21 @@ that body's underlying socket open and the per-hop dispatcher never
 closed. Repeated redirected probes would retain one socket and one
 dispatcher per hop until the OS or GC eventually reclaimed them, scaling
 worker connection usage with the redirect cap on every redirected probe.
-Fixed: each hop's `finally` block cancels the response body
-(`response.body?.cancel()`) and destroys that hop's `Agent`
+Fixed: each **intermediate** hop's `finally` block cancels that hop's
+response body (`response.body?.cancel()`) and destroys that hop's `Agent`
 (`agent.close()`/`destroy()`) before the loop proceeds to validate and
-fetch the next hop — success, failure, or another redirect alike. Tested
-(§7): a redirect whose `3xx` response body never ends — asserts the
-intermediate socket is observed closed (the local test server's own
-`close` event) before the next hop's request goes out, not merely
-eventually.
+fetch the next hop — success, failure, or another redirect alike. This
+applies only to a hop whose body was never read by anything (every
+redirect hop except the last, by construction — a `3xx` response is
+inspected for its `Location` header and discarded, never handed to
+`body-cap.ts`); **the final hop's body goes through §3.6's reader instead,
+and D38 covers its cleanup separately** — calling `response.body.cancel()`
+on the final response after `body-cap.ts` already holds a reader on it is
+exactly the bug D38 fixes, not something this paragraph's cleanup should
+also attempt. Tested (§7): a redirect whose `3xx` response body never
+ends — asserts the intermediate socket is observed closed (the local test
+server's own `close` event) before the next hop's request goes out, not
+merely eventually.
 
 **A redirect hop's guard failure is not automatically `BLOCKED_BY_POLICY`
 (D29 — Codex finding, PR #40, P1).** D14 (§3.3 above) already maps
@@ -661,6 +687,29 @@ needing undici's `diagnostics_channel`:
 never summed from the derived phases, which `03-api-health.md` §3.3.2
 explicitly says will not add up to it (~10% discrepancy is expected and
 not a bug).
+
+**Every boundary is captured as a pair — a wall-clock timestamp and a
+monotonic one — and duration arithmetic uses only the monotonic pair
+(D37 — Codex finding, PR #40).** The first draft's boundaries were plain
+`Date.now()`-derived values used both for "when did this happen"
+(`startedAt`, the value a user correlates with their own logs) and for
+every `*_ms` subtraction. `Date.now()` is wall-clock time, which an NTP
+step or an operator adjusting the system clock mid-probe can move
+backward or forward — a probe that took 200ms of real elapsed time (the
+undici timers enforcing `timeout_ms` already measure real elapsed time
+internally, unaffected by this) could report a negative or wildly
+inflated `total_ms` purely from the clock moving under it, corrupting a
+measurement NFR-5 already commits to being trustworthy. Fixed:
+`deps.clock` exposes `wallClock()` (`Date.now()`, used only for the
+user-facing `startedAt`) and `monotonic()` (`performance.now()`/
+`process.hrtime.bigint()` in production, never affected by a system clock
+step); every boundary in the list above is captured from `monotonic()`,
+and every `*_ms` — `total_ms` included — is a monotonic-to-monotonic
+subtraction. `startedAt` is the one field derived from `wallClock()`,
+captured once, at `probe_start`, and never subtracted from anything.
+Tested (§7): a fake clock whose `monotonic()` advances normally while
+`wallClock()` jumps backward mid-probe — asserts `total_ms` is unaffected
+and positive, only `startedAt` reflects the wall-clock value at start.
 
 **`total_ms` needs a boundary that exists on every path, including ones
 DNS never touches (D24 — Codex finding, PR #40, P1).** The first draft
@@ -864,8 +913,9 @@ but the loop has no way yet to know that — it has not seen the reader's
 D23/D28's conservative truncation checks then fail `body_not_contains`/
 `json_path` assertions that a correctly-identified complete body would
 have passed, reporting a healthy endpoint as down. Fixed: the reader loop
-requests one byte **past** the cap before deciding — it keeps reading
-until either `done: true` arrives at or before `PROBE_MAX_BODY_BYTES` bytes
+keeps reading past the cap **by one more `reader.read()` call** before
+deciding — not "one more byte" (D39 below corrects that framing) — until
+either `done: true` arrives at or before `PROBE_MAX_BODY_BYTES` bytes
 (genuinely complete, not truncated, even if the count lands exactly on the
 cap) or a chunk pushes the count _past_ the cap (genuinely truncated, only
 the first `PROBE_MAX_BODY_BYTES` bytes are kept, `controller.abort()`
@@ -873,6 +923,55 @@ called now). Tested (§7): a response whose exact byte length equals
 `PROBE_MAX_BODY_BYTES` — asserts not truncated, and that a `body_not_contains`
 assertion the complete body satisfies is not wrongly failed by D23's
 conservative check.
+
+**A `ReadableStream` reader yields whole chunks, not requested byte counts
+— the retained buffer is capped exactly, the transient peak during one
+read is not, and that is disclosed rather than silently assumed away (D39
+— Codex finding, PR #40).** D30's "one byte past the cap" framing was
+imprecise: `reader.read()` has no mechanism to request a specific byte
+count — it returns whatever the next transport chunk is, which can be
+larger than the remaining allowance by however large that one chunk is
+(bounded by the underlying transport's own chunk sizing — TCP/TLS record
+and socket buffer limits, not attacker-inflatable to arbitrary size, but
+not `0` either). D30's own test ("assert the reader loop's accumulated
+buffer never exceeds the cap") checks only the final, sliced buffer, which
+_is_ correctly capped — it does not observe the transient peak during the
+one over-read call, where memory held briefly can exceed
+`PROBE_MAX_BODY_BYTES` by up to one chunk's size before the slice happens.
+Stated explicitly rather than left as an unstated gap: the **retained,
+asserted-against buffer** is an exact cap (D30's own guarantee, unchanged);
+the **transient peak** during the single deciding read is bounded by one
+transport chunk, not by `PROBE_MAX_BODY_BYTES` exactly — a bounded,
+disclosed overshoot, not an unbounded one, and not a mechanism a hostile
+endpoint can inflate arbitrarily since chunk size is the transport's
+choice, not the response body's declared length. Tested (§7): in addition
+to D30's final-buffer assertion, a test asserts the _peak_ bytes read
+during the single over-cap call stays within a stated, small multiple of
+`PROBE_MAX_BODY_BYTES` (e.g. cap plus one maximum transport chunk), not
+merely that the final retained buffer is correct.
+
+**`body-cap.ts` releases its reader; nothing else calls
+`response.body.cancel()` on the same response afterward (D38 — Codex
+finding, PR #40, P1).** A `ReadableStreamDefaultReader` keeps its stream
+**locked** even after `read()` returns `done: true` — the lock is only
+released by `reader.releaseLock()` or by cancelling through the reader
+itself (`reader.cancel()`), never by calling `.cancel()` on the _stream_
+a reader already holds. D26's redirect-hop cleanup calling
+`response.body?.cancel()` unconditionally would, if ever applied to the
+**final** response (the one `body-cap.ts` itself read), reject with
+`TypeError: Invalid state: ReadableStream is locked` — an unhandled
+rejection if not awaited, or a spurious failure of an otherwise-successful
+probe if it is. D26 (above) is now scoped to intermediate hops only, which
+were never read and are never locked, so this case cannot arise from that
+path — but `body-cap.ts` itself must still leave the stream in a clean
+state: after its own loop finishes (`done: true`, or the cap-triggered
+abort), it calls `reader.releaseLock()` before returning, never
+`response.body.cancel()` on a reader it still holds. Tested (§7): a
+successful probe with a normal-sized body, and a truncated one, both
+assert the response's body/reader ends in a released, non-errored state —
+proven by removal: skip the release and watch a _second_ attempt to
+read or cancel that same response (simulating a hypothetical future
+caller) reject with the "stream is locked" error this finding names.
 
 **Bodyless responses (D18 — Codex finding, PR #40).** The first draft's
 unconditional `response.body.getReader()` assumed a body always exists.
@@ -959,6 +1058,30 @@ variants already typed in `src/core/db/types.ts:128-131`:
   a genuine structural difference (an extra key, a different array
   element) asserts `ASSERTION_FAILED`.
 
+  **The save-time schema must reject the syntax this evaluator doesn't
+  support (D36 — Codex finding, PR #40).** M2's shared `assertionSchema`
+  (`src/api/registration/dto/endpoint-fields.ts`) accepts any non-empty
+  `path` string for a `json_path` assertion — it was written before this
+  plan fixed the evaluator's grammar to the minimal dot/bracket-index
+  subset (above), so a monitor configured with an expression the evaluator
+  cannot express (`$.items[*].id`, a wildcard; anything with a filter or
+  recursive descent) passes create/update validation cleanly and then
+  fails **every** probe forever as `ASSERTION_FAILED` — a monitor an
+  operator believes is correctly configured silently reports permanent
+  downtime. This is exactly the failure mode ADR-0005 exists to prevent
+  ("validation happens at save time, by construction... the API needs the
+  same schema the worker does") — the schema and the evaluator drifted
+  apart because M2 shipped before M3's exact grammar existed to validate
+  against. Fixed: `assertionSchema`'s `path` field is constrained to the
+  same grammar `json-path.ts` implements (a regex or small parser matching
+  dot segments and integer bracket indices only), rejecting anything else
+  with a clear validation error at save time — a small, surgical change to
+  M2's already-shipped schema, made in this milestone since M3 is what
+  defines the grammar being validated (the same reasoning that already put
+  the SSRF check next to what it enforces, D6's precedent). Tested (§7): a
+  wildcard path (`$.items[*].id`) is rejected at the DTO layer with a
+  validation error, not accepted and left to fail silently at probe time.
+
 - Status-code check (not itself an `EndpointAssertion` variant, but the same
   evaluation moment): `expected_status: StatusRange[]` — the response
   status must fall inside **any** range in the array, `STATUS_MISMATCH`
@@ -1022,6 +1145,11 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D33 | `json_path`'s `equals` is compared with a recursive structural-equality function — primitives by value, arrays in order, objects by key set regardless of insertion order                                                                                                                                                                                                                                                     | Leaving the comparison unspecified (reference `===` or a stringified comparison, both wrong)                                   | `equals` already types as `unknown` and the schema accepts nested objects/arrays; `===` fails every object/array comparison, and `JSON.stringify` equality is sensitive to key order, either way turning a correct response into a false `ASSERTION_FAILED` and reported downtime (Codex finding, PR #40)                                                                                                               |
 | D34 | Every Node-signal mapping reads `error.cause?.code ?? error.code` (a bounded cause-chain walk), never `error.code` directly                                                                                                                                                                                                                                                                                                   | Reading `error.code` on the caught error itself                                                                                | `fetch()` wraps transport errors — a refused connection throws a `TypeError` whose own `code` is `undefined`, the real `ECONNREFUSED` is on `error.cause.code`; every mapping in this plan would have reported `UNKNOWN_ERROR` in practice, a gap synthetic-error unit tests alone cannot catch (Codex finding, PR #40, P1)                                                                                             |
 | D35 | The runtime deadline is `min(endpoint.timeout_ms, PROBE_MAX_TIMEOUT_MS)`, computed once per probe, not the persisted `endpoint.timeout_ms` alone                                                                                                                                                                                                                                                                              | Trusting the save-time-validated persisted value                                                                               | Save-time validation runs once; if `PROBE_MAX_TIMEOUT_MS` is later lowered, already-saved endpoints are never revalidated, letting an old probe exceed the current system ceiling — the same gap D27 already closes for the redirect budget (Codex finding, PR #40)                                                                                                                                                     |
+| D36 | M2's `assertionSchema` (`endpoint-fields.ts`) constrained to the same `json_path` grammar the evaluator implements, rejecting wildcards/filters/recursive descent at save time                                                                                                                                                                                                                                                | Leaving the schema accepting any non-empty path string                                                                         | The schema predates this plan's exact grammar; a monitor configured with an unsupported expression passes validation and then fails every probe forever, silently reporting permanent downtime (Codex finding, PR #40)                                                                                                                                                                                                  |
+| D37 | Boundaries captured as a monotonic value (`performance.now()`/`hrtime`) for all duration arithmetic; a separate wall-clock value only for the user-facing `startedAt`                                                                                                                                                                                                                                                         | One `Date.now()`-based clock for both                                                                                          | An NTP step or manual clock adjustment mid-probe could make `total_ms`/phase durations negative or inflated even though the undici timers enforcing `timeout_ms` measure real elapsed time correctly (Codex finding, PR #40)                                                                                                                                                                                            |
+| D38 | `body-cap.ts` releases its reader (`releaseLock()`) after finishing; nothing calls `response.body.cancel()` on the same response afterward                                                                                                                                                                                                                                                                                    | D26's cleanup applying uniformly to every hop including the final one                                                          | A `ReadableStreamDefaultReader` keeps its stream locked even after `done: true`; cancelling the stream while a reader still holds it throws `TypeError: Invalid state: ReadableStream is locked`, turning a successful probe into a failure (Codex finding, PR #40, P1)                                                                                                                                                 |
+| D39 | The transient peak during the single over-cap read is disclosed as bounded by one transport chunk, not asserted to equal the cap exactly                                                                                                                                                                                                                                                                                      | Only testing the final, sliced buffer                                                                                          | A `ReadableStream` reader yields whole chunks, not a requested byte count — D30's "one byte past the cap" framing was imprecise; the retained buffer stays exactly capped, but peak memory during the deciding read can transiently exceed it by one chunk's size, real but bounded and worth stating rather than leaving implicit (Codex finding, PR #40)                                                              |
+| D40 | §2.4's live Node/undici verification is flagged as run on the wrong Node version and required to be re-confirmed on Node 22 before PR2/PR3 rely on it                                                                                                                                                                                                                                                                         | Treating the v24.20.0 findings as verified against the project's own runtime                                                   | The investigation ran on whatever Node the environment happened to have, not the project's actual pin (`.nvmrc`, both Dockerfile stages, every CI job: Node 22) — undici is bundled per Node version and its internals aren't guaranteed identical across majors (Codex finding, PR #40)                                                                                                                                |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
 | D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
@@ -1070,52 +1198,56 @@ skipped.
 
 Every row proved by removal (CLAUDE.md), not just passing when present.
 
-| Property                                                                                    | Proof                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every taxonomy row is reachable and correctly classified                                    | One test per §6 row, asserting `failureClass` and that the raw Node signal/code is what §2.6's table says                                                                                                                                                                                     |
-| `total_ms` measured directly, not summed from phases                                        | Fake clock advances non-uniformly between phase boundaries with an explicit unaccounted gap; assert `total_ms` reflects the direct start/end capture, not `dns_ms+connect_ms+...`                                                                                                             |
-| Phase boundaries are absolute timestamps, derivable both ways                               | Given fixed fake-clock boundary values, assert every derived `*_ms` in §3.4's table matches the documented derivation formula                                                                                                                                                                 |
-| SSRF: every §2.4 (M2) corpus item still rejects through the connect-time path               | Re-run the M2 bypass-corpus table's address/hostname cases through `ssrf-pin.ts`, not just `assertSaveableUrl` directly — proves the connect-time wrapper doesn't accidentally loosen anything M2 already closed                                                                              |
-| Pin holds under DNS rebinding                                                               | §6's rebinding row (corrected design, D12/PR #40); removal: bypass the custom `connect` (use plain hostname-based connect) and watch the test fail deterministically                                                                                                                          |
-| Every redirect hop is re-validated                                                          | §6's redirect-hop `BLOCKED_BY_POLICY` row; removal: skip the guard on hop ≥2 and watch it pass through to a blocked target undetected                                                                                                                                                         |
-| Effective headers are dropped on a cross-origin or scheme-downgrade redirect                | D15: second local server records every header it receives; a redirect from server A (with a secret header configured) to server B on a different port asserts B never received it; removal: skip the origin check and watch B receive it                                                      |
-| Effective headers survive a same-origin redirect                                            | A redirect back to the _same_ scheme/host/port (e.g. a path-only redirect) still carries the configured headers — proves D15 doesn't over-strip                                                                                                                                               |
-| `URL_UNRESOLVABLE` is never reported as `BLOCKED_BY_POLICY`                                 | D14's mapping table, one test per row (clean-empty → `DNS_NXDOMAIN`, `cause.code==='EAI_AGAIN'` → `DNS_FAILURE`, unmapped cause → `UNKNOWN_ERROR` with the raw code retained); removal: collapse the mapping back to one class (the first draft's bug) and watch these fail                   |
-| `follow_redirects=false` does not follow                                                    | A `3xx` is evaluated as-is; `Location` is never fetched (spy on the dispatcher, assert exactly one request)                                                                                                                                                                                   |
-| Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`             | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                     |
-| Body never exceeds `PROBE_MAX_BODY_BYTES` in memory                                         | Local server streams far more than the cap (e.g. 10×); assert the reader loop's accumulated buffer never exceeds the cap and the server observes an early socket close (§2.4's verified pattern)                                                                                              |
-| Assertion against truncated body fails predictably, not silently passes                     | A `body_contains` target that only appears past the cap; asserts `ASSERTION_FAILED`, documents D10's limitation with a real test rather than only prose                                                                                                                                       |
-| `body_not_contains` fails conservatively on a truncated body (D23), never a false pass      | A response larger than the cap with the forbidden string placed after the cap boundary; asserts `ASSERTION_FAILED`, not success; removal: run the same check as `body_contains` and watch it wrongly report the endpoint healthy                                                              |
-| `json_path` fails conservatively on a truncated body (D28), never a coincidental pass       | A body whose truncated prefix is valid JSON but whose full response is not; asserts `ASSERTION_FAILED`, not a value read from the prefix; removal: parse the truncated buffer directly (the first draft's bug) and watch it wrongly succeed                                                   |
-| A redirect hop's DNS failure classifies `DNS_FAILURE`, not `BLOCKED_BY_POLICY` (D29)        | A redirect to a hostname that fails DNS resolution; asserts `DNS_FAILURE`; removal: hardcode every hop guard failure to `BLOCKED_BY_POLICY` (the first draft's bug) and watch it wrongly report policy refusal                                                                                |
-| An exact-cap-length body is not marked truncated (D30)                                      | A response whose true byte length equals `PROBE_MAX_BODY_BYTES` exactly; asserts not truncated, and that a `body_not_contains` assertion the complete body satisfies passes; removal: abort the instant the count reaches the cap (the first draft's bug) and watch it wrongly mark truncated |
-| `expected_status` checks every range, not just the first                                    | Two-range `expected_status` (`[{200,299},{404,404}]`); a `404` response passes; removal: check only `ranges[0]` and watch it wrongly fail                                                                                                                                                     |
-| `json_path` evaluates the documented minimal subset correctly                               | Dot path, bracket array index, missing path (fails, not throws), malformed JSON body (fails as `ASSERTION_FAILED`, not a crash)                                                                                                                                                               |
-| TLS classification matches the exact taxonomy Node signal                                   | One test per `TLS_*` row in §6, asserting `authorizationError`/`error.code` maps to the documented class                                                                                                                                                                                      |
-| No HTTP request is sent to an untrusted/expired-cert target                                 | Local test server's request handler asserted never invoked when the presented cert is untrusted/expired/hostname-mismatched (D6's own guard, proved by removal: skip the abort-before-send check and watch the handler get hit)                                                               |
-| `cert_expires_at` captured even on `TLS_EXPIRED`                                            | The expired-cert reproduction (§6) also asserts a non-null `cert_expires_at` matching the cert's actual `notAfter`                                                                                                                                                                            |
-| Secret header value never in `ProbeOutcome`, an error, or a log line                        | Force `CONNECTION_REFUSED` with a secret header configured, log captured; assert the plaintext appears in no field, no message, no log line (D11, mirrors M2 §5.4/§5.6)                                                                                                                       |
-| Overall timeout bounds DNS + connect + headers + body combined, not each independently      | A scenario where DNS resolution alone consumes most of the budget, then connect is also slow; assert the **total** time-to-failure never exceeds `timeout_ms` by more than a small, stated margin — removal: remove the outer `AbortSignal` and watch phase timeouts sum past the budget      |
-| Overall abort mid-phase classifies by the last recorded boundary, not `UNKNOWN_ERROR`       | D16: DNS+connect consume most of the budget, headers then stall past what's left; asserts `RESPONSE_TIMEOUT`; removal: classify every outer-abort by Node's raw `AbortError` alone and watch it report `UNKNOWN_ERROR` instead                                                                |
-| Overall abort during DNS resolution classifies `DNS_FAILURE`, not `CONNECTION_TIMEOUT`      | D16: the deadline fires while `resolver.resolve4/6` is still pending (only `dns_start` recorded); asserts `DNS_FAILURE`; removal: check `connect_done` before `dns_done` (the first draft's order) and watch it wrongly report `CONNECTION_TIMEOUT`                                           |
-| Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                           | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value   |
-| `total_ms` present for an IP-literal target and a pre-DNS policy rejection (D24)            | An IP-literal URL (no DNS call at all) and a scheme-rejected URL (`ftp://...`, fails before resolution); both assert a present, correct `total_ms`; removal: anchor on `dns_start` instead of `probe_start` and watch both report a missing value                                             |
-| A stalled TLS handshake classifies `CONNECTION_TIMEOUT`, not `RESPONSE_TIMEOUT` (D25)       | Local `https:` server accepts the TCP connect, never sends a ServerHello; asserts `CONNECTION_TIMEOUT`; removal: treat `connect_done`/`tls_done` as interchangeable (the first draft's bug) and watch it wrongly report `RESPONSE_TIMEOUT`                                                    |
-| Redirect hops close their body and dispatcher before the next hop (D26)                     | A redirect whose `3xx` body never ends; asserts the intermediate socket is observed closed before the next hop's request is sent; removal: skip the `finally` cleanup and watch the intermediate socket stay open past the next hop's request                                                 |
-| Only real redirect statuses are followed; `304` is evaluated as-is (D27)                    | A `304` response with a `Location` header present; asserts it is evaluated (status/assertions), never followed; removal: follow any `3xx` carrying `Location` and watch a `304` get chased instead of evaluated                                                                               |
-| Redirect method rewrite matches the Fetch spec, not a flat replay (D27)                     | A `POST` endpoint redirected by `302` re-issues as `GET`; the same endpoint redirected by `307` re-issues as `POST`; removal: always replay the configured method and watch the `302` case wrongly re-`POST`                                                                                  |
-| Method rewrite drops body-describing headers too (D31)                                      | A same-origin `301` from a `POST` endpoint configured with `Content-Type`; asserts the rewritten `GET` request carries no `Content-Type`; removal: rewrite only the method and watch `Content-Type` survive onto the bodyless `GET`                                                           |
-| D31's removal is case-insensitive (D32)                                                     | A same-origin `301` from a `POST` endpoint configured with lowercase `content-type`; asserts it is absent from the rewritten `GET`; removal: compare names as exact strings (the first draft's bug) and watch the lowercase variant survive                                                   |
-| `json_path` `equals` uses structural equality on nested values (D33)                        | Two objects with identical keys in different insertion order assert equal; a genuine structural difference (extra key, different array element) asserts `ASSERTION_FAILED`; removal: compare with `===` (or `JSON.stringify`) and watch the reordered-keys case wrongly fail                  |
-| Failure classes are read from real, wrapped `fetch()` errors, not only synthetic ones (D34) | A real `CONNECTION_REFUSED` and a real undici timeout, both produced by an actual `fetch()` call against a local server, each asserting the correct class; removal: read `error.code` directly (the first draft's bug) and watch both report `UNKNOWN_ERROR`                                  |
-| The runtime deadline is clamped to the current `PROBE_MAX_TIMEOUT_MS` (D35)                 | An endpoint saved with `timeout_ms` above a since-lowered `PROBE_MAX_TIMEOUT_MS`; asserts the probe's actual deadline is the current, lower maximum; removal: use `endpoint.timeout_ms` directly and watch the probe run past the current system ceiling                                      |
-| Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                     | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                  |
-| A real local server is reachable with `SSRF_GUARD_ENABLED=false` (D19)                      | Every D12 real-server test in §7 depends on this; a dedicated test asserts a probe against a plain loopback server succeeds under the disabled flag; removal: reuse the disabled guard's empty address list as the pin target and watch every real-server test fail with no address to dial   |
-| Headers-arrived-then-stall classifies `BODY_TIMEOUT`, not `RESPONSE_TIMEOUT` (D21)          | Local server writes headers immediately, then stalls past the deadline; asserts `BODY_TIMEOUT` and that `ttfb_ms` reflects only the pre-headers wait; removal: define `first_byte` at the body reader's first chunk (the first draft's bug) and watch it misreport `RESPONSE_TIMEOUT`         |
-| `total_ms` is present for every failure class, not only success/`BLOCKED_BY_POLICY` (D22)   | One row per §6 failure class asserts a non-null `total_ms`, with `CONNECTION_REFUSED` (pre-connect) and a mid-body reset/timeout (post-first-byte) named explicitly; removal: use only `transfer_done`/`blocked_at` for the formula and watch every other class report a missing `total_ms`   |
-| `RESPONSE_TIMEOUT` vs `BODY_TIMEOUT` vs `CONNECTION_TIMEOUT` are distinguishable            | Three local-server variants (§6), each asserting the _other two_ classes are not produced — proves the phases are actually distinguished, not that one label happens to appear                                                                                                                |
-| `UNKNOWN_ERROR` never silently coerces                                                      | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                               |
-| Config bounds already covered by M2's own tests are not re-tested here                      | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                              |
+| Property                                                                                         | Proof                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every taxonomy row is reachable and correctly classified                                         | One test per §6 row, asserting `failureClass` and that the raw Node signal/code is what §2.6's table says                                                                                                                                                                                     |
+| `total_ms` measured directly, not summed from phases                                             | Fake clock advances non-uniformly between phase boundaries with an explicit unaccounted gap; assert `total_ms` reflects the direct start/end capture, not `dns_ms+connect_ms+...`                                                                                                             |
+| Phase boundaries are absolute timestamps, derivable both ways                                    | Given fixed fake-clock boundary values, assert every derived `*_ms` in §3.4's table matches the documented derivation formula                                                                                                                                                                 |
+| SSRF: every §2.4 (M2) corpus item still rejects through the connect-time path                    | Re-run the M2 bypass-corpus table's address/hostname cases through `ssrf-pin.ts`, not just `assertSaveableUrl` directly — proves the connect-time wrapper doesn't accidentally loosen anything M2 already closed                                                                              |
+| Pin holds under DNS rebinding                                                                    | §6's rebinding row (corrected design, D12/PR #40); removal: bypass the custom `connect` (use plain hostname-based connect) and watch the test fail deterministically                                                                                                                          |
+| Every redirect hop is re-validated                                                               | §6's redirect-hop `BLOCKED_BY_POLICY` row; removal: skip the guard on hop ≥2 and watch it pass through to a blocked target undetected                                                                                                                                                         |
+| Effective headers are dropped on a cross-origin or scheme-downgrade redirect                     | D15: second local server records every header it receives; a redirect from server A (with a secret header configured) to server B on a different port asserts B never received it; removal: skip the origin check and watch B receive it                                                      |
+| Effective headers survive a same-origin redirect                                                 | A redirect back to the _same_ scheme/host/port (e.g. a path-only redirect) still carries the configured headers — proves D15 doesn't over-strip                                                                                                                                               |
+| `URL_UNRESOLVABLE` is never reported as `BLOCKED_BY_POLICY`                                      | D14's mapping table, one test per row (clean-empty → `DNS_NXDOMAIN`, `cause.code==='EAI_AGAIN'` → `DNS_FAILURE`, unmapped cause → `UNKNOWN_ERROR` with the raw code retained); removal: collapse the mapping back to one class (the first draft's bug) and watch these fail                   |
+| `follow_redirects=false` does not follow                                                         | A `3xx` is evaluated as-is; `Location` is never fetched (spy on the dispatcher, assert exactly one request)                                                                                                                                                                                   |
+| Redirect count capped at `min(endpoint.max_redirects, PROBE_MAX_REDIRECTS_CAP)`                  | A redirect chain one hop longer than the cap; `TOO_MANY_REDIRECTS`; removal: raise the cap check off-by-one and watch it under/over-count                                                                                                                                                     |
+| Body never exceeds `PROBE_MAX_BODY_BYTES` in memory                                              | Local server streams far more than the cap (e.g. 10×); assert the reader loop's accumulated buffer never exceeds the cap and the server observes an early socket close (§2.4's verified pattern)                                                                                              |
+| Assertion against truncated body fails predictably, not silently passes                          | A `body_contains` target that only appears past the cap; asserts `ASSERTION_FAILED`, documents D10's limitation with a real test rather than only prose                                                                                                                                       |
+| `body_not_contains` fails conservatively on a truncated body (D23), never a false pass           | A response larger than the cap with the forbidden string placed after the cap boundary; asserts `ASSERTION_FAILED`, not success; removal: run the same check as `body_contains` and watch it wrongly report the endpoint healthy                                                              |
+| `json_path` fails conservatively on a truncated body (D28), never a coincidental pass            | A body whose truncated prefix is valid JSON but whose full response is not; asserts `ASSERTION_FAILED`, not a value read from the prefix; removal: parse the truncated buffer directly (the first draft's bug) and watch it wrongly succeed                                                   |
+| A redirect hop's DNS failure classifies `DNS_FAILURE`, not `BLOCKED_BY_POLICY` (D29)             | A redirect to a hostname that fails DNS resolution; asserts `DNS_FAILURE`; removal: hardcode every hop guard failure to `BLOCKED_BY_POLICY` (the first draft's bug) and watch it wrongly report policy refusal                                                                                |
+| An exact-cap-length body is not marked truncated (D30)                                           | A response whose true byte length equals `PROBE_MAX_BODY_BYTES` exactly; asserts not truncated, and that a `body_not_contains` assertion the complete body satisfies passes; removal: abort the instant the count reaches the cap (the first draft's bug) and watch it wrongly mark truncated |
+| `expected_status` checks every range, not just the first                                         | Two-range `expected_status` (`[{200,299},{404,404}]`); a `404` response passes; removal: check only `ranges[0]` and watch it wrongly fail                                                                                                                                                     |
+| `json_path` evaluates the documented minimal subset correctly                                    | Dot path, bracket array index, missing path (fails, not throws), malformed JSON body (fails as `ASSERTION_FAILED`, not a crash)                                                                                                                                                               |
+| TLS classification matches the exact taxonomy Node signal                                        | One test per `TLS_*` row in §6, asserting `authorizationError`/`error.code` maps to the documented class                                                                                                                                                                                      |
+| No HTTP request is sent to an untrusted/expired-cert target                                      | Local test server's request handler asserted never invoked when the presented cert is untrusted/expired/hostname-mismatched (D6's own guard, proved by removal: skip the abort-before-send check and watch the handler get hit)                                                               |
+| `cert_expires_at` captured even on `TLS_EXPIRED`                                                 | The expired-cert reproduction (§6) also asserts a non-null `cert_expires_at` matching the cert's actual `notAfter`                                                                                                                                                                            |
+| Secret header value never in `ProbeOutcome`, an error, or a log line                             | Force `CONNECTION_REFUSED` with a secret header configured, log captured; assert the plaintext appears in no field, no message, no log line (D11, mirrors M2 §5.4/§5.6)                                                                                                                       |
+| Overall timeout bounds DNS + connect + headers + body combined, not each independently           | A scenario where DNS resolution alone consumes most of the budget, then connect is also slow; assert the **total** time-to-failure never exceeds `timeout_ms` by more than a small, stated margin — removal: remove the outer `AbortSignal` and watch phase timeouts sum past the budget      |
+| Overall abort mid-phase classifies by the last recorded boundary, not `UNKNOWN_ERROR`            | D16: DNS+connect consume most of the budget, headers then stall past what's left; asserts `RESPONSE_TIMEOUT`; removal: classify every outer-abort by Node's raw `AbortError` alone and watch it report `UNKNOWN_ERROR` instead                                                                |
+| Overall abort during DNS resolution classifies `DNS_FAILURE`, not `CONNECTION_TIMEOUT`           | D16: the deadline fires while `resolver.resolve4/6` is still pending (only `dns_start` recorded); asserts `DNS_FAILURE`; removal: check `connect_done` before `dns_done` (the first draft's order) and watch it wrongly report `CONNECTION_TIMEOUT`                                           |
+| Multi-hop timing: final-hop phases, first-hop-to-last total (D17)                                | A two-hop redirect, first hop artificially slow, second fast; `connect_ms`/`tls_ms`/`ttfb_ms` reflect only the fast second hop, `total_ms` is large enough to include the slow first; removal: report the first hop's boundaries instead and watch `connect_ms` wrongly show the slow value   |
+| `total_ms` present for an IP-literal target and a pre-DNS policy rejection (D24)                 | An IP-literal URL (no DNS call at all) and a scheme-rejected URL (`ftp://...`, fails before resolution); both assert a present, correct `total_ms`; removal: anchor on `dns_start` instead of `probe_start` and watch both report a missing value                                             |
+| A stalled TLS handshake classifies `CONNECTION_TIMEOUT`, not `RESPONSE_TIMEOUT` (D25)            | Local `https:` server accepts the TCP connect, never sends a ServerHello; asserts `CONNECTION_TIMEOUT`; removal: treat `connect_done`/`tls_done` as interchangeable (the first draft's bug) and watch it wrongly report `RESPONSE_TIMEOUT`                                                    |
+| Redirect hops close their body and dispatcher before the next hop (D26)                          | A redirect whose `3xx` body never ends; asserts the intermediate socket is observed closed before the next hop's request is sent; removal: skip the `finally` cleanup and watch the intermediate socket stay open past the next hop's request                                                 |
+| Only real redirect statuses are followed; `304` is evaluated as-is (D27)                         | A `304` response with a `Location` header present; asserts it is evaluated (status/assertions), never followed; removal: follow any `3xx` carrying `Location` and watch a `304` get chased instead of evaluated                                                                               |
+| Redirect method rewrite matches the Fetch spec, not a flat replay (D27)                          | A `POST` endpoint redirected by `302` re-issues as `GET`; the same endpoint redirected by `307` re-issues as `POST`; removal: always replay the configured method and watch the `302` case wrongly re-`POST`                                                                                  |
+| Method rewrite drops body-describing headers too (D31)                                           | A same-origin `301` from a `POST` endpoint configured with `Content-Type`; asserts the rewritten `GET` request carries no `Content-Type`; removal: rewrite only the method and watch `Content-Type` survive onto the bodyless `GET`                                                           |
+| D31's removal is case-insensitive (D32)                                                          | A same-origin `301` from a `POST` endpoint configured with lowercase `content-type`; asserts it is absent from the rewritten `GET`; removal: compare names as exact strings (the first draft's bug) and watch the lowercase variant survive                                                   |
+| `json_path` `equals` uses structural equality on nested values (D33)                             | Two objects with identical keys in different insertion order assert equal; a genuine structural difference (extra key, different array element) asserts `ASSERTION_FAILED`; removal: compare with `===` (or `JSON.stringify`) and watch the reordered-keys case wrongly fail                  |
+| Failure classes are read from real, wrapped `fetch()` errors, not only synthetic ones (D34)      | A real `CONNECTION_REFUSED` and a real undici timeout, both produced by an actual `fetch()` call against a local server, each asserting the correct class; removal: read `error.code` directly (the first draft's bug) and watch both report `UNKNOWN_ERROR`                                  |
+| The runtime deadline is clamped to the current `PROBE_MAX_TIMEOUT_MS` (D35)                      | An endpoint saved with `timeout_ms` above a since-lowered `PROBE_MAX_TIMEOUT_MS`; asserts the probe's actual deadline is the current, lower maximum; removal: use `endpoint.timeout_ms` directly and watch the probe run past the current system ceiling                                      |
+| A wildcard `json_path` is rejected at save time, not left to fail silently (D36)                 | `POST`/`PATCH` an endpoint with `path: "$.items[*].id"`; asserts a validation error, not `201`/`200`; removal: accept any non-empty path (the current schema) and watch it save cleanly then fail every probe                                                                                 |
+| `total_ms` is unaffected by a wall-clock jump mid-probe (D37)                                    | Fake clock: `monotonic()` advances normally, `wallClock()` jumps backward between two boundaries; asserts `total_ms` stays positive and correct, only `startedAt` reflects the wall-clock value at start; removal: derive durations from `wallClock()` and watch `total_ms` go negative       |
+| The final response's stream ends released, not double-cancelled (D38)                            | A successful probe and a truncated one both assert the response ends in a released, non-errored state; removal: call `response.body.cancel()` on the final response after `body-cap.ts` already holds its reader and watch it reject with "stream is locked"                                  |
+| The transient over-cap read peak stays within one chunk of the cap, not literally one byte (D39) | Asserts peak bytes read during the single over-cap call stays within a stated small multiple of `PROBE_MAX_BODY_BYTES`, not only that the final retained buffer is correct                                                                                                                    |
+| Bodyless responses (`HEAD`, `204`) succeed without a reader crash (D18)                          | A `HEAD` probe and a `204` response, each asserting success with an empty body buffer and a recorded `transfer_done`; removal: call `getReader()` unconditionally and watch both throw instead of completing                                                                                  |
+| A real local server is reachable with `SSRF_GUARD_ENABLED=false` (D19)                           | Every D12 real-server test in §7 depends on this; a dedicated test asserts a probe against a plain loopback server succeeds under the disabled flag; removal: reuse the disabled guard's empty address list as the pin target and watch every real-server test fail with no address to dial   |
+| Headers-arrived-then-stall classifies `BODY_TIMEOUT`, not `RESPONSE_TIMEOUT` (D21)               | Local server writes headers immediately, then stalls past the deadline; asserts `BODY_TIMEOUT` and that `ttfb_ms` reflects only the pre-headers wait; removal: define `first_byte` at the body reader's first chunk (the first draft's bug) and watch it misreport `RESPONSE_TIMEOUT`         |
+| `total_ms` is present for every failure class, not only success/`BLOCKED_BY_POLICY` (D22)        | One row per §6 failure class asserts a non-null `total_ms`, with `CONNECTION_REFUSED` (pre-connect) and a mid-body reset/timeout (post-first-byte) named explicitly; removal: use only `transfer_done`/`blocked_at` for the formula and watch every other class report a missing `total_ms`   |
+| `RESPONSE_TIMEOUT` vs `BODY_TIMEOUT` vs `CONNECTION_TIMEOUT` are distinguishable                 | Three local-server variants (§6), each asserting the _other two_ classes are not produced — proves the phases are actually distinguished, not that one label happens to appear                                                                                                                |
+| `UNKNOWN_ERROR` never silently coerces                                                           | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                               |
+| Config bounds already covered by M2's own tests are not re-tested here                           | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                              |
 
 ## 8. Delivery
 
@@ -1124,10 +1256,12 @@ security-critical layer (the guard) and one integration layer (the executor
 itself), not a CRUD surface to build up.
 
 **PR 1 — pure logic, no networking.** `src/worker/probing/utils/timing.ts`,
-`utils/failure-classes.ts`, `assertions/` (including `json-path.ts`). Unit-tested
-against synthetic Node error objects and canned response/body values — no
-sockets, no DB. Establishes the taxonomy mapping and assertion semantics
-§3.4/§3.7/§6 depend on, reviewable in isolation.
+`utils/failure-classes.ts`, `assertions/` (including `json-path.ts`), plus
+D36's small constraint on M2's `assertionSchema`
+(`src/api/registration/dto/endpoint-fields.ts`) to the same path grammar.
+Unit-tested against synthetic Node error objects and canned response/body
+values — no sockets, no DB. Establishes the taxonomy mapping and assertion
+semantics §3.4/§3.7/§6 depend on, reviewable in isolation.
 
 **PR 2 — the connect-time SSRF guard and pinning.** A small, additive
 change to `core/ssrf/host-validator.ts` (D13's injectable `resolver`
@@ -1157,6 +1291,10 @@ untouched, per §2.2; M4 is the first caller.
 
 ## 9. Open questions / tensions to flag, not resolve quietly
 
+- **Re-verify §2.4's live Node/undici findings on Node 22 before relying on
+  them (D40)** — the investigation ran them on v24.20.0 by environment
+  accident, not the project's actual pin. Required before PR2/PR3 build on
+  the custom-`connect`/timeout-phase mechanics those findings describe.
 - **`assertSaveableUrl`'s naming and error type are still save-time-flavored**
   (`SsrfValidationError`, codes like `SCHEME_NOT_ALLOWED` meant for an HTTP
   400 body) even after D13/D14 — M3 catches and remaps every rejection code
@@ -1220,7 +1358,9 @@ untouched, per §2.2; M4 is the first caller.
   [#1484](https://github.com/nodejs/undici/issues/1484),
   [#3410](https://github.com/nodejs/undici/issues/3410),
   [#1926](https://github.com/nodejs/undici/issues/1926) — plus live
-  verification snippets against this project's own Node v24.20.0.
+  verification snippets against Node v24.20.0 — **not** the project's
+  actual Node 22 pin; §2.4/D40 corrects this and requires re-verification
+  on Node 22 before implementation relies on it.
 - [MLflow CVE-2026-64849](https://github.com/mlflow/mlflow/security/advisories/GHSA-7gwp-5pfp-969j),
   [Papra CVE-2026-48051](https://github.com/papra-hq/papra/security/advisories/GHSA-5g86-85rp-f9hx),
   [Budibase GHSA-fgqv-jh4g-pvg2](https://github.com/Budibase/budibase/security/advisories/GHSA-fgqv-jh4g-pvg2),
