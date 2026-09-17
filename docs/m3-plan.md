@@ -1185,6 +1185,59 @@ variants already typed in `src/core/db/types.ts:128-131`:
   test (below) and the evaluator's own tests both exercise that same
   function, not independent reimplementations.
 
+  **D36/D42 stop new rows from getting an unsupported path — they do
+  nothing for rows M2 already saved (D48 — Codex finding, PR #40, P1).**
+  M2 shipped and merged (`docs/tracker.md`) before this plan's exact
+  grammar existed; any endpoint an operator configured with a `json_path`
+  assertion outside the accepted subset before M3 lands has already been
+  validated and stored under M2's "any non-empty string" rule. The DTO
+  constraint (D36/D42) only runs on a future create/update — it cannot
+  reach back and revalidate a row already sitting in the table. Once M4's
+  scheduler starts calling `probe()` against that row, the assertion
+  evaluates via the same shared grammar, finds it unsupported, and reports
+  `ASSERTION_FAILED` on every single probe forever — the exact
+  false-permanent-downtime failure mode D36 exists to prevent, just moved
+  from "at save" to "at first probe" for whatever was saved before this PR
+  merged. Fixed: migration `0007_json_path_assertion_audit` (the next free
+  number, per `CLAUDE.md`) runs in the same PR as the schema constraint and
+  finds every `endpoints.assertions` entry with `type = 'json_path'` whose
+  `path` fails the shared grammar (the same `core` function D42 defines,
+  called from the migration, not reimplemented a third time). A path that
+  cannot be automatically rewritten into the accepted subset is not
+  silently dropped or left to fail forever either — the migration disables
+  (`enabled: false`) only that specific assertion entry within the
+  endpoint's `assertions` array (the endpoint itself, and its other
+  assertions and status checks, keep probing normally) and the migration's
+  own output logs exactly which endpoint/assertion it touched, for the
+  operator to fix manually. Losing one assertion's enforcement is a
+  smaller, visible harm than an endpoint reporting permanent false
+  downtime with no indication why. Tested (§7, and as an integration test
+  against the migration itself): seed a pre-migration row with an
+  unsupported `json_path` path (`$.items[*].id`) directly via SQL
+  (bypassing the DTO, simulating genuine legacy data), run the migration,
+  assert that specific assertion is disabled and every other
+  assertion/status check on that endpoint is untouched.
+
+  **The restricted grammar must be documented in OpenAPI, not only enforced
+  (D49 — Codex finding, PR #40, P1).** `assertionSchema`'s new constraint
+  (D36/D42) is a `.refine()`-style predicate (a call into the shared `core`
+  grammar function), and this repository's own review rules already name
+  the exact failure this produces: "an OpenAPI schema generated from a Zod
+  type that uses `.refine()`... `z.toJSONSchema` silently drops `.refine()`,
+  so the generated doc marks fields optional [or here, unconstrained] that
+  the server actually requires" (`AGENTS.md`). Left as D36/D42 first
+  specified it, the generated `openapi.yaml` would keep advertising `path`
+  as any non-empty string — including `$.items[*].id` — while the server
+  now answers `400`, exactly the documented-vs-real drift this repo has a
+  standing rule against. Fixed: `src/api/openapi/document.ts` gets a
+  hand-written `pattern` (or an equivalent manual JSON Schema override) for
+  the `json_path` assertion's `path` field, matching the shared grammar,
+  in the same PR as the DTO change — not a follow-up. Tested (§7): the
+  existing document-drift test pattern (M2's `document.test.ts` precedent)
+  walks the generated schema and asserts the documented `path` constraint
+  actually rejects the same wildcard example the DTO rejects, so the two
+  cannot silently diverge again.
+
 - Status-code check (not itself an `EndpointAssertion` variant, but the same
   evaluation moment): `expected_status: StatusRange[]` — the response
   status must fall inside **any** range in the array, `STATUS_MISMATCH`
@@ -1260,6 +1313,8 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D45 | Every per-hop boundary (`connect`/`tls`/`first_byte`/`transfer_done`/`dns`) is cleared at the start of each hop's attempt, including a hop that never completes                                                                                                                                                                                                                                                               | Assuming "describes only the final hop" (D17) happens automatically                                                            | A redirect's `3xx` sets `first_byte` for that hop (it has headers); a later hop that stalls before its own headers would otherwise be classified using the previous hop's stale `first_byte`, misreading `RESPONSE_TIMEOUT` as `BODY_TIMEOUT` (Codex finding, PR #40)                                                                                                                                                   |
 | D46 | The discard-and-cancel rule (D26) applies to any hop whose response isn't the one evaluated by `body-cap.ts` — every followed intermediate hop, and the terminal over-budget `3xx` that exceeds `max_redirects`                                                                                                                                                                                                               | Scoping D26 to "every hop except the last iteration"                                                                           | The over-budget `3xx` is the last loop iteration but is not followed and never reaches `body-cap.ts` either — discarded like an intermediate hop, just for a different reason; left uncancelled, a streaming body could delay `TOO_MANY_REDIRECTS` until the overall deadline (Codex finding, PR #40, P1)                                                                                                               |
 | D47 | Delivery text (§8 PR2) matches the corrected `utils/` tree (D20): `worker/probing/utils/ssrf-pin.ts`, not `worker/probing/ssrf-pin.ts`                                                                                                                                                                                                                                                                                        | A stale path left over from before D20's module-layout fix                                                                     | The delivery instructions would otherwise reintroduce the exact structure violation D20 fixed, at the one place implementation actually reads from (Codex finding, PR #40, P1)                                                                                                                                                                                                                                          |
+| D48 | Migration `0007_json_path_assertion_audit` disables any pre-existing `json_path` assertion that fails the shared grammar, logging which endpoint/assertion it touched                                                                                                                                                                                                                                                         | Leaving M2-era rows unvalidated                                                                                                | D36/D42 only constrain future saves; a row M2 already accepted with unsupported syntax would evaluate via the same grammar at first probe and report `ASSERTION_FAILED` forever — the exact permanent-false-downtime failure moved from save time to probe time (Codex finding, PR #40, P1)                                                                                                                             |
+| D49 | `document.ts` gets a manual `pattern` override for the `json_path` `path` field, proven by a document-drift test                                                                                                                                                                                                                                                                                                              | Relying on `z.toJSONSchema` to document the `.refine()`-based constraint                                                       | `z.toJSONSchema` silently drops `.refine()` — an already-documented rule in this repo's own `AGENTS.md`; left unfixed, `openapi.yaml` would keep advertising any non-empty path while the server returns `400` (Codex finding, PR #40, P1)                                                                                                                                                                              |
 | D18 | `body-cap.ts` checks `response.body === null` before calling `getReader()`; a null body records `transfer_done` immediately with an empty buffer                                                                                                                                                                                                                                                                              | An unconditional reader loop                                                                                                   | `HEAD` responses and null-body statuses (`204`/`205`/`304`) have `response.body === null` per the Fetch spec — the first draft's loop would have thrown instead of producing a successful outcome (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D19 | An SSRF guard disabled at a given hop falls back to an unpinned, hostname-based connector for that hop, instead of reusing the (empty) address list `assertSaveableUrl` returns when disabled                                                                                                                                                                                                                                 | Treating a disabled guard's `addresses: []` as the pin target                                                                  | The whole real-local-server slice of D12's test strategy runs with the guard disabled and would otherwise have nothing to dial at all (Codex finding, PR #40) — "disabled" means skip probeboard's own SSRF machinery, not pin to nothing, matching the flag's own existing config comment                                                                                                                              |
 | D20 | Every non-NestJS helper (`ssrf-pin.ts`, `timing.ts`, `body-cap.ts`, `tls-inspect.ts`, `failure-classes.ts`, the renamed `utils/probe.ts`) lives in `probing/utils/`, plain kebab-case names                                                                                                                                                                                                                                   | Files at the module root with a `.executor.ts`-style suffix                                                                    | Violated `CLAUDE.md`'s structure rules directly (Codex finding, PR #40, citing AGENTS.md's Structure section): a supporting file at a module root instead of its role folder, and a role suffix that names no real NestJS construct — `probe()` and everything it depends on are deliberately framework-free                                                                                                            |
@@ -1355,6 +1410,8 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | DTO and evaluator share one `json_path` grammar (D42)                                            | A unit test on `src/core/assertions/json-path-grammar.ts` fixes the accepted/rejected set once; the DTO rejection test and the evaluator's own tests both call this same function; removal: reintroduce a second, independent regex in the DTO and watch the two definitions diverge on a case only one of them handles |
 | A wildcard `json_path` is rejected at save time (D36/D42)                                        | `POST`/`PATCH` an endpoint with `path: "$.items[*].id"`; asserts a validation error, not `201`/`200`; removal: accept any non-empty path (the current schema) and watch it save cleanly then fail every probe                                                                                                           |
 | `http/registration.http` carries a valid and a rejected `json_path` example (D43)                | The collection's own examples are runnable against the real server; a valid `json_path` assertion creates successfully, an unsupported one (`$.items[*].id`) gets `400`                                                                                                                                                 |
+| A pre-existing unsupported `json_path` assertion is disabled, not left to fail every probe (D48) | A row seeded directly via SQL (bypassing the DTO) with `path: "$.items[*].id"`; run migration `0007`; assert that assertion is disabled and every other assertion/status check on the endpoint is unaffected; removal: skip the migration and watch a probe against that row report `ASSERTION_FAILED` forever          |
+| The documented `json_path` `path` schema matches the enforced grammar (D49)                      | Document-drift test: the generated `openapi.yaml` schema for `path` rejects the same wildcard example (`$.items[*].id`) the DTO rejects; removal: rely on `z.toJSONSchema` alone (drops the `.refine()`) and watch the documented schema accept what the server rejects                                                 |
 | A stalled DNS resolver does not hang `probe()` past the deadline (D44)                           | Injected resolver that never settles; asserts `probe()` returns within the configured deadline, classified `DNS_FAILURE`; removal: await the resolver directly with no race and watch `probe()` hang indefinitely                                                                                                       |
 | A DNS result arriving after the deadline is discarded, not used to overwrite the outcome (D44)   | Injected resolver settles just after the deadline fires; asserts the already-decided `DNS_FAILURE` outcome is unchanged, and the late resolution does not surface as an unhandled rejection                                                                                                                             |
 | A hop that stalls after a prior hop succeeded classifies by its own boundaries (D45)             | Two-hop redirect: hop 1 succeeds (sets `first_byte`), hop 2 stalls waiting for headers; asserts `RESPONSE_TIMEOUT`, not `BODY_TIMEOUT`; removal: skip clearing per-hop boundaries and watch hop 2 misclassify using hop 1's stale `first_byte`                                                                          |
@@ -1378,8 +1435,11 @@ itself), not a CRUD surface to build up.
 D42's shared grammar at `src/core/assertions/json-path-grammar.ts` and the
 one-line change wiring M2's `assertionSchema`
 (`src/api/registration/dto/endpoint-fields.ts`) to call it instead of
-accepting any non-empty string, and `http/registration.http` updated with
-a valid and a rejected `json_path` example (D43 — Codex finding, PR #40:
+accepting any non-empty string, plus a manual OpenAPI `pattern` override
+for the `path` field (D49) and a document-drift test proving it, migration
+`0007_json_path_assertion_audit` disabling any pre-existing unsupported
+`json_path` assertion (D48), and `http/registration.http` updated with a
+valid and a rejected `json_path` example (D43 — Codex finding, PR #40:
 PR1 changes the accepted request shape for both endpoint creation and
 update via D36/D42's new rejection, and `http/registration.http` currently
 has no `json_path` example at all; a changed request shape ships with its
