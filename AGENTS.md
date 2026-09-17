@@ -203,3 +203,59 @@ is a bug.
   copy logic) proven only by a single fresh build. Require a test or CI step
   that reproduces the real sequence the bug needs: build twice without
   cleaning, or clean → build → delete `dist` → build again.
+
+### Design docs / plans
+
+M3's plan (`docs/m3-plan.md`) went through nine review rounds and 36 fixed
+findings before a clean pass — most of them the same handful of mistake
+shapes repeating. Check for these explicitly before submitting a plan for
+review, not just after Codex finds them:
+
+- **Flag a Node/Web-API behaviour claim taken from memory instead of run.**
+  `fetch()` wraps transport errors in `.cause` rather than throwing them
+  directly (`error.code` on the caught error is `undefined`; the real code
+  is one level down). A `ReadableStream` reader stays locked after
+  `done: true` — cancelling the stream through anything but that reader
+  throws. `reader.read()` yields whole transport chunks, not a requested
+  byte count. `dns.promises.resolve4`/`resolve6` accept no `AbortSignal`.
+  Each of these produced a real M3 finding because the plan stated the API's
+  behaviour as if it were the obviously-simpler version. Verify with a live
+  snippet against the actual dependency (M2's SSRF investigation and M3's
+  §2.4 both did this correctly for other claims) rather than asserting from
+  general familiarity.
+- **Flag a cleanup/ownership rule stated per-mechanism instead of per-case.**
+  M3 separately wrote "close the reader" and "close the dispatcher, except
+  the last hop" and "cancel the redirect body, except the last hop" as three
+  independent rules, each plausible alone — none of them accounted for what
+  the _other_ two implied about the one case they all touch (the final
+  hop's resources), and one of the three miscounted which response is
+  "the last hop" in the first place (the terminal over-budget redirect is
+  the last loop iteration, but is not the one that's evaluated — the same
+  gap in different phrasing that keeps producing these findings). When a
+  resource has more than one rule about when it's released, write out who
+  owns closing it in _every_ terminal case as one table or list, not as
+  separate prose paragraphs that each sound complete alone.
+- **Flag a fix that duplicates the thing it was fixing instead of sharing
+  it.** M3's first fix for a schema/evaluator grammar mismatch added a
+  second, independent copy of the grammar into the API layer, because the
+  worker's copy isn't importable from there (`core`/`api`/`worker`,
+  ADR-0006) — recreating the exact drift the fix was for, one layer deeper.
+  When a fix needs the same logic in two layers that can't import each
+  other, the fix is a new `src/core/` module both call, never a second
+  implementation of the same rule.
+- **Flag a fix applied to one instance of a pattern without checking for
+  siblings.** A redirect method rewritten to `GET` needed its
+  body-describing headers dropped too (a Fetch-spec detail two separate
+  findings caught in sequence, not one). A header-removal rule needed to be
+  case-insensitive because the codebase already case-folds header names
+  elsewhere for the same reason. Before calling a fix complete, grep the
+  rest of the document/code for the same shape of case and confirm the fix
+  covers all of them, not only the one a reviewer already named.
+- **Flag a renamed file, path, or type left stale anywhere else in the same
+  document.** A module-layout correction changed one file's declared path
+  and missed two other places that still named the old one, including the
+  delivery section implementation would actually read from. After any
+  rename, `grep` the whole document for the old name before calling the
+  edit done — the automated fix-cycle already learned to check
+  `grep -rn` project-wide rather than trust a single edit's surrounding
+  context; the same discipline applies within a single long document.

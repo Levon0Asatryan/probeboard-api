@@ -35,6 +35,9 @@ Applies to every chat, with or without a handoff prompt. The report
 - Plan first: `docs/mN-plan.md` (investigation, decisions, data model, HTTP
   surface, security properties and how each is proved, PR breakdown). The
   orchestrator validates it, Levon approves it. No implementation before that.
+  Before opening the plan PR, self-review it against `AGENTS.md`'s "Design
+  docs / plans" section — the same mistake shapes recur across milestones,
+  and catching them before Codex does is cheaper than nine review rounds.
 - Check `git config user.email` is `levonasatryan1098@gmail.com`.
 - Branch from the latest `origin/main`, then `npm ci`. Dependencies differ
   between branches, and a stale `node_modules` fails the pre-commit typecheck
