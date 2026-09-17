@@ -2,7 +2,18 @@
  * One-time repair of `json_path` assertions stored before the supported
  * grammar existed.
  *
- *   npm run audit:json-path-assertions
+ *   npm run audit:json-path-assertions        # a checkout, with dev deps
+ *   npm run audit:json-path-assertions:dist   # the shipped image
+ *
+ * Two entries because the operator step runs where the audit is deployed,
+ * and the runtime image cannot run the first one: the Dockerfile copies only
+ * `dist/` and installs with `npm ci --omit=dev`, so neither this `.ts` file
+ * nor the dev-only `tsx` binary exists there. The `:dist` entry runs the
+ * compiled `dist/.../audit-json-path-assertions.cli.js`, which the build
+ * does emit, the same way `start:api` runs `dist/api/main.js`. Inside a
+ * container with no npm wrapper, that is:
+ *
+ *   docker compose exec api node dist/core/db/maintenance/audit-json-path-assertions.cli.js
  *
  * Run once against each deployed database after the grammar constraint
  * ships and before the scheduler starts probing (docs/m3-plan.md D48/D50).

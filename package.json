@@ -17,6 +17,7 @@
     "migrate": "tsx --env-file-if-exists=.env src/core/db/migrator/cli.ts up",
     "migrate:down": "tsx --env-file-if-exists=.env src/core/db/migrator/cli.ts down",
     "audit:json-path-assertions": "tsx --env-file-if-exists=.env src/core/db/maintenance/audit-json-path-assertions.cli.ts",
+    "audit:json-path-assertions:dist": "node dist/core/db/maintenance/audit-json-path-assertions.cli.js",
     "openapi": "tsx --env-file-if-exists=.env src/api/openapi/cli.ts",
     "openapi:check": "tsx --env-file-if-exists=.env src/api/openapi/cli.ts --check",
     "test": "vitest run",

@@ -1302,6 +1302,18 @@ variants already typed in `src/core/db/types.ts:128-131`:
     real `loadConfig()`, real pool; `src/core/db/migrator/cli.ts` is the
     precedent), so it imports the real `core` grammar function directly.
     One grammar, still one copy.
+  - **It ships a second entry, `audit:json-path-assertions:dist`, that runs
+    the compiled CLI (D58 — Codex finding, PR #43, P1).** The `tsx` entry
+    above cannot run where the audit actually has to run. The runtime stage
+    of the Dockerfile copies only `dist/` and installs
+    `npm ci --omit=dev`, so the shipped image contains neither this `.ts`
+    file nor the dev-only `tsx` binary — the advertised operator command
+    would fail in the one place D48 requires it to succeed, against each
+    deployed database. Confirmed in the running container:
+    `dist/core/db/maintenance/audit-json-path-assertions.cli.js` is present,
+    `node_modules/.bin/tsx` is not. The `:dist` entry runs the compiled file
+    exactly as `start:api` runs `dist/api/main.js`; with no npm wrapper it is
+    `node dist/core/db/maintenance/audit-json-path-assertions.cli.js`.
   - **It removes the offending entry** from the endpoint's `assertions`
     array rather than annotating it, because removal is the only state the
     shared contract can actually express. (Rejected: adding `enabled` to
@@ -1487,6 +1499,7 @@ line, no field of the returned `ProbeOutcome`, and no thrown error's
 | D22 | Every terminal path — success, guard rejection, or any caught error — records a boundary (`transfer_done`/`blocked_at`/`failed_at`); `total_ms` uses whichever fired                                                                                                                                                                                                                                                          | Only `transfer_done`/`blocked_at`, no boundary for any other failure                                                           | `total_ms` had no way to be computed for the majority of the failure taxonomy — `CONNECTION_REFUSED`, TLS failures, phase timeouts, mid-transfer resets — silently breaking FR-18 for those classes (Codex finding, PR #40, P1)                                                                                                                                                                                         |
 | D23 | `body_not_contains` fails as `ASSERTION_FAILED` whenever the body was truncated, regardless of what the partial buffer contains                                                                                                                                                                                                                                                                                               | Running the same substring check as `body_contains`                                                                            | Absence cannot be proven from an incomplete read — a truncated buffer that happens not to contain the forbidden string in its read prefix does not mean the string is absent from the unread tail (Codex finding, PR #40, P1)                                                                                                                                                                                           |
 | D57 | Each `{endpointId, removed}` recovery record is emitted as that row's own transaction commits, before the next row is touched; the CLI prints it there, and a throw from the sink aborts the run                                                                                                                                                                                                                              | Collecting every record and printing them once the whole scan returns                                                          | Each removal is permanent the moment its per-row transaction commits (D54), so an end-of-run print leaves no record at all for rows already rewritten when a database error, a `SIGTERM` or a failing stdout ends the run: those assertions are destroyed with nothing to reconstruct them from, defeating the very recovery path D51 relies on instead of a `.down.sql` (Codex finding, PR #43, P1)                    |
+| D58 | A second entry, `audit:json-path-assertions:dist`, runs the compiled `dist/.../audit-json-path-assertions.cli.js`; the `tsx` entry stays for a checkout                                                                                                                                                                                                                                                                       | The single `tsx` entry, on the `migrate`/`openapi` precedent                                                                   | The runtime stage copies only `dist/` and installs `npm ci --omit=dev`, so the image holds neither the `.ts` source nor the dev-only `tsx` binary: the advertised operator command fails in the one place D48 requires it to succeed — against each deployed database before M4 probes. Confirmed in the running container: the compiled CLI is present, `node_modules/.bin/tsx` is not (Codex finding, PR #43, P1)     |
 
 ## 5. Config
 
@@ -1593,6 +1606,7 @@ Every row proved by removal (CLAUDE.md), not just passing when present.
 | `UNKNOWN_ERROR` never silently coerces                                                              | §6's row; asserts the raw code survives in `details`/error cause, not discarded                                                                                                                                                                                                                                                                                                                                                                |
 | Config bounds already covered by M2's own tests are not re-tested here                              | No new config in this plan (§5) — nothing to add to the config-bounds test suite                                                                                                                                                                                                                                                                                                                                                               |
 | Every removal the audit commits already has its recovery record emitted (D57)                       | `.int.test.ts`: two endpoints both carrying an unsupported path; the run is killed while the second row is locked, after the first has committed; asserts the first row's record was already emitted, that it names the row actually rewritten, and that the interrupted row rolled back intact; removal: emit the collected records after the scan returns and watch the assertion see `[]`                                                   |
+| The advertised audit command runs in the shipped image (D58)                                        | Real run against the built container: a legacy row seeded with `psql`, then `docker compose exec api node dist/core/db/maintenance/audit-json-path-assertions.cli.js`; asserts the removal is reported and `psql` shows the row repaired; removal: run the `tsx` entry in that same container and watch it fail before it opens a connection                                                                                                   |
 
 ## 8. Delivery
 
@@ -1609,7 +1623,8 @@ other suite iterates), the one-line change wiring M2's `assertionSchema`
 accepting any non-empty string (D36), the OpenAPI `pattern` taken from that
 same export plus a document-drift test (D49/D52), the
 `audit-json-path-assertions` maintenance script with its row-locking
-transaction, barrier test and `npm run` entry (D48/D50/D51/D54 — run once
+transaction, barrier test and both `npm run` entries — checkout and image
+(D48/D50/D51/D54/D57/D58 — run once
 after this PR deploys, before M4 probes; not a migration), and
 `http/registration.http` updated with a valid and a rejected `json_path`
 example (D43 — this PR changes the accepted request shape for both
@@ -1661,12 +1676,16 @@ untouched, per §2.2; M4 is the first caller.
   them (D40)** — the investigation ran them on v24.20.0 by environment
   accident, not the project's actual pin. Required before PR3/PR4 build on
   the custom-`connect`/timeout-phase mechanics those findings describe.
-- **`npm run audit:json-path-assertions` is an operator step, not an
-  automatic one (D48/D50/D51).** Nothing runs it for you: it is not a
-  migration, so `npm run migrate` will not pick it up, and no boot path
-  invokes it. It must be run once against each deployed database after
-  PR1 ships and before M4's scheduler starts probing, or a pre-M3 endpoint
-  with an unsupported `json_path` path reports permanent false downtime.
+- **The audit is an operator step, not an automatic one (D48/D50/D51).**
+  Nothing runs it for you: it is not a migration, so `npm run migrate` will
+  not pick it up, and no boot path invokes it. It must be run once against
+  each deployed database after PR1 ships and before M4's scheduler starts
+  probing, or a pre-M3 endpoint with an unsupported `json_path` path reports
+  permanent false downtime. **Run the entry that matches where you are
+  (D58):** `npm run audit:json-path-assertions` in a checkout with dev
+  dependencies, `npm run audit:json-path-assertions:dist` — or plain
+  `node dist/core/db/maintenance/audit-json-path-assertions.cli.js` — in the
+  shipped image, which has no `tsx`.
   Re-running is safe. Worth revisiting if a second data-repair task ever
   appears: two of these and the repo should grow a real
   data-migration mechanism rather than a second ad-hoc script.
