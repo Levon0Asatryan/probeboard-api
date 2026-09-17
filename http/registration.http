@@ -191,6 +191,39 @@ Content-Type: application/json
 }
 
 ###
+# @name createWithJsonPathAssertion
+# 201. The supported json_path subset: dot-separated names and [0] indices.
+# `$` may lead the path or be omitted -- `$.data.status` and `data.status`
+# address the same value.
+POST {{baseUrl}}/v1/services/:serviceId/endpoints
+Content-Type: application/json
+
+{
+  "method": "GET",
+  "path": "/orders",
+  "assertions": [
+    { "type": "json_path", "path": "$.data.items[0].status", "equals": "ok" },
+    { "type": "body_contains", "value": "\"ok\"" }
+  ]
+}
+
+###
+# @name rejectUnsupportedJsonPath
+# 400 VALIDATION_FAILED -- `$.items[*].id` is a perfectly ordinary JSONPath
+# expression and the probe evaluator cannot express it. Accepting it here
+# would store a monitor that reports permanent false downtime from its first
+# probe, so the accepted grammar is enforced at save time and published as
+# the field's `pattern` in openapi.yaml (docs/m3-plan.md D36/D42/D52).
+POST {{baseUrl}}/v1/services/:serviceId/endpoints
+Content-Type: application/json
+
+{
+  "method": "GET",
+  "path": "/wildcard",
+  "assertions": [{ "type": "json_path", "path": "$.items[*].id", "equals": 1 }]
+}
+
+###
 # @name getEndpoint
 # Replace :id with create's response id.
 GET {{baseUrl}}/v1/endpoints/:id
