@@ -5,7 +5,7 @@ import { UserRepository } from '../../users/repositories/user.repository.js';
 import { ServiceRepository } from '../../registration/repositories/service.repository.js';
 import { EndpointRepository } from '../../registration/repositories/endpoint.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
-import { auditJsonPathAssertions } from './audit-json-path-assertions.js';
+import { auditJsonPathAssertions, type RemovedAssertion } from './audit-json-path-assertions.js';
 
 /**
  * Against a real PostgreSQL, because the behaviour under test is the row
@@ -22,6 +22,8 @@ let users: UserRepository;
 let services: ServiceRepository;
 let endpoints: EndpointRepository;
 let endpointId: string;
+let serviceId: string;
+let userId: string;
 
 const UNSUPPORTED: EndpointAssertion = { type: 'json_path', path: '$.items[*].id', equals: 1 };
 const SUPPORTED: EndpointAssertion = { type: 'json_path', path: '$.data.status', equals: 'ok' };
@@ -74,6 +76,8 @@ beforeEach(async () => {
     path: '/orders',
   });
   endpointId = endpoint.id;
+  serviceId = service.id;
+  userId = user!.id;
 });
 
 describe('auditJsonPathAssertions', () => {
@@ -187,5 +191,53 @@ describe('auditJsonPathAssertions', () => {
     } finally {
       await other.close();
     }
+  });
+
+  it('has already emitted a record for every removal it committed when a run dies partway', async () => {
+    // Each removal is permanent the moment its own per-row transaction
+    // commits. A record emitted only once the whole scan returns therefore
+    // does not exist for any row already rewritten, so a crash, a SIGTERM or
+    // a failing stdout midway would leave those assertions deleted with
+    // nothing to reconstruct them from -- the recovery guarantee the printed
+    // record exists to provide.
+    const second = await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/second',
+    });
+    await setAssertions(endpointId, [UNSUPPORTED, BODY]);
+    await setAssertions(second.id, [UNSUPPORTED, BODY]);
+
+    const emitted: RemovedAssertion[] = [];
+    let rowsSeen = 0;
+
+    await expect(
+      auditJsonPathAssertions(ctx.db, {
+        onRemoved: (entry) => emitted.push(entry),
+        // Kills the run while the second row is locked, after the first has
+        // already committed its removal.
+        onRowLocked: async () => {
+          rowsSeen += 1;
+          if (rowsSeen === 2) throw new Error('interrupted');
+          await Promise.resolve();
+        },
+      }),
+    ).rejects.toThrow('interrupted');
+
+    // Exactly the committed removal, reported before the run died. Collecting
+    // records and printing them after the scan returns yields [] here.
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].removed).toEqual(UNSUPPORTED);
+
+    // And it names the row that really was rewritten.
+    expect(await readAssertions(emitted[0].endpointId)).toEqual([BODY]);
+
+    // The interrupted row kept its assertions: its transaction rolled back.
+    const untouched = emitted[0].endpointId === endpointId ? second.id : endpointId;
+    expect(await readAssertions(untouched)).toEqual([UNSUPPORTED, BODY]);
   });
 });

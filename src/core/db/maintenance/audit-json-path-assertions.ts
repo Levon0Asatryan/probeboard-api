@@ -46,6 +46,23 @@ export interface AuditOptions {
    * place, which `AGENTS.md` explicitly rules out as evidence.
    */
   onRowLocked?: (endpointId: string) => Promise<void>;
+
+  /**
+   * Called with each removal as the transaction that removed it commits,
+   * before any further row is touched.
+   *
+   * The removal is permanent the moment its per-row transaction commits, so
+   * a record that is only emitted once the whole scan returns is a record
+   * that does not exist yet for every row already rewritten: a database
+   * error, a `SIGTERM` or a failing stdout partway through would leave those
+   * assertions deleted with nothing to reconstruct them from, which is
+   * exactly the guarantee the printed record is supposed to provide.
+   *
+   * Throwing from here aborts the run deliberately. If the recovery record
+   * cannot be written down, continuing would destroy further assertions that
+   * also could not be recorded.
+   */
+  onRemoved?: (entry: RemovedAssertion) => void;
 }
 
 function isUnsupported(assertion: EndpointAssertion): boolean {
@@ -96,6 +113,11 @@ export async function auditJsonPathAssertions(
 
       return unsupported.map((assertion) => ({ endpointId, removed: assertion }));
     });
+
+    // After the transaction resolves, which is after it commits: the record
+    // is emitted for work that is already durable, never for a rewrite that
+    // might still roll back.
+    for (const entry of perRow) options.onRemoved?.(entry);
 
     removed.push(...perRow);
   }

@@ -29,12 +29,18 @@ async function main(): Promise<void> {
   const db = createDb(pool);
 
   try {
-    const removed = await auditJsonPathAssertions(db);
+    // Printed as each removal commits, not collected and printed at the end:
+    // the removal is permanent once its own transaction commits, so an
+    // interrupted run must still leave a record of every assertion it has
+    // already destroyed.
+    //
     // `process.stdout` rather than `console.log`: this output is the
     // recovery record an operator keeps, so it belongs on stdout where it
     // can be redirected to a file, and the lint rule reserves `console` for
     // errors.
-    for (const entry of removed) process.stdout.write(`${JSON.stringify(entry)}\n`);
+    const removed = await auditJsonPathAssertions(db, {
+      onRemoved: (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`),
+    });
     process.stdout.write(
       removed.length === 0
         ? 'audit: no unsupported json_path assertions found\n'
