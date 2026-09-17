@@ -1,4 +1,5 @@
 import { z, type ZodType } from 'zod';
+import { JSON_PATH_PATTERN } from '../../../core/assertions/json-path-grammar.js';
 
 /** `EndpointsTable.expected_status` (docs/m2-plan.md §3): `[{min,max}, ...]`, default `[{200,299}]`. */
 export const statusRangeSchema = z
@@ -38,7 +39,23 @@ export const assertionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('body_contains'), value: z.string().min(1) }).strict(),
   z.object({ type: z.literal('body_not_contains'), value: z.string().min(1) }).strict(),
   z
-    .object({ type: z.literal('json_path'), path: z.string().min(1), equals: jsonValueSchema })
+    .object({
+      type: z.literal('json_path'),
+      // The one grammar `core` defines, not a second spelling of it: the
+      // worker evaluates exactly this subset, so a path accepted here that
+      // the evaluator cannot express would pass validation and then fail
+      // every probe forever, reporting a healthy endpoint as down
+      // (docs/m3-plan.md D36/D42). A regex rather than `.refine()` for the
+      // same reason `tag.dto.ts` uses one: `z.toJSONSchema` drops an
+      // arbitrary predicate silently but converts a regex to `pattern`, so
+      // `openapi.yaml` publishes the real bound instead of advertising any
+      // non-empty string while the server answers 400 (D49/D52).
+      path: z
+        .string()
+        .min(1)
+        .regex(JSON_PATH_PATTERN, 'must be a supported JSON path: names and [0] indices only'),
+      equals: jsonValueSchema,
+    })
     .strict(),
 ]);
 
