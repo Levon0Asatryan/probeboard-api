@@ -162,12 +162,27 @@ async function main(): Promise<void> {
     // to a file and parses line by line (D51), so a trailing line of prose
     // would make that file invalid JSONL and break a restoration tool at
     // exactly the moment it is needed -- right after a destructive run (D63).
-    await writeErrLine(
-      removedCount === 0
-        ? 'audit: no unsupported json_path assertions found\n'
-        : `audit: removed ${String(removedCount)} unsupported json_path assertion(s)\n`,
-      cfg.AUDIT_WRITE_TIMEOUT_MS,
-    );
+    //
+    // Its failure is not the audit's failure (D67). By this point every
+    // removal and every recovery record has already committed, so a stderr
+    // that is closed or has stopped consuming would otherwise make a fully
+    // successful destructive repair report `audit failed` and exit non-zero
+    // -- telling an operator the repair did not happen when it did, and
+    // inviting a re-run. The database state and the stdout records are what
+    // actually happened; this line only describes them.
+    //
+    // Deliberately not logged on failure: stderr is precisely the stream that
+    // just failed, so there is no channel left to report it through.
+    try {
+      await writeErrLine(
+        removedCount === 0
+          ? 'audit: no unsupported json_path assertions found\n'
+          : `audit: removed ${String(removedCount)} unsupported json_path assertion(s)\n`,
+        cfg.AUDIT_WRITE_TIMEOUT_MS,
+      );
+    } catch {
+      // Intentionally ignored -- see above. The repair stands.
+    }
   } finally {
     await db.destroy();
     releaseStreams();

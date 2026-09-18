@@ -54,7 +54,9 @@ interface CliResult {
   stderr: string;
 }
 
-function runCli(options: { breakStdout: boolean }): Promise<CliResult> {
+function runCli(
+  options: { breakStdout?: boolean; breakStderr?: boolean } = {},
+): Promise<CliResult> {
   return new Promise<CliResult>((resolve, reject) => {
     const child = spawn('npx', ['tsx', CLI], {
       cwd: process.cwd(),
@@ -80,10 +82,16 @@ function runCli(options: { breakStdout: boolean }): Promise<CliResult> {
       });
     }
 
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
+    if (options.breakStderr) {
+      // The status stream dies while stdout stays healthy: the repair still
+      // commits, so the run must still succeed (D67).
+      child.stderr.destroy();
+    } else {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+    }
 
     child.on('error', reject);
     child.on('close', (code) => {
@@ -170,6 +178,24 @@ describe('audit-json-path-assertions CLI', () => {
 
     // D63: the summary is on stderr, so stdout stays valid JSONL.
     expect(result.stderr).toMatch(/audit: removed 1 unsupported json_path assertion/);
+    expect(await readAssertions(endpointId)).toEqual([BODY]);
+  }, 60_000);
+
+  it('still succeeds when stderr dies after the repair has committed', async () => {
+    // The summary is written after every removal and every recovery record
+    // has committed, so a dead status stream must not turn a successful
+    // destructive repair into `audit failed` and a non-zero exit -- which
+    // would tell an operator nothing happened and invite a re-run against a
+    // database that no longer needs one (D67).
+    const result = await runCli({ breakStderr: true });
+
+    expect(result.code).toBe(0);
+
+    // And the repair really did happen, with its recovery record really on
+    // stdout: otherwise this would pass for a run that did nothing.
+    const lines = result.stdout.split('\n').filter((line) => line.trim() !== '');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toEqual({ endpointId, removed: UNSUPPORTED });
     expect(await readAssertions(endpointId)).toEqual([BODY]);
   }, 60_000);
 });
