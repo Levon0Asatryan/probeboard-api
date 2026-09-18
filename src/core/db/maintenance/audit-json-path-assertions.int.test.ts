@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'kysely';
 import type { EndpointAssertion } from '../types.js';
 import type { DbService } from '../db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
@@ -44,6 +45,43 @@ async function readAssertions(id: string): Promise<EndpointAssertion[]> {
     .where('id', '=', id)
     .executeTakeFirstOrThrow();
   return row.assertions;
+}
+
+/**
+ * Resolves once some statement is genuinely parked waiting for a lock on
+ * `endpoints`, polling `pg_stat_activity` on a connection of its own.
+ *
+ * A fixed sleep cannot stand in for this. On a loaded runner the competing
+ * UPDATE may not have reached PostgreSQL before the sleep elapses, and the
+ * test then passes having exercised nothing -- so with the FOR UPDATE
+ * removed it would still pass, which CLAUDE.md rules out as evidence.
+ *
+ * `pg_stat_activity`, not a join from `pg_locks` to `pg_class`: a statement
+ * waiting for a *row* lock does not wait on the relation. It blocks on the
+ * holding transaction's `transactionid` lock, whose `pg_locks.relation` is
+ * NULL, so joining to `pg_class` drops precisely the waiter this barrier
+ * looks for.
+ */
+async function waitForBlockedWriter(db: TestDb['db'], timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await sql<{ waiting: number }>`
+      SELECT count(*)::int AS waiting
+      FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid()
+        AND wait_event_type = 'Lock'
+        AND state = 'active'
+        AND query ILIKE '%endpoints%'
+    `.execute(db);
+    const [row] = result.rows;
+    if (row.waiting > 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'no statement ever blocked on an endpoints lock: the audit is not holding one',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 beforeAll(() => {
@@ -161,6 +199,7 @@ describe('auditJsonPathAssertions', () => {
     await setAssertions(endpointId, [UNSUPPORTED, BODY]);
 
     const other = connectTestDb();
+    const watcher = connectTestDb();
     const competingValue: EndpointAssertion[] = [
       { type: 'body_contains', value: 'added-concurrently' },
     ];
@@ -177,9 +216,12 @@ describe('auditJsonPathAssertions', () => {
             .set({ assertions: JSON.stringify(competingValue), updated_at: new Date() })
             .where('id', '=', endpointId)
             .execute();
-          // Long enough for that statement to reach the lock (or, with the
-          // lock removed, to commit) before the audit writes.
-          await new Promise((resolve) => setTimeout(resolve, 150));
+          // Proceed only once that UPDATE is observably parked on this row's
+          // lock -- not after an interval that merely tends to be long
+          // enough (docs/m3-plan.md D62). With the FOR UPDATE removed it
+          // never parks, so this throws and the proof fails every time
+          // rather than occasionally.
+          await waitForBlockedWriter(watcher.db);
         },
       });
       await competing;
@@ -189,6 +231,8 @@ describe('auditJsonPathAssertions', () => {
       // instead, and this assertion is what catches it.
       expect(await readAssertions(endpointId)).toEqual(competingValue);
     } finally {
+      await competing?.catch(() => undefined);
+      await watcher.close();
       await other.close();
     }
   });
