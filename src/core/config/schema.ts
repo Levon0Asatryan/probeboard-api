@@ -335,6 +335,16 @@ const registration = {
   // solo developer or small team (the PRD's stated primary user) would
   // register (docs/m2-plan.md §10).
   ENDPOINT_QUOTA_PER_USER: z.coerce.number().int().min(1).max(100_000).default(100),
+
+  // How long the json_path audit waits for one recovery-record write before
+  // giving up (docs/m3-plan.md D66). The write happens inside the per-row
+  // transaction, so an unbounded wait holds `FOR UPDATE` on that endpoint
+  // indefinitely: a reader that stops consuming stdout without closing it
+  // produces backpressure, not `EPIPE`, and the write callback never fires.
+  // Rejecting rolls the removal back and releases the lock. Generous, because
+  // exceeding it aborts a destructive repair -- it is a stall detector, not a
+  // latency target.
+  AUDIT_WRITE_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(10_000),
   // Service and endpoint headers are counted separately against this cap
   // (docs/m2-plan.md §5.2).
   MAX_HEADERS_PER_OWNER: z.coerce.number().int().min(1).max(1000).default(20),

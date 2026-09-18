@@ -47,6 +47,7 @@ import { describeError } from '../../errors/describe.js';
 import { createDb } from '../utils/kysely.js';
 import { createPool } from '../utils/pool.js';
 import { auditJsonPathAssertions } from './audit-json-path-assertions.js';
+import { writeLineWithDeadline } from './stream-write.js';
 
 /**
  * Writes one line to stdout, resolving only once the stream has accepted it
@@ -59,14 +60,15 @@ import { auditJsonPathAssertions } from './audit-json-path-assertions.js';
  * outlive its own recovery record. The callback form is the only way to
  * await the flush and observe the error, and the audit turns a rejection
  * here into a rolled-back removal (D60).
+ *
+ * Bounded by `AUDIT_WRITE_TIMEOUT_MS`, because the await happens inside the
+ * removal's transaction: a reader that stops consuming without closing the
+ * pipe produces backpressure rather than `EPIPE`, the callback never fires,
+ * and an unbounded wait would hold `FOR UPDATE` on that endpoint row forever
+ * (D66).
  */
-function writeLine(line: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    process.stdout.write(line, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+function writeLine(line: string, timeoutMs: number): Promise<void> {
+  return writeLineWithDeadline(process.stdout, line, timeoutMs);
 }
 
 /**
@@ -78,13 +80,8 @@ function writeLine(line: string): Promise<void> {
  * write it is not worth aborting a completed repair over -- but it is worth
  * waiting for.
  */
-function writeErrLine(line: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    process.stderr.write(line, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+function writeErrLine(line: string, timeoutMs: number): Promise<void> {
+  return writeLineWithDeadline(process.stderr, line, timeoutMs);
 }
 
 /** The last stream failure observed, for context when the run reports. */
@@ -159,7 +156,7 @@ async function main(): Promise<void> {
     // run finished was itself unbounded on the large deployments the audit
     // matters most on (D61).
     const removedCount = await auditJsonPathAssertions(db, {
-      onRemoved: (entry) => writeLine(`${JSON.stringify(entry)}\n`),
+      onRemoved: (entry) => writeLine(`${JSON.stringify(entry)}\n`, cfg.AUDIT_WRITE_TIMEOUT_MS),
     });
     // stderr, not stdout: stdout is the recovery stream an operator redirects
     // to a file and parses line by line (D51), so a trailing line of prose
@@ -169,6 +166,7 @@ async function main(): Promise<void> {
       removedCount === 0
         ? 'audit: no unsupported json_path assertions found\n'
         : `audit: removed ${String(removedCount)} unsupported json_path assertion(s)\n`,
+      cfg.AUDIT_WRITE_TIMEOUT_MS,
     );
   } finally {
     await db.destroy();
