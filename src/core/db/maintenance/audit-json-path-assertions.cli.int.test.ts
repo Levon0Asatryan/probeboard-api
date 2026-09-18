@@ -164,6 +164,11 @@ describe('audit-json-path-assertions CLI', () => {
     // The point of the ordering in D60: the record could not be written, so
     // the removal that produced it must not have committed.
     expect(await readAssertions(endpointId)).toEqual([UNSUPPORTED, BODY]);
+
+    // The diagnostic arrived whole rather than being cut off as the process
+    // exited (D68). This catches truncation, not the underlying race -- see
+    // the note in the plan's D68 row.
+    expect(result.stderr.endsWith('\n')).toBe(true);
   }, 60_000);
 
   it('repairs the row and prints the record when stdout is healthy', async () => {

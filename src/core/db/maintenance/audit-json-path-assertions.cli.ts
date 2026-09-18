@@ -88,6 +88,15 @@ function writeErrLine(line: string, timeoutMs: number): Promise<void> {
 let lastStreamError: string | undefined;
 
 /**
+ * Deadline for the final failure diagnostic (D68).
+ *
+ * A constant rather than `AUDIT_WRITE_TIMEOUT_MS`, because this write runs on
+ * the path where `loadConfig()` itself may have thrown — there may be no
+ * config to read a timeout from.
+ */
+const REPORT_WRITE_TIMEOUT_MS = 10_000;
+
+/**
  * Attaches `error` listeners to stdout and stderr for the duration of the
  * run, returning the function that removes them again.
  *
@@ -189,12 +198,29 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  // `console.error` reaches stderr, so this still reports when it was stdout
-  // that failed. The stream error is appended when one was seen, because a
-  // rejected write and a dead pipe read very differently to an operator
-  // deciding whether the repair ran (D65).
+main().catch(async (err: unknown) => {
+  // stderr, so this still reports when it was stdout that failed. The stream
+  // error is appended when one was seen, because a rejected write and a dead
+  // pipe read very differently to an operator deciding whether the repair ran
+  // (D65).
   const streamDetail = lastStreamError === undefined ? '' : ` (${lastStreamError})`;
-  console.error(`audit failed: ${describeError(err)}${streamDetail}`);
-  process.exit(1);
+
+  try {
+    // Awaited, and `process.exitCode` rather than `process.exit(1)`:
+    // `console.error` on a pipe or a file is asynchronous, so exiting
+    // immediately can terminate the process with the diagnostic still queued.
+    // On the stdout-failure path this line is the operator's only statement of
+    // whether the destructive repair rolled back, so it has to reach the
+    // stream before the process ends. Setting the exit code instead lets the
+    // streams drain on their own (D68).
+    await writeErrLine(
+      `audit failed: ${describeError(err)}${streamDetail}\n`,
+      REPORT_WRITE_TIMEOUT_MS,
+    );
+  } catch {
+    // stderr is unusable too, so there is no channel left to explain this
+    // through; the non-zero exit status is the only signal remaining.
+  }
+
+  process.exitCode = 1;
 });
