@@ -25,6 +25,13 @@
  */
 export interface LineWritable {
   write(chunk: string, callback: (error?: Error | null) => void): boolean;
+
+  /**
+   * Torn down when a write misses its deadline (D69). Optional so a caller
+   * can pass anything write-shaped, but `process.stdout` and `process.stderr`
+   * both have it.
+   */
+  destroy?(error?: Error): void;
 }
 
 export class StreamWriteTimeoutError extends Error {
@@ -51,6 +58,26 @@ export function writeLineWithDeadline(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+
+      // Rejecting is not enough on its own (D69). The underlying
+      // `stream.write()` is still pending, and a pending write keeps Node's
+      // event loop alive: the transaction rolls back and releases its row
+      // lock, but the audit process then hangs instead of exiting -- and
+      // since D68 sets `process.exitCode` rather than calling
+      // `process.exit()`, nothing forcibly ends it any more. Tearing the
+      // stalled stream down releases that write so the loop can drain.
+      //
+      // Deliberately without an error argument: `destroy(err)` makes the
+      // stream emit `error`, and by the time the final diagnostic is written
+      // the CLI has already removed its scoped listeners, so that event would
+      // be an uncaught exception -- the exact failure D65 exists to prevent.
+      try {
+        stream.destroy?.();
+      } catch {
+        // Best effort. A stream that cannot be torn down must not mask the
+        // timeout that is already being reported.
+      }
+
       reject(new StreamWriteTimeoutError(timeoutMs));
     }, timeoutMs);
 
