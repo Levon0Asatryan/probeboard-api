@@ -48,23 +48,44 @@ async function readAssertions(id: string): Promise<EndpointAssertion[]> {
 }
 
 /**
+ * The records the audit emits. It returns only a count (D61), so a test that
+ * cares what was removed collects it here, exactly as the CLI does.
+ */
+function collector(): {
+  records: RemovedAssertion[];
+  onRemoved: (entry: RemovedAssertion) => Promise<void>;
+} {
+  const records: RemovedAssertion[] = [];
+  return {
+    records,
+    onRemoved: (entry) => {
+      records.push(entry);
+      return Promise.resolve();
+    },
+  };
+}
+
+/**
  * Resolves once some statement is genuinely parked waiting for a lock on
- * `endpoints`, polling `pg_stat_activity` on a connection of its own.
+ * `endpoints`, polling `pg_locks` on a connection of its own.
  *
  * A fixed sleep cannot stand in for this. On a loaded runner the competing
  * UPDATE may not have reached PostgreSQL before the sleep elapses, and the
  * test then passes having exercised nothing -- so with the FOR UPDATE
  * removed it would still pass, which CLAUDE.md rules out as evidence.
- *
- * `pg_stat_activity`, not a join from `pg_locks` to `pg_class`: a statement
- * waiting for a *row* lock does not wait on the relation. It blocks on the
- * holding transaction's `transactionid` lock, whose `pg_locks.relation` is
- * NULL, so joining to `pg_class` drops precisely the waiter this barrier
- * looks for.
+ * `granted = false` is the state the proof actually depends on, so the test
+ * waits for that state and fails loudly if it never arrives.
  */
 async function waitForBlockedWriter(db: TestDb['db'], timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    // `pg_stat_activity`, not a join from `pg_locks` to `pg_class`: a
+    // statement waiting for a *row* lock does not wait on the relation. It
+    // blocks on the holding transaction's `transactionid` lock, whose
+    // `pg_locks.relation` is NULL, so joining to `pg_class` drops precisely
+    // the waiter this barrier is looking for. `wait_event_type = 'Lock'` on
+    // a backend other than this one, running a statement against
+    // `endpoints`, states the condition directly.
     const result = await sql<{ waiting: number }>`
       SELECT count(*)::int AS waiting
       FROM pg_stat_activity
@@ -82,6 +103,20 @@ async function waitForBlockedWriter(db: TestDb['db'], timeoutMs = 5_000): Promis
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function seedEndpoint(path: string, assertions: EndpointAssertion[]): Promise<string> {
+  const created = await endpoints.create({
+    service_id: serviceId,
+    user_id: userId,
+    interval_s: 60,
+    timeout_ms: 10000,
+    max_redirects: 5,
+    method: 'GET',
+    path,
+  });
+  await setAssertions(created.id, assertions);
+  return created.id;
 }
 
 beforeAll(() => {
@@ -121,11 +156,13 @@ beforeEach(async () => {
 describe('auditJsonPathAssertions', () => {
   it('removes an unsupported json_path and keeps every other assertion', async () => {
     await setAssertions(endpointId, [UNSUPPORTED, SUPPORTED, BODY]);
+    const sink = collector();
 
-    const removed = await auditJsonPathAssertions(ctx.db);
+    const removed = await auditJsonPathAssertions(ctx.db, sink);
 
     expect(await readAssertions(endpointId)).toEqual([SUPPORTED, BODY]);
-    expect(removed).toEqual([{ endpointId, removed: UNSUPPORTED }]);
+    expect(removed).toBe(1);
+    expect(sink.records).toEqual([{ endpointId, removed: UNSUPPORTED }]);
   });
 
   it('leaves an endpoint whose assertions are all supported completely alone', async () => {
@@ -138,7 +175,7 @@ describe('auditJsonPathAssertions', () => {
 
     const removed = await auditJsonPathAssertions(ctx.db);
 
-    expect(removed).toEqual([]);
+    expect(removed).toBe(0);
     expect(await readAssertions(endpointId)).toEqual([SUPPORTED, BODY]);
     const after = await ctx.db
       .selectFrom('endpoints')
@@ -155,39 +192,19 @@ describe('auditJsonPathAssertions', () => {
     await auditJsonPathAssertions(ctx.db);
     const second = await auditJsonPathAssertions(ctx.db);
 
-    expect(second).toEqual([]);
+    expect(second).toBe(0);
     expect(await readAssertions(endpointId)).toEqual([BODY]);
   });
 
   it('touches only the endpoints that need it', async () => {
-    const clean = await endpoints.create({
-      service_id: (
-        await ctx.db
-          .selectFrom('endpoints')
-          .select('service_id')
-          .where('id', '=', endpointId)
-          .executeTakeFirstOrThrow()
-      ).service_id,
-      user_id: (
-        await ctx.db
-          .selectFrom('endpoints')
-          .select('user_id')
-          .where('id', '=', endpointId)
-          .executeTakeFirstOrThrow()
-      ).user_id,
-      interval_s: 60,
-      timeout_ms: 10000,
-      max_redirects: 5,
-      method: 'GET',
-      path: '/clean',
-    });
+    const cleanId = await seedEndpoint('/clean', [SUPPORTED]);
     await setAssertions(endpointId, [UNSUPPORTED]);
-    await setAssertions(clean.id, [SUPPORTED]);
+    const sink = collector();
 
-    const removed = await auditJsonPathAssertions(ctx.db);
+    await auditJsonPathAssertions(ctx.db, sink);
 
-    expect(removed.map((r) => r.endpointId)).toEqual([endpointId]);
-    expect(await readAssertions(clean.id)).toEqual([SUPPORTED]);
+    expect(sink.records.map((r) => r.endpointId)).toEqual([endpointId]);
+    expect(await readAssertions(cleanId)).toEqual([SUPPORTED]);
   });
 
   it('does not lose an assertion edit committed while the audit holds the row', async () => {
@@ -262,25 +279,50 @@ describe('auditJsonPathAssertions', () => {
     // reintroduced on large databases.
     await setAssertions(endpointId, [UNSUPPORTED, BODY]);
     for (const n of [1, 2, 3, 4]) {
-      const extra = await endpoints.create({
-        service_id: serviceId,
-        user_id: userId,
-        interval_s: 60,
-        timeout_ms: 10000,
-        max_redirects: 5,
-        method: 'GET',
-        path: `/paged-${String(n)}`,
-      });
-      await setAssertions(extra.id, [UNSUPPORTED, BODY]);
+      await seedEndpoint(`/paged-${String(n)}`, [UNSUPPORTED, BODY]);
     }
 
     // Five endpoints, two per page: three pages, the last one short.
     const removed = await auditJsonPathAssertions(ctx.db, { scanPageSize: 2 });
 
-    expect(removed).toHaveLength(5);
+    expect(removed).toBe(5);
     const repaired = await ctx.db.selectFrom('endpoints').select(['id', 'assertions']).execute();
     expect(repaired).toHaveLength(5);
     for (const row of repaired) expect(row.assertions).toEqual([BODY]);
+  });
+
+  it('returns only a count over many pages, never every removal it made', async () => {
+    // Paging bounded the rows read at once but not the records kept: every
+    // {endpointId, removed} object was retained until the run finished, so
+    // the high-volume deployment paging exists for could still exhaust
+    // memory. Records now leave through the sink as they are made and the
+    // audit keeps only a number (docs/m3-plan.md D61).
+    await setAssertions(endpointId, [UNSUPPORTED, BODY]);
+    for (const n of [1, 2, 3, 4, 5]) {
+      await seedEndpoint(`/many-${String(n)}`, [UNSUPPORTED, BODY]);
+    }
+
+    const emittedByPage: number[] = [];
+    const sink = collector();
+
+    // Six endpoints, two per page: three full pages.
+    const removed = await auditJsonPathAssertions(ctx.db, {
+      scanPageSize: 2,
+      onRemoved: async (entry) => {
+        await sink.onRemoved(entry);
+        emittedByPage.push(sink.records.length);
+      },
+    });
+
+    // A number, not an array of six records. Restoring the accumulator makes
+    // this fail: the resolved value becomes the records themselves.
+    expect(typeof removed).toBe('number');
+    expect(removed).toBe(6);
+
+    // Every record reached the sink, one at a time, as its row was repaired
+    // -- so nothing had to be held for the caller.
+    expect(emittedByPage).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(sink.records).toHaveLength(6);
   });
 
   it('has already emitted a record for every removal it committed when a run dies partway', async () => {
@@ -290,27 +332,15 @@ describe('auditJsonPathAssertions', () => {
     // a failing stdout midway would leave those assertions deleted with
     // nothing to reconstruct them from -- the recovery guarantee the printed
     // record exists to provide.
-    const second = await endpoints.create({
-      service_id: serviceId,
-      user_id: userId,
-      interval_s: 60,
-      timeout_ms: 10000,
-      max_redirects: 5,
-      method: 'GET',
-      path: '/second',
-    });
+    const second = await seedEndpoint('/second', [UNSUPPORTED, BODY]);
     await setAssertions(endpointId, [UNSUPPORTED, BODY]);
-    await setAssertions(second.id, [UNSUPPORTED, BODY]);
 
-    const emitted: RemovedAssertion[] = [];
+    const sink = collector();
     let rowsSeen = 0;
 
     await expect(
       auditJsonPathAssertions(ctx.db, {
-        onRemoved: (entry) => {
-          emitted.push(entry);
-          return Promise.resolve();
-        },
+        onRemoved: sink.onRemoved,
         // Kills the run while the second row is locked, after the first has
         // already committed its removal.
         onRowLocked: async () => {
@@ -323,14 +353,14 @@ describe('auditJsonPathAssertions', () => {
 
     // Exactly the committed removal, reported before the run died. Collecting
     // records and printing them after the scan returns yields [] here.
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].removed).toEqual(UNSUPPORTED);
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0].removed).toEqual(UNSUPPORTED);
 
     // And it names the row that really was rewritten.
-    expect(await readAssertions(emitted[0].endpointId)).toEqual([BODY]);
+    expect(await readAssertions(sink.records[0].endpointId)).toEqual([BODY]);
 
     // The interrupted row kept its assertions: its transaction rolled back.
-    const untouched = emitted[0].endpointId === endpointId ? second.id : endpointId;
+    const untouched = sink.records[0].endpointId === endpointId ? second : endpointId;
     expect(await readAssertions(untouched)).toEqual([UNSUPPORTED, BODY]);
   });
 });

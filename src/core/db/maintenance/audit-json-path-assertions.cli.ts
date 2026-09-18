@@ -74,13 +74,17 @@ async function main(): Promise<void> {
     // recovery record an operator keeps, so it belongs on stdout where it
     // can be redirected to a file, and the lint rule reserves `console` for
     // errors.
-    const removed = await auditJsonPathAssertions(db, {
+    //
+    // A count comes back, not the records: holding every removal until the
+    // run finished was itself unbounded on the large deployments the audit
+    // matters most on (D61).
+    const removedCount = await auditJsonPathAssertions(db, {
       onRemoved: (entry) => writeLine(`${JSON.stringify(entry)}\n`),
     });
     await writeLine(
-      removed.length === 0
+      removedCount === 0
         ? 'audit: no unsupported json_path assertions found\n'
-        : `audit: removed ${String(removed.length)} unsupported json_path assertion(s)\n`,
+        : `audit: removed ${String(removedCount)} unsupported json_path assertion(s)\n`,
     );
   } finally {
     await db.destroy();

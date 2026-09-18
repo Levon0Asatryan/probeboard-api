@@ -93,12 +93,15 @@ function isUnsupported(assertion: EndpointAssertion): boolean {
   return assertion.type === 'json_path' && !isSupportedJsonPath(assertion.path);
 }
 
-export async function auditJsonPathAssertions(
-  db: Db,
-  options: AuditOptions = {},
-): Promise<RemovedAssertion[]> {
+export async function auditJsonPathAssertions(db: Db, options: AuditOptions = {}): Promise<number> {
   const pageSize = options.scanPageSize ?? SCAN_PAGE_SIZE;
-  const removed: RemovedAssertion[] = [];
+  // A count, not the records. Retaining every `{endpointId, removed}` object
+  // until the run finished reintroduced the unbounded-memory problem paging
+  // was added to solve, in exactly the high-volume deployment that needs the
+  // repair most: nothing bounds the deployment-wide endpoint count, and an
+  // assertion value can be large. The records leave through `onRemoved` as
+  // they are made, so nothing needs to hold them (docs/m3-plan.md D61).
+  let removedCount = 0;
   let after: string | undefined;
 
   // Paged rather than one unbounded read, and each page is repaired before
@@ -129,21 +132,21 @@ export async function auditJsonPathAssertions(
       // One transaction per row rather than one for the whole table: the API
       // stays up while this runs, and a single long transaction would hold a
       // lock on every endpoint for the duration.
-      const perRow = await db.transaction().execute(async (trx) => {
+      const perRowCount = await db.transaction().execute(async (trx) => {
         const row = await trx
           .selectFrom('endpoints')
           .select(['id', 'assertions'])
           .where('id', '=', endpointId)
           .forUpdate()
           .executeTakeFirst();
-        if (!row) return [];
+        if (!row) return 0;
 
         // Judged from the locked read, never from the scan above: this is a
         // read-modify-write on a live table, so a concurrent PATCH committing
         // between the two would otherwise be overwritten by a stale copy
         // (docs/m3-plan.md D54, AGENTS.md "read-modify-write on shared rows").
         const unsupported = row.assertions.filter(isUnsupported);
-        if (unsupported.length === 0) return [];
+        if (unsupported.length === 0) return 0;
         const kept = row.assertions.filter((assertion) => !isUnsupported(assertion));
 
         await options.onRowLocked?.(endpointId);
@@ -158,15 +161,14 @@ export async function auditJsonPathAssertions(
         // committed. A sink that rejects rolls it back and aborts the run
         // with the assertion still in the row, which is the only ordering
         // that makes the record a real recovery path (D60).
-        const records = unsupported.map((assertion) => ({ endpointId, removed: assertion }));
-        for (const record of records) {
-          await options.onRemoved?.(record);
+        for (const assertion of unsupported) {
+          await options.onRemoved?.({ endpointId, removed: assertion });
         }
 
-        return records;
+        return unsupported.length;
       });
 
-      removed.push(...perRow);
+      removedCount += perRowCount;
     }
 
     // A short page is the last one; without this the loop costs one extra
@@ -174,5 +176,5 @@ export async function auditJsonPathAssertions(
     if (page.length < pageSize) break;
   }
 
-  return removed;
+  return removedCount;
 }
