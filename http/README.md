@@ -49,12 +49,32 @@ override file instead, and point `baseUrl` in `.env` at it:
 # probeboard-port.yml, kept outside the repo
 services:
   api:
-    ports:
+    ports: !override
       - '3100:3000'
 ```
 
+`!override` is load-bearing, not decoration. Compose merges `ports` as a
+_unique sequence_: entries whose published port differs are **appended**, not
+replaced, so a plain `ports:` list leaves the base `3000:3000` in place and
+publishes both. The container then still binds the port you were trying to get
+away from, and the workaround silently does nothing:
+
+```text
+probeboard-api-1   0.0.0.0:3000->3000/tcp, 0.0.0.0:3100->3000/tcp
+```
+
+`!override` replaces the whole list instead of merging into it. (`!reset []`
+clears a key outright; it needs Compose 2.24+, as does `!override`, and
+`docker compose version` will tell you.)
+
 ```sh
 docker compose -f docker-compose.yml -f /path/to/probeboard-port.yml up -d api
+```
+
+Check it took effect — exactly one published port, and not 3000:
+
+```sh
+docker ps --filter name=probeboard-api --format '{{.Names}}\t{{.Ports}}'
 ```
 
 `auth.http` is written to be run top to bottom the first time: the first
