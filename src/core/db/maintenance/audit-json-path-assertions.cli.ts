@@ -42,10 +42,10 @@
  * produced it commits (D60), so a broken pipe or a full buffer keeps the
  * assertion in the database instead of destroying it silently.
  */
-import { Pool } from 'pg';
 import { loadConfig } from '../../config/index.js';
 import { describeError } from '../../errors/describe.js';
 import { createDb } from '../utils/kysely.js';
+import { createPool } from '../utils/pool.js';
 import { auditJsonPathAssertions } from './audit-json-path-assertions.js';
 
 /**
@@ -89,7 +89,17 @@ function writeErrLine(line: string): Promise<void> {
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
-  const pool = new Pool({ connectionString: cfg.DATABASE_URL, max: 1 });
+  // The shared helper, not a bare `new Pool`: `pg` emits `error` on the pool
+  // when an *idle* connection dies (a restart, a failover, a dropped link),
+  // and Node escalates an unhandled `error` event into a fatal uncaught
+  // exception. Without the listener `createPool` attaches, a database restart
+  // between two of this audit's per-row transactions would kill the process
+  // outright rather than surfacing through `main().catch()` and the `finally`
+  // that closes the pool -- during a destructive repair, and bypassing the
+  // orderly shutdown entirely (D64).
+  const pool = createPool(cfg, (message, fields) => {
+    console.error(`${message}: ${fields.cause}`);
+  });
   const db = createDb(pool);
 
   try {
