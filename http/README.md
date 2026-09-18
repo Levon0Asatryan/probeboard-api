@@ -29,6 +29,34 @@ Start the stack first:
 docker compose up -d --scale worker=2
 ```
 
+### If every request comes back `404`
+
+Check whether something else on your machine already holds port 3000:
+
+```sh
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+```
+
+Two listeners means the host port is shared, and your requests may be answered
+by that other process rather than by the container — the container can be
+perfectly healthy while every request from the host misses it.
+
+**Do not change `docker-compose.yml` for this.** Which ports are free is a
+property of your machine, not of the project. Map a free host port with a local
+override file instead, and point `baseUrl` in `.env` at it:
+
+```yaml
+# probeboard-port.yml, kept outside the repo
+services:
+  api:
+    ports:
+      - '3100:3000'
+```
+
+```sh
+docker compose -f docker-compose.yml -f /path/to/probeboard-port.yml up -d api
+```
+
 `auth.http` is written to be run top to bottom the first time: the first
 request creates the account every later request uses, and the login puts the
 session cookie in the extension's cookie jar, so the authenticated requests
