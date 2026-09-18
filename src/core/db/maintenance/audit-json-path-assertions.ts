@@ -82,8 +82,9 @@ export interface AuditOptions {
  *
  * The scan cannot be one unbounded `SELECT`: it would materialize every
  * endpoint's full assertions array in this process before repairing a single
- * row, clean endpoints included. The endpoint quota allows 100,000 per user
- * and nothing bounds a deployment, so the audit D48 makes mandatory before
+ * row, clean endpoints included. `ENDPOINT_QUOTA_PER_USER` defaults to 100
+ * and accepts up to 100,000, but the real argument is that nothing bounds a
+ * deployment's total at all, so the audit D48 makes mandatory before
  * M4 starts probing is exactly the run that would exhaust memory, or hand
  * PostgreSQL one enormous read, on the largest database.
  */
