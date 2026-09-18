@@ -237,6 +237,23 @@ describe('auditJsonPathAssertions', () => {
     }
   });
 
+  it('keeps the assertion when its recovery record cannot be written', async () => {
+    // The record is the only trace of a deleted assertion, so it has to be
+    // durable before the deletion is. The sink runs inside the removal's own
+    // transaction: a rejection -- a broken pipe, a full buffer -- must roll
+    // the rewrite back rather than leave the assertion gone and unrecorded
+    // (docs/m3-plan.md D60).
+    await setAssertions(endpointId, [UNSUPPORTED, BODY]);
+
+    await expect(
+      auditJsonPathAssertions(ctx.db, {
+        onRemoved: () => Promise.reject(new Error('EPIPE: broken pipe')),
+      }),
+    ).rejects.toThrow('EPIPE');
+
+    expect(await readAssertions(endpointId)).toEqual([UNSUPPORTED, BODY]);
+  });
+
   it('repairs rows that fall beyond the first scan page', async () => {
     // The scan is paged, so the rows it has not read yet must still be
     // repaired. A single unbounded read would pass this trivially; a scan
@@ -290,7 +307,10 @@ describe('auditJsonPathAssertions', () => {
 
     await expect(
       auditJsonPathAssertions(ctx.db, {
-        onRemoved: (entry) => emitted.push(entry),
+        onRemoved: (entry) => {
+          emitted.push(entry);
+          return Promise.resolve();
+        },
         // Kills the run while the second row is locked, after the first has
         // already committed its removal.
         onRowLocked: async () => {

@@ -48,21 +48,27 @@ export interface AuditOptions {
   onRowLocked?: (endpointId: string) => Promise<void>;
 
   /**
-   * Called with each removal as the transaction that removed it commits,
-   * before any further row is touched.
+   * Awaited with each removal **inside** that row's transaction, after its
+   * rewrite is issued but before the transaction commits.
    *
-   * The removal is permanent the moment its per-row transaction commits, so
-   * a record that is only emitted once the whole scan returns is a record
-   * that does not exist yet for every row already rewritten: a database
-   * error, a `SIGTERM` or a failing stdout partway through would leave those
-   * assertions deleted with nothing to reconstruct them from, which is
-   * exactly the guarantee the printed record is supposed to provide.
+   * Ordering is the whole point, and it is deliberately not "after commit".
+   * The record is the only trace of a deleted assertion, so it must be
+   * durable before the deletion is. Emitting it after the commit — even
+   * synchronously — leaves a window in which the assertion is already gone
+   * and its record is still only buffered: `process.stdout.write()` returns
+   * before a slow pipe has delivered anything, and reports `EPIPE`
+   * asynchronously, so an unobserved stream write is not persistence
+   * (docs/m3-plan.md D60).
    *
-   * Throwing from here aborts the run deliberately. If the recovery record
-   * cannot be written down, continuing would destroy further assertions that
-   * also could not be recorded.
+   * Rejecting from here therefore rolls the transaction back: the row keeps
+   * its assertion and the run aborts. That is the safe direction of the
+   * trade — a record for a removal that then rolled back is a no-op an
+   * operator can ignore, while a removal with no record is unrecoverable.
+   *
+   * Awaited, not fire-and-forget, so a sink that signals failure
+   * asynchronously still stops the audit.
    */
-  onRemoved?: (entry: RemovedAssertion) => void;
+  onRemoved?: (entry: RemovedAssertion) => Promise<void>;
 
   /**
    * Rows per scan page. Exposed so a test can cross a page boundary without
@@ -148,13 +154,17 @@ export async function auditJsonPathAssertions(
           .where('id', '=', endpointId)
           .execute();
 
-        return unsupported.map((assertion) => ({ endpointId, removed: assertion }));
-      });
+        // Still inside the transaction, so the rewrite above is not yet
+        // committed. A sink that rejects rolls it back and aborts the run
+        // with the assertion still in the row, which is the only ordering
+        // that makes the record a real recovery path (D60).
+        const records = unsupported.map((assertion) => ({ endpointId, removed: assertion }));
+        for (const record of records) {
+          await options.onRemoved?.(record);
+        }
 
-      // After the transaction resolves, which is after it commits: the record
-      // is emitted for work that is already durable, never for a rewrite that
-      // might still roll back.
-      for (const entry of perRow) options.onRemoved?.(entry);
+        return records;
+      });
 
       removed.push(...perRow);
     }
