@@ -87,6 +87,47 @@ function writeErrLine(line: string): Promise<void> {
   });
 }
 
+/** The last stream failure observed, for context when the run reports. */
+let lastStreamError: string | undefined;
+
+/**
+ * Attaches `error` listeners to stdout and stderr for the duration of the
+ * run, returning the function that removes them again.
+ *
+ * A failing writable does **two** things: it passes the error to the `write`
+ * callback *and* emits an `error` event. `process.stdout` has no listener of
+ * its own, so Node escalates that event into a fatal uncaught exception —
+ * and it does so before the promise rejected by the callback can reach
+ * Kysely's rollback and `main().catch()`. The precise failure D60 exists to
+ * survive (a broken pipe, a full device, while a removal is uncommitted)
+ * would therefore bypass the rollback it is meant to trigger, leaving the
+ * assertion deleted anyway. That is the case this closes (D65).
+ *
+ * Not a swallowed failure: the same error still arrives through the `write`
+ * callback, rejects `writeLine`, rolls the removal back and is reported.
+ * These listeners only stop the duplicate event from pre-empting that path,
+ * and they record it for context.
+ *
+ * Scoped rather than global — removed when the run ends — so they can never
+ * mask a stream failure outside it.
+ */
+function absorbStreamErrors(): () => void {
+  const note =
+    (stream: string) =>
+    (err: unknown): void => {
+      lastStreamError = `${stream}: ${describeError(err)}`;
+    };
+  const onStdout = note('stdout');
+  const onStderr = note('stderr');
+  process.stdout.on('error', onStdout);
+  process.stderr.on('error', onStderr);
+
+  return () => {
+    process.stdout.off('error', onStdout);
+    process.stderr.off('error', onStderr);
+  };
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   // The shared helper, not a bare `new Pool`: `pg` emits `error` on the pool
@@ -101,6 +142,7 @@ async function main(): Promise<void> {
     console.error(`${message}: ${fields.cause}`);
   });
   const db = createDb(pool);
+  const releaseStreams = absorbStreamErrors();
 
   try {
     // Written and flushed inside the removal's own transaction, so an
@@ -130,10 +172,16 @@ async function main(): Promise<void> {
     );
   } finally {
     await db.destroy();
+    releaseStreams();
   }
 }
 
 main().catch((err: unknown) => {
-  console.error(`audit failed: ${describeError(err)}`);
+  // `console.error` reaches stderr, so this still reports when it was stdout
+  // that failed. The stream error is appended when one was seen, because a
+  // rejected write and a dead pipe read very differently to an operator
+  // deciding whether the repair ran (D65).
+  const streamDetail = lastStreamError === undefined ? '' : ` (${lastStreamError})`;
+  console.error(`audit failed: ${describeError(err)}${streamDetail}`);
   process.exit(1);
 });
