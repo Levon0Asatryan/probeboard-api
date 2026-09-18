@@ -138,6 +138,15 @@ is a bug.
   root its own `issuerCertificate`, so "walk the chain" loops forever on an
   ordinary trusted chain — and synchronously, so no timeout or abort can
   fire. Stop on identity (issuer === current) or track visited nodes.
+- Flag the only record of a destructive change being written after that change
+  commits. M3's audit deleted an assertion and _then_ printed the line needed
+  to restore it, so everything already removed when the process died had no
+  record at all. `process.stdout.write()` returns before a slow pipe has
+  delivered anything and reports `EPIPE` asynchronously — an unobserved stream
+  write is not persistence. Write the record inside the same transaction as
+  the destructive step, await the flush, and let a write failure roll that
+  step back. A record for a change that rolled back is a no-op; a change with
+  no record cannot be undone at all.
 
 ### Structure
 
@@ -198,6 +207,19 @@ is a bug.
 - Flag a documented route missing a status code it can reach through shared
   middleware (body-size limit, auth guard) — not just the codes the
   controller itself returns.
+- Flag an operator command that cannot run where operators run it. `npm run
+migrate` and M3's audit were both advertised only as `tsx` entries, while
+  the runtime image copies just `dist/` and installs `--omit=dev` — neither
+  the `.ts` source nor the `tsx` binary exists there, so the documented
+  command fails in the one place it is required to work. A command meant for
+  the container needs a compiled `:dist` twin, proved by running it in the
+  built image.
+- Flag a documented workaround nobody executed. `http/README.md` shipped a
+  Compose port override that did nothing: Compose merges `ports` as a
+  _unique-resource sequence_ and **appends** entries whose published port
+  differs, so the override published the base port as well and still collided.
+  `!override` (or `!reset`, Compose 2.24+) replaces the list. Run the commands
+  a doc tells the reader to run, and put the observed output in the review.
 
 ### Tests
 
@@ -225,6 +247,19 @@ is a bug.
   copy logic) proven only by a single fresh build. Require a test or CI step
   that reproduces the real sequence the bug needs: build twice without
   cleaning, or clean → build → delete `dist` → build again.
+- Flag a race proved with a sleep. A fixed delay between starting the
+  competing statement and letting the code under test proceed is not a
+  barrier: on a loaded runner the statement may not have reached the database
+  yet, so the test passes having exercised nothing — and keeps passing when
+  the lock it exists to prove is deleted. Synchronise on observable state, and
+  confirm the removal proof fails _every_ time rather than occasionally.
+- Flag a PostgreSQL lock barrier that waits on the wrong object. A statement
+  blocked on a **row** lock does not wait on the relation — it blocks on the
+  holding transaction's `transactionid` lock, whose `pg_locks.relation` is
+  `NULL`. So `pg_locks` joined to `pg_class` on `relname` never fires, and the
+  barrier times out instead of releasing: in M3 that turned a 700ms suite into
+  a 606s one that failed for a reason unrelated to the code under test. Poll
+  `pg_stat_activity` for `wait_event_type = 'Lock'` on another backend.
 
 ### Design docs / plans
 
@@ -317,6 +352,22 @@ plan for review, not just after Codex finds them:
   environment happened to have (24) while `.nvmrc`, both `Dockerfile`
   stages and every CI job pin 22. Check the pin before treating a live
   experiment as evidence for the deployed runtime.
+- **Flag a documented payload whose field names differ from the type that
+  emits it.** M3's plan described the audit's recovery record as
+  `{endpointId, removedAssertion}` in two places while `RemovedAssertion` and
+  the CLI emit `removed` — anyone parsing the documented contract reads
+  `undefined`, destroying the single recovery path the design offers in place
+  of a `.down.sql`. Copy field names from the type rather than paraphrasing
+  them, and `grep` the document for the old spelling after any rename.
+- **Flag a configured maximum quoted as though it were the default.** D59
+  justified paging with "the quota allows 100,000 endpoints per user" — that
+  is the ceiling `ENDPOINT_QUOTA_PER_USER` will accept; the default is 100.
+  The same mistake arrived from the other direction in review, sizing a page
+  against `API_BODY_LIMIT`'s 8 MB maximum when the default is `64kb` (a 128×
+  difference, and the whole basis of the finding). Quote the default, cite the
+  `schema.ts` line, and check a reviewer's premise the same way before
+  implementing — a wrong premise is a reason to push back with the evidence,
+  not to write code.
 - **Flag a design that re-breaks a rule already written in this file.** M3's
   OpenAPI gap — `z.toJSONSchema` silently drops `.refine()`, so the document
   advertises what the server rejects — is already a rule under
