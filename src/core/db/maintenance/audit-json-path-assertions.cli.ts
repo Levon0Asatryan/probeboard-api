@@ -28,6 +28,16 @@
  * record -- an operator rewrites the path into the supported subset and
  * re-adds the assertion through the normal API.
  *
+ * **stdout carries those records and nothing else** (D63). D51 tells an
+ * operator to parse these lines, so the stream has to be valid JSONL end to
+ * end:
+ *
+ *   npm run audit:json-path-assertions:dist > removed.jsonl
+ *
+ * must produce a file every line of which parses. The human-readable summary
+ * therefore goes to stderr, where it is still visible on a terminal but
+ * cannot corrupt a redirected recovery file.
+ *
  * The line is written, flushed and error-checked *before* the removal that
  * produced it commits (D60), so a broken pipe or a full buffer keeps the
  * assertion in the database instead of destroying it silently.
@@ -59,6 +69,24 @@ function writeLine(line: string): Promise<void> {
   });
 }
 
+/**
+ * The same, to stderr: human-readable status that must never land in the
+ * recovery stream (D63).
+ *
+ * Not `console.error`, which is fire-and-forget: the process can exit with
+ * the summary still queued. This is status rather than data, so a failure to
+ * write it is not worth aborting a completed repair over -- but it is worth
+ * waiting for.
+ */
+function writeErrLine(line: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stderr.write(line, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const pool = new Pool({ connectionString: cfg.DATABASE_URL, max: 1 });
@@ -81,7 +109,11 @@ async function main(): Promise<void> {
     const removedCount = await auditJsonPathAssertions(db, {
       onRemoved: (entry) => writeLine(`${JSON.stringify(entry)}\n`),
     });
-    await writeLine(
+    // stderr, not stdout: stdout is the recovery stream an operator redirects
+    // to a file and parses line by line (D51), so a trailing line of prose
+    // would make that file invalid JSONL and break a restoration tool at
+    // exactly the moment it is needed -- right after a destructive run (D63).
+    await writeErrLine(
       removedCount === 0
         ? 'audit: no unsupported json_path assertions found\n'
         : `audit: removed ${String(removedCount)} unsupported json_path assertion(s)\n`,
