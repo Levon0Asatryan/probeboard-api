@@ -54,18 +54,25 @@ Per the approved plan. Deviations go in the report under "Decisions made".
 - Walk the plan line by line against the code: every decision, endpoint,
   constraint and test in the matrix exists. List any gap.
 - Re-prove every guard by removal on the final code, not an earlier commit.
-- Fresh clone of the branch, npm ci, npm run build, npm run verify,
-  npm run test:int, then a real docker compose run of every changed endpoint
-  with psql checks of stored state.
+- Fresh clone of the branch (npm ci, build, verify, test:int) and a real
+  docker compose run with psql checks: required for an HTTP surface, a
+  migration, a database change, or the last PR of a milestone. For a
+  pure-logic PR, CI plus the local suites are enough. Say which applied.
 
 ## Phase 4 — Re-review (after revalidation)
 - Review the whole PR diff yourself, line by line, as a hostile reviewer
   against AGENTS.md: security, concurrency, error paths, naming, dead code,
   stale comments, docs/http/openapi drift. Fix or justify each finding.
-- After the last push, wait for Codex on the head SHA (a review with that
-  commit_id, or its 👍 reaction dated after the push). Verify, fix or push
-  back, reply on every thread. Any fix push restarts Phase 3's checks that
-  it affects and this wait.
+- After the last push, wait for Codex on the head SHA (a review whose
+  commit_id is that SHA). Verify each finding against the code before acting:
+  check the premise, and push back with evidence on a finding whose facts are
+  wrong rather than implementing it.
+- **Two rounds, then stop.** From round three, fix only a security hole, data
+  loss, a wrong result or a broken build. Everything else gets a one-line
+  reply saying it is deferred plus a tracker follow-up — never silence.
+- Build for this thesis, not for a fleet: no deployment, no production data,
+  no operator. Work that only pays off at unreachable scale is out of scope;
+  say so and move on.
 
 ## Stop points
 - After writing docs/mN-plan.md: stop and report. Do not implement until the
@@ -101,7 +108,8 @@ done | blocked | plan ready for approval
 
 ## Re-review
 - Self-review findings: <fixed n, justified n — one line each>
-- Codex: reviewed SHA <sha>, <review | 👍> at <time>
+- Codex: reviewed SHA <sha>, <review | 👍> at <time>, <n> rounds
+- Deferred to follow-ups: <finding — why it is not fix-now; one line each>
 
 ## Decisions made
 <anything not already in the plan, with the reason>
