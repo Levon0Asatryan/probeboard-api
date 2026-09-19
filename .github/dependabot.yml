@@ -27,6 +27,14 @@ updates:
       # https://github.com/typescript-eslint/typescript-eslint/issues/10940
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
+      # @types/node's major tracks the runtime it describes, and this project
+      # pins Node 22 in four places (Dockerfile, CI setup-node, .nvmrc,
+      # engines). A newer major types APIs Node 22 does not have, so tsc and
+      # CI stay green while the call crashes at runtime -- the failure mode a
+      # type-check exists to prevent. It moves with the other four, as one
+      # deliberate change. PR #33 was this bump (22 -> 26), closed by hand.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     commit-message:
       prefix: deps
       prefix-development: deps-dev
