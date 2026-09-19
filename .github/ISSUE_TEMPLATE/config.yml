@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Levon0Asatryan/probeboard-api/security/advisories/new
+    about: Privately — never in a public issue. See SECURITY.md.
+  - name: Design questions and the reasons behind decisions
+    url: https://github.com/Levon0Asatryan/probeboard-docs
+    about: The thesis, requirements, architecture and ADRs.

@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest something probeboard should do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        probeboard's scope is set by the thesis. The requirements and user stories are in
+        [probeboard-docs](https://github.com/Levon0Asatryan/probeboard-docs) — chapters 2 and 6.
+        A request that maps to one of them, or argues why it should be added, is the easiest to act on.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The behaviour you want. An example request and response helps.
+    validations:
+      required: true
+
+  - type: input
+    id: requirement
+    attributes:
+      label: Related requirement or story
+      description: An existing ID such as FR-12 or B-5, if one applies.
+      placeholder: e.g. FR-12
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to get the same result, including existing features.

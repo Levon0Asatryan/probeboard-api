@@ -1,0 +1,55 @@
+name: Bug report
+description: Something behaves differently from what it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issue?** Do not file it here — report it privately, as described in [SECURITY.md](https://github.com/Levon0Asatryan/probeboard-api/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: |
+        The shortest request or sequence that shows it. A request from `http/` is ideal.
+        Leave out real credentials, session cookies and secret header values.
+      render: http
+    validations:
+      required: true
+
+  - type: textarea
+    id: response
+    attributes:
+      label: Response or log output
+      description: The status code, response body, or log lines. Redact anything secret.
+      render: text
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you ran (`git rev-parse --short HEAD`).
+      placeholder: e.g. 4cf95c9
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How you ran it
+      options:
+        - docker compose
+        - npm run dev:api / dev:worker
+        - Tests only
+        - Other
+    validations:
+      required: true
