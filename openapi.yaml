@@ -486,6 +486,7 @@ components:
                   path:
                     type: string
                     minLength: 1
+                    pattern: ^(?:\$(?:\.[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])*|(?:[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])(?:\.[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])*)(?![\s\S])
                   equals:
                     $ref: "#/components/schemas/JsonValue"
                 required:
@@ -636,6 +637,7 @@ components:
                   path:
                     type: string
                     minLength: 1
+                    pattern: ^(?:\$(?:\.[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])*|(?:[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])(?:\.[A-Za-z0-9_-]+|\[(?:0|[1-9][0-9]*)\])*)(?![\s\S])
                   equals:
                     $ref: "#/components/schemas/JsonValue"
                 required:

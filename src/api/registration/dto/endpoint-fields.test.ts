@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  JSON_PATH_ACCEPTED,
+  JSON_PATH_REJECTED,
+} from '../../../core/assertions/json-path-grammar.js';
 import { assertionSchema, statusRangeSchema } from './endpoint-fields.js';
 
 describe('statusRangeSchema', () => {
@@ -78,6 +82,27 @@ describe('assertionSchema', () => {
     expect(
       assertionSchema.safeParse({ type: 'json_path', path: '$.x', equals: [1, Infinity] }).success,
     ).toBe(false);
+  });
+
+  it.each([...JSON_PATH_ACCEPTED])('accepts the supported json_path %j', (path) => {
+    expect(assertionSchema.safeParse({ type: 'json_path', path, equals: 1 }).success).toBe(true);
+  });
+
+  it.each([...JSON_PATH_REJECTED])('rejects the unsupported json_path %j', (path) => {
+    expect(assertionSchema.safeParse({ type: 'json_path', path, equals: 1 }).success).toBe(false);
+  });
+
+  it('rejects a wildcard path rather than storing one every probe would fail', () => {
+    // The case this constraint exists for: `$.items[*].id` is a perfectly
+    // ordinary JSONPath expression, and the evaluator cannot express it, so
+    // accepting it here would store a monitor that reports permanent false
+    // downtime from its first probe (docs/m3-plan.md D36).
+    const result = assertionSchema.safeParse({
+      type: 'json_path',
+      path: '$.items[*].id',
+      equals: 1,
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects a value JSON cannot represent at all, such as undefined or a function', () => {

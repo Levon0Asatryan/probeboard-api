@@ -170,6 +170,41 @@ describe('API_BODY_LIMIT', () => {
   });
 });
 
+describe('AUDIT_WRITE_TIMEOUT_MS', () => {
+  it('defaults to a generous stall detector, not a latency target', () => {
+    // Exceeding it aborts a destructive repair mid-run, so it is deliberately
+    // far above any healthy write.
+    expect(loadConfig(valid).AUDIT_WRITE_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it('is overridable from the environment', () => {
+    expect(loadConfig({ ...valid, AUDIT_WRITE_TIMEOUT_MS: '2500' }).AUDIT_WRITE_TIMEOUT_MS).toBe(
+      2500,
+    );
+  });
+
+  it('refuses a value so small that a healthy write would abort the audit', () => {
+    expect(() => loadConfig({ ...valid, AUDIT_WRITE_TIMEOUT_MS: '0' })).toThrow(
+      /AUDIT_WRITE_TIMEOUT_MS/,
+    );
+    expect(() => loadConfig({ ...valid, AUDIT_WRITE_TIMEOUT_MS: '100' })).toThrow(
+      /AUDIT_WRITE_TIMEOUT_MS/,
+    );
+  });
+
+  it('refuses a value so large it stops bounding the row lock at all', () => {
+    expect(() => loadConfig({ ...valid, AUDIT_WRITE_TIMEOUT_MS: '600000' })).toThrow(
+      /AUDIT_WRITE_TIMEOUT_MS/,
+    );
+  });
+
+  it('refuses text, rather than coercing it to NaN', () => {
+    expect(() => loadConfig({ ...valid, AUDIT_WRITE_TIMEOUT_MS: 'soon' })).toThrow(
+      /AUDIT_WRITE_TIMEOUT_MS/,
+    );
+  });
+});
+
 describe('probe timeout bounds', () => {
   // endpoints.timeout_ms is a Postgres `integer` column -- a value beyond
   // int4 range would boot fine here and only fail as an opaque database

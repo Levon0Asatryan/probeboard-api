@@ -23,6 +23,16 @@ export default defineConfig({
         // PostgreSQL, asserts re-running is a no-op, then rolls back and
         // re-applies. Unit tests here would test a mocked pg client.
         'src/core/db/migrator/cli.ts',
+        // The same shape: config in, a pool out, console lines.
+        'src/core/db/maintenance/audit-json-path-assertions.cli.ts',
+        // Database behaviour, like the repositories below: what this does is
+        // take a row lock, re-read the locked value and rewrite it, and the
+        // case it exists to get right is a concurrent edit committing in
+        // that window. audit-json-path-assertions.int.test.ts covers it
+        // against a real PostgreSQL, including that barrier -- and the lock
+        // was confirmed to fail that test when removed. Unit tests here
+        // would mock the lock away and prove nothing about it.
+        'src/core/db/maintenance/audit-json-path-assertions.ts',
         // The same shape: argv in, a file out. What it produces is covered by
         // document.test.ts, and that the committed file matches is covered by
         // the `openapi:check` step in CI, which is a stronger guarantee than a

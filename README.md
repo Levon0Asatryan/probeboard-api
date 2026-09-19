@@ -58,14 +58,15 @@ npm run dev:worker     # separate terminal
 
 ### Scripts
 
-| Script                               | Does                                                     |
-| ------------------------------------ | -------------------------------------------------------- |
-| `npm run dev:api` / `dev:worker`     | Run with reload, loading `.env`                          |
-| `npm run build`                      | Compile to `dist/`, including the `.sql` migration files |
-| `npm run start:api` / `start:worker` | Run the compiled output                                  |
-| `npm run migrate` / `migrate:down`   | Apply / roll back one migration                          |
-| `npm test`                           | Unit tests                                               |
-| `npm run typecheck`                  | Types only, no emit                                      |
+| Script                                       | Does                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| `npm run dev:api` / `dev:worker`             | Run with reload, loading `.env`                                          |
+| `npm run build`                              | Compile to `dist/`, including the `.sql` migration files                 |
+| `npm run start:api` / `start:worker`         | Run the compiled output                                                  |
+| `npm run migrate` / `migrate:down`           | Apply / roll back one migration                                          |
+| `npm run migrate:dist` / `migrate:down:dist` | Apply / roll back one migration in the shipped image, which has no `tsx` |
+| `npm test`                                   | Unit tests                                                               |
+| `npm run typecheck`                          | Types only, no emit                                                      |
 
 ## Configuration
 

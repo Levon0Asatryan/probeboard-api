@@ -7,9 +7,9 @@
  * roll back, re-apply -- rather than by unit tests, which would exercise a
  * mocked pg client.
  */
-import { Pool } from 'pg';
 import { loadConfig } from '../../config/index.js';
 import { describeError } from '../../errors/describe.js';
+import { createPool } from '../utils/pool.js';
 import { down, up } from './runner.js';
 
 async function main(): Promise<void> {
@@ -19,7 +19,14 @@ async function main(): Promise<void> {
   }
 
   const cfg = loadConfig();
-  const pool = new Pool({ connectionString: cfg.DATABASE_URL, max: 1 });
+  // The shared helper rather than a bare `new Pool`, for the reason spelled
+  // out in `utils/pool.ts`: an unhandled `error` event on the pool is a fatal
+  // uncaught exception in Node, so an idle connection dying mid-migration
+  // would kill this process outright instead of failing through
+  // `main().catch()` and the `finally` that closes the pool (D64).
+  const pool = createPool(cfg, (message, fields) => {
+    console.error(`${message}: ${fields.cause}`);
+  });
 
   try {
     await (direction === 'up' ? up(pool, console.log) : down(pool, console.log));

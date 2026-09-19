@@ -4,6 +4,11 @@ import { RequestMethod } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { AppModule } from '../api.module.js';
 import { API_VERSION_PREFIX, UNVERSIONED_PATHS } from '../bootstrap.js';
+import {
+  JSON_PATH_ACCEPTED,
+  JSON_PATH_PATTERN,
+  JSON_PATH_REJECTED,
+} from '../../core/assertions/json-path-grammar.js';
 import { buildOpenApiDocument } from './document.js';
 
 /**
@@ -132,6 +137,26 @@ describe('shapes come from the schemas the server validates with', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;
 
+  /**
+   * The `json_path` member of the assertions union, found by the field it
+   * carries rather than by its position — an index would keep passing while
+   * silently reading a different member if the union ever gains one.
+   */
+  function publishedJsonPathPattern(schemaName: string): string {
+    const assertions = (
+      schemas[schemaName] as {
+        properties: { assertions: { items: { oneOf: Record<string, never>[] } } };
+      }
+    ).properties.assertions.items.oneOf as unknown as {
+      properties?: { path?: { pattern?: string } };
+    }[];
+    const member = assertions.find((m) => m.properties?.path !== undefined);
+    expect(member, `${schemaName}: no json_path member in the assertions union`).toBeDefined();
+    const pattern = member!.properties!.path!.pattern;
+    expect(pattern, `${schemaName}: json_path member publishes no pattern`).toBeDefined();
+    return pattern!;
+  }
+
   it('rejects unknown fields, because the zod schemas are strict', () => {
     for (const name of ['RegisterRequest', 'LoginRequest', 'ChangePasswordRequest']) {
       expect(schemas[name].additionalProperties, name).toBe(false);
@@ -162,6 +187,25 @@ describe('shapes come from the schemas the server validates with', () => {
     // and must not answer differently for an address that exists.
     const login = schemas.LoginRequest as { properties: { password: { minLength: number } } };
     expect(login.properties.password.minLength).toBe(1);
+  });
+
+  it('publishes the json_path grammar as the pattern core enforces, not a copy of it', () => {
+    // The drift this closes: z.toJSONSchema drops .refine(), so a predicate
+    // would leave the document advertising any non-empty path while the
+    // server answers 400. Asserting the published string *is*
+    // JSON_PATH_PATTERN.source means a grammar change cannot update one
+    // without the other (docs/m3-plan.md D49/D52).
+    for (const name of ['CreateEndpointRequest', 'UpdateEndpointRequest']) {
+      expect(publishedJsonPathPattern(name), name).toBe(JSON_PATH_PATTERN.source);
+    }
+  });
+
+  it('publishes a pattern that accepts and rejects exactly what the server does', () => {
+    // Iterating the same exported table the DTO and evaluator tests use, so
+    // a case added in one place is checked in all three.
+    const published = new RegExp(publishedJsonPathPattern('CreateEndpointRequest'));
+    for (const path of JSON_PATH_ACCEPTED) expect(published.test(path), path).toBe(true);
+    for (const path of JSON_PATH_REJECTED) expect(published.test(path), path).toBe(false);
   });
 
   it('encodes the tag-key colon ban as a pattern, since z.toJSONSchema drops .refine()', () => {
