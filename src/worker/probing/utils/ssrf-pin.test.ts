@@ -45,12 +45,28 @@ describe('classifyGuardRejection', () => {
     }
   });
 
-  it('treats a cause without a usable code as a clean negative', () => {
+  it('does not pass off an unreadable cause as a clean negative', () => {
+    // A cause exists, so something failed -- we just cannot say what. Calling
+    // that DNS_NXDOMAIN would invent a diagnosis, which is the same coercion
+    // §7.4 forbids, only with a more plausible-looking answer.
     expect(classifyGuardRejection(unresolvable('a string, not an error'))).toEqual({
-      failureClass: 'DNS_NXDOMAIN',
+      failureClass: 'UNKNOWN_ERROR',
       code: 'URL_UNRESOLVABLE',
     });
     expect(classifyGuardRejection(unresolvable({ noCode: true }))).toEqual({
+      failureClass: 'UNKNOWN_ERROR',
+      code: 'URL_UNRESOLVABLE',
+    });
+    expect(classifyGuardRejection(unresolvable({ code: 42 }))).toEqual({
+      failureClass: 'UNKNOWN_ERROR',
+      code: 'URL_UNRESOLVABLE',
+    });
+  });
+
+  it('reserves DNS_NXDOMAIN for a genuinely absent cause', () => {
+    // The clean-negative branch: both families came back empty and nothing
+    // was attached, so the name really has no usable record.
+    expect(classifyGuardRejection(unresolvable())).toEqual({
       failureClass: 'DNS_NXDOMAIN',
       code: 'URL_UNRESOLVABLE',
     });

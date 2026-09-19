@@ -17,12 +17,28 @@
 import { SsrfValidationError } from '../../../core/ssrf/host-validator.js';
 import type { Classification } from './failure-classes.js';
 
-function causeCode(error: SsrfValidationError): string | undefined {
+/**
+ * What `core/ssrf` attached, if anything.
+ *
+ * Three states, not two — collapsing the last two is a real misreport:
+ *
+ * - `absent`: no cause at all. Both address families came back cleanly
+ *   empty, so the name genuinely has no usable record.
+ * - `{ code }`: the resolver failed and said why.
+ * - `unreadable`: a cause exists but carries no own string `code` — a plain
+ *   `Error` from an unexpected resolver failure, say. Something went wrong
+ *   and we do not know what, which is not the same as knowing the name does
+ *   not resolve.
+ */
+type Cause = { kind: 'absent' } | { kind: 'code'; code: string } | { kind: 'unreadable' };
+
+function causeOf(error: SsrfValidationError): Cause {
   const cause: unknown = error.cause;
-  if (typeof cause !== 'object' || cause === null) return undefined;
-  if (!Object.hasOwn(cause, 'code')) return undefined;
+  if (cause === undefined || cause === null) return { kind: 'absent' };
+  if (typeof cause !== 'object') return { kind: 'unreadable' };
+  if (!Object.hasOwn(cause, 'code')) return { kind: 'unreadable' };
   const code = (cause as { code: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
+  return typeof code === 'string' ? { kind: 'code', code } : { kind: 'unreadable' };
 }
 
 /**
@@ -54,10 +70,16 @@ export function classifyGuardRejection(error: SsrfValidationError): Classificati
       return { failureClass: 'BLOCKED_BY_POLICY', code: error.code };
 
     case 'URL_UNRESOLVABLE': {
-      const cause = causeCode(error);
-      if (cause === undefined) return { failureClass: 'DNS_NXDOMAIN', code: error.code };
-      if (cause === 'EAI_AGAIN') return { failureClass: 'DNS_FAILURE', code: cause };
-      return { failureClass: 'UNKNOWN_ERROR', code: cause };
+      const cause = causeOf(error);
+      // Only a genuinely absent cause is a clean negative. A cause we cannot
+      // read means the resolver failed in a way nobody anticipated, and
+      // reporting that as "the name does not exist" would be inventing a
+      // diagnosis -- the same coercion architecture §7.4 forbids, just with a
+      // more plausible-looking answer.
+      if (cause.kind === 'absent') return { failureClass: 'DNS_NXDOMAIN', code: error.code };
+      if (cause.kind === 'unreadable') return { failureClass: 'UNKNOWN_ERROR', code: error.code };
+      if (cause.code === 'EAI_AGAIN') return { failureClass: 'DNS_FAILURE', code: cause.code };
+      return { failureClass: 'UNKNOWN_ERROR', code: cause.code };
     }
 
     default:
