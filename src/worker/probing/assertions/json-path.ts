@@ -54,6 +54,15 @@ export function readJsonPath(root: unknown, path: string): PathLookup {
 
   for (const segment of segments) {
     if (segment.kind === 'name') {
+      // Arrays are reached only by index. A JSON array has no *member* named
+      // `length` -- that is a JavaScript intrinsic, an own property of the
+      // host object rather than anything the endpoint sent. Letting a named
+      // segment traverse an array means `$.items.length` can satisfy
+      // `equals: 2` against a response containing no such field, which is an
+      // absent path reporting a healthy endpoint: precisely the failure the
+      // own-property rule exists to prevent, just reached through an own
+      // property instead of an inherited one.
+      if (Array.isArray(current)) return MISSING;
       if (!isTraversableObject(current)) return MISSING;
       if (!Object.hasOwn(current, segment.name)) return MISSING;
       current = current[segment.name];

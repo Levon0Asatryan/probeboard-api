@@ -63,16 +63,33 @@ describe('readJsonPath', () => {
     expect(readJsonPath(BODY, '$.data.items[0].toString')).toEqual({ found: false });
   });
 
-  it("still reads an array's own `length`, which is not a prototype value", () => {
-    // Drawing the line where D55 draws it: `length` is an *own* data property
-    // of every array, so reporting it is reporting something the API really
-    // sent. The rule is about the inherited chain -- `constructor`,
-    // `__proto__`, `toString` -- not about every property with a familiar
-    // name. Asserted explicitly so this is not later "fixed" by weakening the
-    // own-property check into something narrower.
+  it('does not let a named segment traverse an array, `length` included', () => {
+    // I originally drew this line at "own property vs inherited" and asserted
+    // the opposite here, with a comment telling readers not to change it.
+    // That was wrong. `length` *is* an own property -- of the JavaScript
+    // array object, not of the JSON the endpoint sent. A JSON array has no
+    // member named `length`, so `$.items.length` satisfying `equals: 2` is an
+    // absent path reporting a healthy endpoint, which is the whole failure
+    // this rule exists to prevent.
     expect(Object.hasOwn([], 'length')).toBe(true);
-    expect(readJsonPath([], '$.length')).toEqual({ found: true, value: 0 });
-    expect(readJsonPath(BODY, '$.data.items.length')).toEqual({ found: true, value: 2 });
+    expect(readJsonPath([], '$.length')).toEqual({ found: false });
+    expect(readJsonPath(BODY, '$.data.items.length')).toEqual({ found: false });
+  });
+
+  it('still reaches array elements by index, and their fields by name', () => {
+    // The rule narrows how arrays are entered; it does not change what is
+    // reachable once inside one.
+    expect(readJsonPath(BODY, '$.data.items[1].status')).toEqual({
+      found: true,
+      value: 'down',
+    });
+    expect(readJsonPath(BODY, '$.data.items[0].tags[1]')).toEqual({ found: true, value: 'b' });
+  });
+
+  it('reads a `length` field that the response genuinely contains', () => {
+    // An object member called `length` is real data and stays readable --
+    // the restriction is about arrays, not about the name.
+    expect(readJsonPath({ length: 7 }, '$.length')).toEqual({ found: true, value: 7 });
   });
 
   it('misses on a path the shared grammar does not accept', () => {
