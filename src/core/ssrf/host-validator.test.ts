@@ -311,3 +311,104 @@ describe('SsrfValidationError', () => {
     }
   });
 });
+
+describe('an injected resolver (D13)', () => {
+  // Passed as an argument rather than through the module mock above, because
+  // the claim is that the *injected* resolver is used instead of Node's. The
+  // module spies staying untouched is what proves it.
+  //
+  // M3 needs this to drive a DNS-rebinding proof: the same hostname must
+  // answer public on one call and private on the next, which no real resolver
+  // will do on request. Injecting here keeps one resolution path and one
+  // address classifier, instead of a second copy inside `worker/`.
+  const enodata = Object.assign(new Error('ENODATA'), { code: 'ENODATA' });
+
+  function fakeResolver(v4: string[], v6: string[] = []) {
+    return {
+      resolve4: () => Promise.resolve(v4),
+      resolve6: () => (v6.length ? Promise.resolve(v6) : Promise.reject(enodata)),
+    };
+  }
+
+  it('is used instead of the real resolver', async () => {
+    noPublicRecords(); // the module mock would reject this hostname outright
+    resolve4.mockClear();
+    resolve6.mockClear();
+
+    const result = await assertSaveableUrl(
+      'http://injected.example.com/',
+      cfg,
+      fakeResolver(['93.184.216.34']),
+    );
+
+    expect(result.addresses).toEqual(['93.184.216.34']);
+    expect(resolve4).not.toHaveBeenCalled();
+    expect(resolve6).not.toHaveBeenCalled();
+  });
+
+  it('rejects on a private address the injected resolver returns', async () => {
+    await expect(
+      assertSaveableUrl('http://rebinding.example.com/', cfg, fakeResolver(['169.254.169.254'])),
+    ).rejects.toMatchObject({ code: 'ADDRESS_NOT_ALLOWED' });
+  });
+
+  it('rejects a mixed record set on the private address, not the public one', async () => {
+    // The reason resolve4/resolve6 are used rather than dns.lookup: a
+    // single-address view cannot see the private record hiding behind a
+    // public one.
+    await expect(
+      assertSaveableUrl(
+        'http://mixed.example.com/',
+        cfg,
+        fakeResolver(['93.184.216.34', '10.0.0.5']),
+      ),
+    ).rejects.toMatchObject({ code: 'ADDRESS_NOT_ALLOWED' });
+  });
+
+  it('can answer differently on successive calls, which is what a rebinding proof needs', async () => {
+    let call = 0;
+    const rebinding = {
+      resolve4: () => {
+        call += 1;
+        return Promise.resolve(call === 1 ? ['93.184.216.34'] : ['127.0.0.1']);
+      },
+      resolve6: () => Promise.reject(enodata),
+    };
+
+    const first = await assertSaveableUrl('http://tocttou.example.com/', cfg, rebinding);
+    expect(first.addresses).toEqual(['93.184.216.34']);
+
+    await expect(
+      assertSaveableUrl('http://tocttou.example.com/', cfg, rebinding),
+    ).rejects.toMatchObject({ code: 'ADDRESS_NOT_ALLOWED' });
+  });
+
+  it('still fails closed on a resolver error that is not a definitive negative', async () => {
+    // SERVFAIL through the injected path must behave exactly as it does
+    // through the real one: not knowing what a family resolves to is not the
+    // same as knowing it has no records.
+    const servfail = {
+      resolve4: () => Promise.resolve(['93.184.216.34']),
+      resolve6: () => Promise.reject(Object.assign(new Error('SERVFAIL'), { code: 'SERVFAIL' })),
+    };
+
+    await expect(
+      assertSaveableUrl('http://half-broken.example.com/', cfg, servfail),
+    ).rejects.toMatchObject({ code: 'URL_UNRESOLVABLE' });
+  });
+
+  it('is not consulted for an IP literal, which never reaches DNS', async () => {
+    let called = false;
+    const spy = {
+      resolve4: () => {
+        called = true;
+        return Promise.resolve([]);
+      },
+      resolve6: () => Promise.reject(enodata),
+    };
+
+    const result = await assertSaveableUrl('http://93.184.216.34/', cfg, spy);
+    expect(result.addresses).toEqual(['93.184.216.34']);
+    expect(called).toBe(false);
+  });
+});
