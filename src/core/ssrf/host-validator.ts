@@ -44,6 +44,31 @@ export interface ValidatedUrl {
 }
 
 /**
+ * The DNS surface this module uses, so a caller can supply its own.
+ *
+ * M3's probe executor needs to drive resolution deterministically — a
+ * rebinding proof has to return a public address on the first call and a
+ * private one on the second, which no real resolver will do on demand
+ * (docs/m3-plan.md D13). Injecting it here keeps one resolution path and one
+ * address classifier rather than a second copy inside `worker/`.
+ *
+ * `resolve4`/`resolve6` rather than `lookup`: they return *every* record,
+ * which is the whole point — a hostname with a mixed public/private record
+ * set must be rejected on the private one, and `lookup` would only ever show
+ * one address.
+ */
+export interface DnsResolver {
+  resolve4(hostname: string): Promise<string[]>;
+  resolve6(hostname: string): Promise<string[]>;
+}
+
+/** Node's real resolver. The default, so existing callers are unaffected. */
+const NODE_RESOLVER: DnsResolver = {
+  resolve4: (hostname) => dns.resolve4(hostname),
+  resolve6: (hostname) => dns.resolve6(hostname),
+};
+
+/**
  * Hostnames whose only purpose is resolving to a link-local metadata
  * address. Rejected by name before DNS runs at all, because the point of
  * checking every resolved address (rule below) does not help here: the
@@ -234,6 +259,7 @@ function isBlockedAddress(address: string): boolean {
 export async function assertSaveableUrl(
   rawUrl: string,
   cfg: SsrfGuardConfig,
+  resolver: DnsResolver = NODE_RESOLVER,
 ): Promise<ValidatedUrl> {
   let url: URL;
   try {
@@ -290,7 +316,7 @@ export async function assertSaveableUrl(
   // numeric-IPv4-obfuscation form (decimal, octal, hex, short-form) into a
   // literal by this point (docs/m2-plan.md §2.4), so this branch is exactly
   // where that corpus is caught.
-  const addresses = isIP(hostname) ? [hostname] : await resolveAll(hostname);
+  const addresses = isIP(hostname) ? [hostname] : await resolveAll(hostname, resolver);
   if (addresses.length === 0) {
     throw new SsrfValidationError('URL_UNRESOLVABLE', 'the hostname does not resolve');
   }
@@ -323,8 +349,11 @@ const NO_RECORD_CODES = new Set(['ENOTFOUND', 'ENODATA']);
  * been sitting behind the very failure that got silently discarded. Fails
  * closed instead: the whole validation fails, not just that family.
  */
-async function resolveAll(hostname: string): Promise<string[]> {
-  const [v4, v6] = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
+async function resolveAll(hostname: string, resolver: DnsResolver): Promise<string[]> {
+  const [v4, v6] = await Promise.allSettled([
+    resolver.resolve4(hostname),
+    resolver.resolve6(hostname),
+  ]);
   const addresses: string[] = [];
 
   for (const result of [v4, v6]) {
