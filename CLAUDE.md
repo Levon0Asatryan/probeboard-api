@@ -10,6 +10,33 @@ and validates; **worker** chats implement one milestone or one plan step from a
 handoff prompt (`docs/handoff-template.md`). `docs/tracker.md` is the status of
 record — read it first. Levon approves plans and merges; no chat merges.
 
+### Cost discipline — the loop must stay cheap
+
+Added 2026-09-19, after one regex plus a maintenance script cost twelve
+commits, four review rounds and two days. Rigour is kept where it caught real
+defects; the loop around it is not.
+
+- **Two review rounds per PR, then stop.** Round one and round two: fix what
+  is real. After that, a finding is either **fix-now** or a tracker follow-up.
+  Fix-now means only: a security hole, data loss, a wrong result, or a broken
+  build. Everything else gets a one-line reply saying it is deferred, and a
+  follow-up row. Answer every thread either way.
+- **Push back on a wrong finding, with evidence, instead of implementing it.**
+  Check the premise first — a review that cites a limit, a default or a
+  standard is asserting a fact, and facts are checkable. Two of Codex's
+  findings in M2 and M3 were wrong on their own numbers.
+- **Build for this thesis, not for a fleet.** There is no deployment, no
+  production data and no operator. Work that only pays off at a scale this
+  system will never see — byte-budgeted batches, operator recovery tooling,
+  migration paths for data nobody has — is out of scope by default. Say so in
+  the plan and move on. Correctness, security and the evidence for both stay.
+- **Two or three PRs per milestone**, not five to seven. One plan PR, then
+  implementation in coherent chunks. A PR that only makes sense alongside the
+  next one should have been one PR.
+- **The orchestrator validates at milestone end**, not per PR. Per PR it
+  checks only: CI green on the head SHA, Codex reviewed that SHA, threads
+  answered. Deep validation happens once, against the finished milestone.
+
 ### Every task runs four phases — not optional
 
 Applies to every chat, with or without a handoff prompt. The report
@@ -21,14 +48,20 @@ Applies to every chat, with or without a handoff prompt. The report
    area — each becomes a test or a decision. Findings go in the plan, with
    sources.
 2. **Implementation**, only after the plan is approved.
-3. **Revalidation**, after implementing. Walk the plan line by line against
-   the code and close every gap. Re-prove every guard by removal on the final
-   code. Fresh clone: `npm ci`, `npm run build`, `npm run verify`,
-   `npm run test:int`. Real `docker compose` run with `psql` checks.
+3. **Revalidation**, after implementing, scaled to what the PR touches. Always:
+   walk the plan against the code and close every gap, and re-prove every
+   guard by removal on the final code. The fresh clone (`npm ci`,
+   `npm run build`, `npm run verify`, `npm run test:int`) and the real
+   `docker compose` run with `psql` checks are required for an HTTP surface,
+   a migration, a database change or the last PR of a milestone — for a PR
+   that only changes pure logic, CI plus the local suites are enough. Say in
+   the report which applied.
 4. **Re-review**, after revalidation. Review the whole diff yourself as a
    hostile reviewer against `AGENTS.md`. Then wait for Codex on the head SHA
    (see "Before calling it done", step 4), and answer every thread. A fix push
-   repeats the checks it affects.
+   repeats the checks it affects — but only for two rounds, after which the
+   fix-now rule in "Cost discipline" decides what is fixed and what is
+   deferred to a follow-up.
 
 ### Before writing code
 
