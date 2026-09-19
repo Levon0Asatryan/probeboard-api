@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'kysely';
 import type { EndpointAssertion } from '../types.js';
 import type { DbService } from '../db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
@@ -55,7 +56,12 @@ interface CliResult {
 }
 
 function runCli(
-  options: { breakStdout?: boolean; breakStderr?: boolean } = {},
+  options: {
+    breakStdout?: boolean;
+    breakStderr?: boolean;
+    stallStdout?: boolean;
+    env?: Record<string, string>;
+  } = {},
 ): Promise<CliResult> {
   return new Promise<CliResult>((resolve, reject) => {
     const child = spawn('npx', ['tsx', CLI], {
@@ -64,6 +70,7 @@ function runCli(
         ...process.env,
         DATABASE_URL: testDatabaseUrl(),
         HEADER_ENCRYPTION_KEY: LOCAL_HEADER_KEY,
+        ...options.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -71,7 +78,12 @@ function runCli(
     let stdout = '';
     let stderr = '';
 
-    if (options.breakStdout) {
+    if (options.stallStdout) {
+      // Neither destroyed nor read: the pipe stays open and the parent simply
+      // never consumes it. Once the OS buffer fills, the child's writes block
+      // with no EPIPE and no callback -- real backpressure against the real
+      // `process.stdout` (D69).
+    } else if (options.breakStdout) {
       // Destroying the parent's read end makes every write in the child fail
       // with EPIPE -- a real broken pipe, not a simulated one.
       child.stdout.destroy();
@@ -98,6 +110,41 @@ function runCli(
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+/**
+ * Seeds enough unsupported rows that the audit's output must exceed any pipe
+ * buffer before it finishes.
+ *
+ * This is what makes the stalled-pipe test deterministic rather than timed: a
+ * reader that never consumes blocks the writer after a *bounded number of
+ * bytes* (a pipe holds at most 64 KiB), so writing hundreds of kilobytes
+ * guarantees the block regardless of the exact capacity. Nothing depends on
+ * how fast anything runs.
+ */
+async function seedManyUnsupported(count: number): Promise<void> {
+  const row = await ctx.db
+    .selectFrom('endpoints')
+    .select(['service_id', 'user_id'])
+    .where('id', '=', endpointId)
+    .executeTakeFirstOrThrow();
+
+  await sql`
+    INSERT INTO endpoints
+      (service_id, user_id, interval_s, timeout_ms, max_redirects, method, path, assertions)
+    SELECT ${row.service_id}::uuid, ${row.user_id}::uuid, 60, 10000, 5, 'GET',
+           '/bulk-' || g, ${JSON.stringify([UNSUPPORTED, BODY])}::jsonb
+    FROM generate_series(1, ${count}) AS g
+  `.execute(ctx.db);
+}
+
+async function countUnsupportedRows(): Promise<number> {
+  const result = await sql<{ n: number }>`
+    SELECT count(*)::int AS n FROM endpoints
+    WHERE assertions @> '[{"type":"json_path","path":"$.items[*].id"}]'::jsonb
+  `.execute(ctx.db);
+  const [only] = result.rows;
+  return only.n;
 }
 
 async function readAssertions(id: string): Promise<EndpointAssertion[]> {
@@ -203,4 +250,62 @@ describe('audit-json-path-assertions CLI', () => {
     expect(JSON.parse(lines[0])).toEqual({ endpointId, removed: UNSUPPORTED });
     expect(await readAssertions(endpointId)).toEqual([BODY]);
   }, 60_000);
+
+  // SKIPPED DELIBERATELY, and not as tidying-up: this is a reproduction of a
+  // defect that is still in `main`, kept executable so the fix can be proved
+  // when it lands. `AGENTS.md` flags `.skip`, so the reason is stated here
+  // rather than left for a reviewer to infer.
+  //
+  // It fails today, and the failure is the evidence: D69 shipped
+  // `stream.destroy()` as the way to release a stalled write, and that does
+  // not work. A write already blocked on a full pipe is not released by it,
+  // so the CLI never exits and this test dies on its timeout. Measured
+  // directly -- a child writing ~1 MB to a pipe nobody reads, then applying
+  // each strategy:
+  //
+  //     none            HUNG
+  //     destroy()       HUNG     <- what D69 ships
+  //     unref()         HUNG
+  //     process.exit()  exited after 1041ms
+  //
+  // so the real fix is the bounded exit Codex suggested, taken after the
+  // diagnostic has been awaited (which keeps D68's flush guarantee intact).
+  // Deferred rather than fix-now: the audit is an operator-run script and the
+  // hang happens *after* the rollback, so no data is lost and no request path
+  // is affected. Tracked as an M3 follow-up.
+  //
+  // Un-skip when that bounded exit lands; it should then pass unchanged.
+  //
+  // Caveat on the matrix: measured on Node v24.20.0, and this project pins
+  // Node 22. That re-run has not been done, so the numbers above are strong
+  // evidence rather than settled fact -- the same gap D40 records.
+  it.skip('exits instead of hanging when stdout stalls with a full pipe', async () => {
+    // Deterministic, not timed: a pipe holds at most 64 KiB, so seeding far
+    // more output than that guarantees the writer blocks, whatever the exact
+    // capacity.
+    await seedManyUnsupported(3000);
+    const seeded = await countUnsupportedRows();
+    expect(seeded).toBe(3001);
+
+    const result = await runCli({
+      stallStdout: true,
+      // The floor the schema allows, so the deadline fires promptly once the
+      // pipe is full rather than making the suite wait out the 10s default.
+      env: { AUDIT_WRITE_TIMEOUT_MS: '500' },
+    });
+
+    // It ended, and said why.
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/audit failed/);
+    expect(result.stderr).toMatch(/did not complete within/);
+
+    // And it stopped where it stalled: the run aborted partway, so rows after
+    // that point still carry their unsupported assertion. A run that had
+    // somehow completed would leave none.
+    const remaining = await countUnsupportedRows();
+    expect(remaining).toBeGreaterThan(0);
+    // Shorter than the other cases on purpose: while this reproduces an
+    // unfixed hang, an accidental un-skip should fail quickly rather than
+    // stall a suite for a minute and a half.
+  }, 30_000);
 });
