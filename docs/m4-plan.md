@@ -1003,9 +1003,25 @@ decision:
 - M3's `Clock` for probe timings, where `monotonic()` is already the only
   source of every `*_ms` and `wallClock()` the only source of `startedAt`.
 
-Enforced, not merely stated: a unit test compiles the claim and release queries
-and asserts no parameter of a date/timestamp type is bound for those columns,
-so a later "just pass `new Date()`" cannot pass review by being invisible.
+**The rule is about origin, not about type.** Stated as "no timestamp
+parameter is ever bound" it would forbid the fence: §3.7's release and abandon
+must bind `$slot` against `scheduled_at`, and that is a `timestamptz`. The
+difference is where the value came from —
+
+- a timestamp **written** into a scheduling column is always computed by
+  `now()` inside the statement, never bound. That is the rule.
+- a timestamp **compared for identity** may be bound, provided it was
+  round-tripped from the database: `$slot` is the `scheduled_at` this worker's
+  own claim returned, so it carries the database's clock, not ours. Binding it
+  back is how the fence establishes "the slot I was given", and dropping it to
+  satisfy a naive test would delete the guard D13 exists for.
+
+Enforced, not merely stated: a unit test compiles the claim, reconcile, release
+and abandon queries and asserts that every value **assigned** to `next_run_at`,
+`leased_until`, `scheduled_at` or `last_probe_at` is a `now()` expression and
+not a parameter — while permitting bound parameters in `WHERE`. So a later
+"just pass `new Date()`" cannot pass review by being invisible, and the fence
+still compiles.
 
 ### 3.9 Shutdown
 
