@@ -1,5 +1,6 @@
 /**
- * Builds the connector that closes the DNS-rebinding window.
+ * Builds the connector that closes the DNS-rebinding window, times the
+ * connect and handshake phases, and judges the certificate itself.
  *
  * The guard resolves a hostname and classifies every address it got back. If
  * the transport then resolves that hostname *again* at connect time, nothing
@@ -24,6 +25,8 @@
  */
 import net from 'node:net';
 import tls from 'node:tls';
+import { earliestExpiry } from './tls-inspect.js';
+import type { HopBoundary } from './timing.js';
 
 /**
  * The shape undici passes to a custom `connect`. Declared structurally rather
@@ -38,8 +41,61 @@ export interface ConnectOptions {
   servername?: string | null;
 }
 
-export type ConnectCallback = (error: Error | null, socket?: net.Socket) => void;
+/**
+ * undici's own callback shape: either an error and no socket, or a socket and
+ * no error. Declared as that discriminated pair rather than
+ * `(error: Error | null, socket?: Socket)`, which is structurally *not*
+ * assignable to `undici.connector` and makes every `new Agent({ connect })`
+ * a type error at the call site.
+ */
+export type ConnectCallback = (
+  ...args: [error: null, socket: net.Socket] | [error: Error, socket: null]
+) => void;
 export type Connector = (options: ConnectOptions, callback: ConnectCallback) => void;
+
+/** What the completed handshake said, recorded whether or not it passed. */
+export interface TlsVerdict {
+  authorized: boolean;
+  /** Node's `authorizationError` code, when it refused. */
+  authorizationError?: string;
+  /** The earliest `notAfter` in the presented chain (FR-22). */
+  certExpiresAt?: Date;
+}
+
+/**
+ * A rejected peer, carrying the OpenSSL verify code as `code`.
+ *
+ * `code` is what makes this classify correctly: `fetch()` wraps a connector
+ * error in a `TypeError` and `classifyError`'s cause walk (D34) reads the
+ * first own string `code` it finds, so `CERT_HAS_EXPIRED` here becomes
+ * `TLS_EXPIRED` through the one map in `failure-classes.ts` — no second
+ * mapping table beside it.
+ */
+export class TlsVerificationError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(`TLS verification failed: ${code}`);
+    this.name = 'TlsVerificationError';
+    this.code = code;
+  }
+}
+
+/**
+ * The connector's own connect deadline expiring.
+ *
+ * `UND_ERR_CONNECT_TIMEOUT` is deliberate: it is the code undici's own
+ * connector raises for this condition, and it already maps to
+ * `CONNECTION_TIMEOUT`. See `timeoutMs` for why we have to raise it ourselves.
+ */
+export class ConnectTimeoutError extends Error {
+  readonly code = 'UND_ERR_CONNECT_TIMEOUT';
+
+  constructor(timeoutMs: number) {
+    super(`connect timed out after ${timeoutMs}ms`);
+    this.name = 'ConnectTimeoutError';
+  }
+}
 
 export interface PinnedConnectOptions {
   /**
@@ -47,6 +103,24 @@ export interface PinnedConnectOptions {
    * Absent means "do not pin" — see `createConnector`.
    */
   address?: string;
+  /** Records a phase boundary the instant it happens. */
+  onBoundary?: (boundary: HopBoundary) => void;
+  /** Receives the handshake verdict, authorised or not. TLS hops only. */
+  onTls?: (verdict: TlsVerdict) => void;
+  /**
+   * Bound on getting a usable socket: TCP connect plus, on https, the
+   * handshake.
+   *
+   * We enforce it because undici will not. `Client` applies its
+   * `connectTimeout` inside `buildConnector`, and that is called only when
+   * `typeof connect !== 'function'` (undici 6.28.0,
+   * `lib/dispatcher/client.js`) — so supplying the custom connector D13
+   * requires silently opts out of it. Without this timer a dropped SYN is
+   * bounded only by the OS (~75s on Linux), far past any configured
+   * `timeout_ms`; the outer `AbortSignal` (D4) still bounds the probe, but
+   * the socket would outlive it.
+   */
+  timeoutMs?: number;
 }
 
 function portFor(options: ConnectOptions): number {
@@ -58,6 +132,43 @@ function portFor(options: ConnectOptions): number {
 
 function isTls(options: ConnectOptions): boolean {
   return options.protocol === 'https:';
+}
+
+/**
+ * The SNI name, or nothing when the target is an IP literal.
+ *
+ * SNI carries host *names* by RFC 6066, so an IP there is meaningless.
+ * Measured on the pinned runtime rather than assumed: Node currently
+ * *accepts* an IP `servername` and emits `DEP0123` saying it "will be ignored
+ * in a future version" — it does not throw, so this is not a crash guard.
+ * What it buys is that identity is checked against `host`, i.e. the
+ * certificate's IP SANs, which is the correct check for an IP target and the
+ * one that keeps working when Node starts ignoring the field. Verified both
+ * ways: a certificate carrying `IP:127.0.0.1` authorises with `servername`
+ * omitted, and one without it still fails `ERR_TLS_CERT_ALTNAME_INVALID`.
+ */
+function servernameFor(hostname: string): string | undefined {
+  return net.isIP(hostname) === 0 ? hostname : undefined;
+}
+
+/**
+ * The OpenSSL verify code from a finished handshake.
+ *
+ * `@types/node` declares `authorizationError: Error`, but the runtime hands
+ * back a bare **string** — `'DEPTH_ZERO_SELF_SIGNED_CERT'`, not an `Error`
+ * carrying it — measured on the pinned runtime. Reading `.code` off it, as
+ * the type invites, yields `undefined` and every TLS refusal would classify
+ * as `UNKNOWN_ERROR`. Both shapes are handled because the type and the
+ * runtime disagree and only one of them can be checked by the compiler.
+ */
+function authorizationErrorCode(socket: tls.TLSSocket): string | undefined {
+  const raw: unknown = socket.authorizationError;
+  if (typeof raw === 'string') return raw === '' ? undefined : raw;
+  if (raw instanceof Error) {
+    const code: unknown = (raw as { code?: unknown }).code;
+    return typeof code === 'string' ? code : raw.message;
+  }
+  return undefined;
 }
 
 /**
@@ -75,32 +186,107 @@ function isTls(options: ConnectOptions): boolean {
  * machinery, not pin to nothing. An *enabled* guard that produced no
  * addresses is a different thing entirely — that is the `URL_UNRESOLVABLE`
  * rejection path, and it never reaches a connector at all.
+ *
+ * On https the callback is deferred until the handshake has been judged
+ * (D6). The socket is handed to undici only if the peer was authorised; an
+ * unauthorised one is destroyed here, before a single request byte — and
+ * therefore before any configured secret header — is written to it.
  */
 export function createConnector(pin: PinnedConnectOptions = {}): Connector {
   return (options, callback) => {
     const port = portFor(options);
     // The pin, or the hostname when there is nothing to pin to.
     const host = pin.address ?? options.hostname;
+    const mark = (boundary: HopBoundary): void => pin.onBoundary?.(boundary);
+
+    // Exactly one of settle's calls reaches undici. Without this latch a
+    // socket that errors *after* a successful handshake would call the
+    // callback a second time, and undici would take a destroyed socket for a
+    // fresh one.
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const settle = (error: Error | null, socket?: net.Socket): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (error !== null) callback(error, null);
+      else if (socket !== undefined) callback(null, socket);
+    };
 
     try {
-      if (isTls(options)) {
-        const socket = tls.connect({
-          host,
-          port,
-          // Deliberately the hostname, not `host`: the peer must still prove
-          // it is the name the user configured, whichever address we dialled.
-          servername: options.hostname,
+      mark('connect_start');
+
+      const socket = isTls(options)
+        ? tls.connect({
+            host,
+            port,
+            // Deliberately the hostname, not `host`: the peer must still
+            // prove it is the name the user configured, whichever address we
+            // dialled.
+            servername: servernameFor(options.hostname),
+            // Judged below rather than by Node (D6). The trust boundary does
+            // not move -- an unauthorised socket never carries a request.
+            rejectUnauthorized: false,
+          })
+        : net.connect({ host, port });
+
+      if (pin.timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          const error = new ConnectTimeoutError(pin.timeoutMs!);
+          socket.destroy(error);
+          settle(error);
+        }, pin.timeoutMs);
+        // The probe owns the deadline; this timer must not hold the loop open.
+        timer.unref?.();
+      }
+
+      // `on`, not `once`: a socket commonly emits a second error while it
+      // tears down, and an 'error' with no listener left is an uncaught
+      // exception that takes the whole worker with it. The settle latch, not
+      // listener removal, is what keeps undici's callback to exactly one call.
+      socket.on('error', (error: Error) => settle(error));
+
+      if (!isTls(options)) {
+        socket.once('connect', () => {
+          mark('connect_done');
+          settle(null, socket);
         });
-        socket.once('error', () => undefined);
-        callback(null, socket);
         return;
       }
 
-      const socket = net.connect({ host, port });
-      socket.once('error', () => undefined);
-      callback(null, socket);
+      const secure = socket as tls.TLSSocket;
+      // TCP is up; the handshake starts here. Both boundaries come from the
+      // socket's own events, not from bracketing the whole call, so a slow
+      // handshake is visible as tls time rather than hidden in connect time.
+      secure.once('connect', () => {
+        mark('connect_done');
+        mark('tls_start');
+      });
+
+      secure.once('secureConnect', () => {
+        mark('tls_done');
+
+        const code = authorizationErrorCode(secure);
+
+        pin.onTls?.({
+          authorized: secure.authorized,
+          authorizationError: secure.authorized ? undefined : code,
+          // Read even when the peer was rejected: an expired certificate is
+          // exactly where FR-22's cert_expires_at is most worth having.
+          certExpiresAt: earliestExpiry(secure.getPeerCertificate(true)),
+        });
+
+        if (!secure.authorized) {
+          const error = new TlsVerificationError(code ?? 'UNKNOWN');
+          secure.destroy();
+          settle(error);
+          return;
+        }
+
+        settle(null, secure);
+      });
     } catch (error) {
-      callback(error instanceof Error ? error : new Error(String(error)));
+      settle(error instanceof Error ? error : new Error(String(error)));
     }
   };
 }

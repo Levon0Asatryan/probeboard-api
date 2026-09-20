@@ -68,6 +68,14 @@ describe('classifyError', () => {
     ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'TLS_UNTRUSTED'],
     ['DEPTH_ZERO_SELF_SIGNED_CERT', 'TLS_UNTRUSTED'],
     ['ERR_TLS_CERT_ALTNAME_INVALID', 'TLS_HOSTNAME_MISMATCH'],
+    // Not in §3.4's column, but the same meaning as the two TLS_UNTRUSTED
+    // rows above by a different OpenSSL verify path. They reach here as
+    // TlsVerificationError.code, and without these rows an ordinary
+    // misconfigured chain -- a server omitting its intermediate -- reports
+    // UNKNOWN_ERROR instead of TLS_UNTRUSTED.
+    ['SELF_SIGNED_CERT_IN_CHAIN', 'TLS_UNTRUSTED'],
+    ['UNABLE_TO_GET_ISSUER_CERT', 'TLS_UNTRUSTED'],
+    ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'TLS_UNTRUSTED'],
     ['EPROTO', 'TLS_HANDSHAKE_FAILED'],
     ['UND_ERR_HEADERS_TIMEOUT', 'RESPONSE_TIMEOUT'],
     ['UND_ERR_BODY_TIMEOUT', 'BODY_TIMEOUT'],

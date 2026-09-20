@@ -118,9 +118,13 @@ export function headersForHop(input: HopHeaderInput): HopHeaders {
     return { headers: { ...input.headers }, dropped: false };
   }
 
-  const kept: Record<string, string> = {};
-  for (const [name, value] of Object.entries(input.headers)) {
-    if (!BODY_HEADERS.has(name.toLowerCase())) kept[name] = value;
-  }
+  // Object.fromEntries, not `kept[name] = value` on a plain object: the
+  // assignment form treats a header literally named `__proto__` as a setter
+  // call, not a property write, so the header would silently disappear on a
+  // rewritten hop while the branch above keeps it. fromEntries defines an own
+  // property for every name, so the two branches agree on what a header is.
+  const kept = Object.fromEntries(
+    Object.entries(input.headers).filter(([name]) => !BODY_HEADERS.has(name.toLowerCase())),
+  );
   return { headers: kept, dropped: false };
 }

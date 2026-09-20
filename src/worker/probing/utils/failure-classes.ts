@@ -51,11 +51,28 @@ const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   ETIMEDOUT: 'CONNECTION_TIMEOUT',
   ECONNRESET: 'CONNECTION_RESET',
   EPIPE: 'CONNECTION_RESET',
+  // undici's own wrapper for "the socket closed when we did not expect it".
+  // Once the connector has handed the socket over, a peer reset reaches
+  // `fetch()` as a `SocketError` carrying this code, and the cause walk stops
+  // at the first code it finds -- so without this row an ordinary mid-response
+  // reset reports UNKNOWN_ERROR, which M6 excludes from uptime instead of
+  // counting as DOWN. Measured against a real local server that destroys the
+  // socket after sending headers.
+  UND_ERR_SOCKET: 'CONNECTION_RESET',
   CERT_HAS_EXPIRED: 'TLS_EXPIRED',
   UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS_UNTRUSTED',
   DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS_UNTRUSTED',
   ERR_TLS_CERT_ALTNAME_INVALID: 'TLS_HOSTNAME_MISMATCH',
   EPROTO: 'TLS_HANDSHAKE_FAILED',
+  // Beyond §3.4's own column: the same operational meaning as the two
+  // TLS_UNTRUSTED codes above — "chain incomplete or self-signed" — reached by
+  // a different OpenSSL verify path. They arrive here through
+  // `TlsVerificationError.code` (pinned-connect.ts), which is why they are in
+  // this one map rather than a second one beside it: two maps over the same
+  // codes disagree the first time either is edited.
+  SELF_SIGNED_CERT_IN_CHAIN: 'TLS_UNTRUSTED',
+  UNABLE_TO_GET_ISSUER_CERT: 'TLS_UNTRUSTED',
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY: 'TLS_UNTRUSTED',
   UND_ERR_HEADERS_TIMEOUT: 'RESPONSE_TIMEOUT',
   UND_ERR_BODY_TIMEOUT: 'BODY_TIMEOUT',
 };
@@ -111,8 +128,32 @@ export function classifyError(error: unknown): Classification {
   const code = transportCode(error);
   if (code === undefined) return { failureClass: 'UNKNOWN_ERROR' };
 
-  const mapped = Object.hasOwn(SIGNAL_TO_CLASS, code) ? SIGNAL_TO_CLASS[code] : undefined;
+  const mapped = Object.hasOwn(SIGNAL_TO_CLASS, code)
+    ? SIGNAL_TO_CLASS[code]
+    : sslProtocolFailure(code);
   return { failureClass: mapped ?? 'UNKNOWN_ERROR', code };
+}
+
+/**
+ * OpenSSL protocol-level failures, which do not arrive as `EPROTO`.
+ *
+ * §3.5 named `EPROTO` as the TLS_HANDSHAKE_FAILED signal, and that row stays
+ * — but measured against real handshakes, Node reports the specific OpenSSL
+ * code instead: `ERR_SSL_WRONG_VERSION_NUMBER` for https against a plain HTTP
+ * port, `ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION` for a version both ends cannot
+ * agree on. Neither is `EPROTO`, so TLS_HANDSHAKE_FAILED was unreachable for
+ * the two commonest real causes and both reported UNKNOWN_ERROR.
+ *
+ * A prefix rule rather than a list, because the `ERR_SSL_` family is open and
+ * every member of it means the same thing at this level: the TLS layer failed
+ * before any HTTP was exchanged. This is not the coercion §7.4 forbids — the
+ * raw code is still returned alongside, so an operator sees exactly which
+ * OpenSSL error it was. Certificate verdicts do not come through here at all;
+ * they arrive as `authorizationError` codes (`CERT_HAS_EXPIRED`,
+ * `ERR_TLS_CERT_ALTNAME_INVALID`) and keep their own distinct classes above.
+ */
+function sslProtocolFailure(code: string): FailureClass | undefined {
+  return code.startsWith('ERR_SSL_') ? 'TLS_HANDSHAKE_FAILED' : undefined;
 }
 
 /**

@@ -67,6 +67,15 @@ export interface ProbeTiming {
   readonly startedAt: number;
   /** Records a hop boundary at the current monotonic instant. */
   mark(boundary: HopBoundary): void;
+  /**
+   * Records several boundaries at *one* instant, read from the clock once.
+   *
+   * Two `mark()` calls in a row are two clock reads, so they differ by a
+   * little. That matters where a phase is specified to be exactly zero — an
+   * IP-literal target does no DNS work at all, and `dns_ms` has to say `0`
+   * rather than "however long two clock reads took" (§3.4).
+   */
+  markSame(boundaries: readonly HopBoundary[]): void;
   /** Clears every hop boundary, before a redirect hop's attempt begins (D45). */
   resetHop(): void;
   /** Records how the probe ended. The first call wins. */
@@ -99,6 +108,11 @@ export function createTiming(clock: Clock): ProbeTiming {
 
     mark(boundary) {
       boundaries[boundary] = clock.monotonic();
+    },
+
+    markSame(marked) {
+      const at = clock.monotonic();
+      for (const boundary of marked) boundaries[boundary] = at;
     },
 
     resetHop() {

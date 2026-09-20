@@ -161,4 +161,30 @@ describe('headersForHop', () => {
     });
     expect(result.headers).toEqual({ 'X-Keep': 'yes' });
   });
+
+  it('keeps a header literally named __proto__ as an own property', () => {
+    // `kept[name] = value` on a plain object calls the __proto__ setter
+    // instead of defining a property, so this one header would silently
+    // vanish on a rewritten hop while surviving on a non-rewritten one. A
+    // user can name a monitor header anything; the two branches have to
+    // agree, and a header must never reach an object's prototype.
+    const hop = {
+      target: new URL('https://api.example.com/next'),
+      origin,
+      alreadyDropped: false,
+    };
+    // The key is computed on purpose: a plain `__proto__:` in an object
+    // literal *is* the prototype setter, so the literal form would build a
+    // fixture that never had the property this test is about.
+    const withProto = { ['__proto__']: 'sent', 'Content-Type': 'json', 'X-Keep': 'yes' };
+
+    const rewritten = headersForHop({ ...hop, headers: withProto, rewrittenToGet: true });
+
+    expect(Object.hasOwn(rewritten.headers, '__proto__')).toBe(true);
+    expect(Object.entries(rewritten.headers)).toEqual([
+      ['__proto__', 'sent'],
+      ['X-Keep', 'yes'],
+    ]);
+    expect(Object.getPrototypeOf(rewritten.headers)).toBe(Object.prototype);
+  });
 });
