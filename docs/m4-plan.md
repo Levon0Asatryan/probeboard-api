@@ -882,6 +882,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D17 | M6's `state`/counter columns are **not** created now                                                                                                           | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                     |
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                               | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                           |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing          | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                           |
+| D21 | Compose's `stop_grace_period` and `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair and move together; the worker gets `stop_grace_period: 40s`                         | at compose's 10 s default, D12's keep-the-lease path never runs outside its own test. §10.4                                                                                                                                                                                                                                                                                                  |
 | D18 | M4 logs the `ProbeOutcome` and discards it                                                                                                                     | M5 owns persistence; the exit test needs real probes in flight regardless                                                                                                                                                                                                                                                                                                                    |
 
 ---
@@ -1114,13 +1115,16 @@ not only the case that happens to be quick to run.
    probe explicitly. Worth Levon's eye because it is the one decision that
    changes what the milestone's exit test demonstrates (D6).
 
-4. **`SCHEDULER_SHUTDOWN_GRACE_MS`'s default of 35 s** means a `docker compose
-down` can take that long per worker when a probe is mid-flight. Compose's
-   default stop timeout is 10 s, after which it sends SIGKILL — which is a
-   crash, and the lease then lapses normally. Correct either way, but the
-   compose file should set `stop_grace_period` for the worker to match, or the
-   graceful path is rarely the one that runs. Proposed as part of PR 3;
-   flagged here because it is a compose change nobody asked for.
+4. ~~**`SCHEDULER_SHUTDOWN_GRACE_MS`'s default of 35 s** vs compose's 10 s
+   default stop timeout.~~ **Resolved — set it, in PR 3.** Without
+   `stop_grace_period`, compose SIGKILLs at 10 s, so D12's keep-the-lease path
+   would never run outside its own e2e test — dead code exercised only by the
+   test that asserts it, which is the "passes for the wrong reason" shape this
+   plan exists to avoid. The compose `worker` service gets
+   `stop_grace_period: 40s`, above the 35 s grace. **The compose value and
+   `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair**: raising the grace without
+   raising `stop_grace_period` silently converts every graceful stop into a
+   SIGKILL, so both move together or neither does (D21).
 
 ---
 
