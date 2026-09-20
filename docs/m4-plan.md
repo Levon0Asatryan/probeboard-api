@@ -537,13 +537,30 @@ One loop, one tick in flight at a time:
 
 ```
 tick:
-  adopt()                                   -- §3.3
-  capacity := PROBE_CONCURRENCY - inFlight.size
-  if capacity <= 0: log and return          -- claim nothing (D9)
-  rows := claim(min(SCHEDULER_BATCH_SIZE, capacity))
-  for row in rows: start(row)               -- not awaited
-  re-arm
+  try:
+    adopt()                                 -- §3.3
+    capacity := PROBE_CONCURRENCY - inFlight.size
+    if capacity > 0:                        -- else claim nothing (D9)
+      rows := claim(min(SCHEDULER_BATCH_SIZE, capacity))
+      for row in rows: start(row)           -- not awaited
+  catch err:
+    log.error(err)                          -- never rethrown past here
+  finally:
+    if not stopping: re-arm                 -- D19
 ```
+
+**The re-arm is in `finally`, and that is the whole point of writing it out.**
+`adopt()` and `claim()` are database calls: a PostgreSQL restart, a dropped
+connection or a statement error rejects them. If the rejection escaped the
+timer callback, this worker would stay alive, healthy-looking, and schedule
+nothing ever again — the single worst failure this component has, because a
+dead worker is noticed and a silently idle one is not. It is also AGENTS.md's
+"long-running loop that can exit silently when its work throws", and it is
+exactly the Uptime Kuma defect §2.3 already quotes — `safeBeat`'s catch is
+what keeps its loop alive. Citing that failure and then writing a loop with no
+`catch` is the mistake this line exists to prevent (D19). **Test:** an adopt
+rejection and a claim rejection each leave the next tick running, and each is
+logged.
 
 `start(row)` loads the monitor, calls `probe()`, and on settle releases the
 lease and removes itself from `inFlight`. The tick never awaits a probe.
@@ -787,6 +804,7 @@ M10 load test's job, not a claim made here.
 | D15 | The `SKIP LOCKED` removal proof asserts **promptness**, not disjointness                                          | measured: removal blocks, it does not duplicate (§2.4.3). A disjointness test would pass with the clause removed — the M3 "passes for the wrong reason" shape                                                                                                                                                                                                                                |
 | D16 | The scheduler owns adoption; M2's code is not touched                                                             | one writer for `endpoint_runtime` (§3.3)                                                                                                                                                                                                                                                                                                                                                     |
 | D17 | M6's `state`/counter columns are **not** created now                                                              | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                     |
+| D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback  | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                           |
 | D18 | M4 logs the `ProbeOutcome` and discards it                                                                        | M5 owns persistence; the exit test needs real probes in flight regardless                                                                                                                                                                                                                                                                                                                    |
 
 ---
@@ -939,6 +957,8 @@ meaningfully testable otherwise):
 | catch-up: 40 intervals behind               | one claim, `next_run_at` = next future slot, phase preserved                               | the catch-up expression    |
 | catch-up: exact-multiple boundary           | `now − slot` an exact multiple → `next = now + interval`, strictly future                  | `floor(…)+1` vs `ceil`     |
 | drift: 10 cycles with injected delay        | every slot an exact multiple of the interval from the first                                | slot-derived `next_run_at` |
+| tick: survives an `adopt()` rejection       | the error is logged and the **next tick still runs**                                       | D19's `finally`            |
+| tick: survives a `claim()` rejection        | as above                                                                                   | D19's `finally`            |
 | adopt: idempotent and concurrent            | two adopters, one row per endpoint                                                         | `ON CONFLICT DO NOTHING`   |
 | adopt: jitter spreads                       | with jitter on, slots spread across the window; with `0`, they do not                      | D8                         |
 | e2e: two schedulers, one database           | over N ticks no `(endpoint, slot)` is probed twice                                         | the whole claim            |
