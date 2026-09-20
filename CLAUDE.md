@@ -119,6 +119,8 @@ Applies to every chat, with or without a handoff prompt. The report
   reported as blocking. "Cannot connect to the Docker daemon" meant the socket
   was at `~/.docker/run/docker.sock` while the CLI looked in `/var/run`; it
   cost two rounds of reporting a blocker that was one env var.
+  On this machine that fix is
+  `export DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`.
 - Keep in step, same change: `http/<module>.http` for every endpoint,
   `npm run openapi` for every route or schema change, coverage exclusion paths
   when files move, and a `:dist` twin in `package.json` for every new CLI
@@ -146,9 +148,19 @@ Applies to every chat, with or without a handoff prompt. The report
    is not proof by itself — the reaction has no `commit_id`, so a reaction from
    reviewing an older push can look like it postdates a new one. 👀 means still
    reviewing.
-5. At milestone end, `docs/mN-verification.md`: what was executed and what it
+5. **Leave the machine clean.** Everything a run started is stopped before the
+   task is reported done: `docker compose down` for the stack, and
+   `docker ps -a` checked for one-off containers the compose file does not
+   know about — `docker run` for a version check, a throwaway server, a
+   reproduction. M3 left a `node:22-alpine` container from a D40 check running
+   for 24 hours; the `timeout` was inside the container, so nothing stopped the
+   container. A `--rm` flag on every one-off `docker run` prevents most of it.
+   Remove scratch volumes and images the task created; leave
+   `probeboard-postgres-1` and `probeboard_pgdata`, which the integration
+   suite uses. Say in the report what was running and that it is stopped.
+6. At milestone end, `docs/mN-verification.md`: what was executed and what it
    produced, including defects found by running it.
-6. Report back in the format in `docs/handoff-template.md`. Say plainly what
+7. Report back in the format in `docs/handoff-template.md`. Say plainly what
    was not verified.
 
 Style: laconic — same facts, fewer words.
