@@ -698,8 +698,20 @@ updates. **Tests:** 3600 s → 30 s is probed within the new interval rather tha
 the old one, and 30 s → 3600 s does not fire early; both fail when the
 reconcile step is removed.
 
-The cost is one anti-join plus one reconcile scan per tick — both on primary-key
-and `next_run_at` indexes, and both measured in revalidation. The price paid is that a newly created endpoint waits
+The cost is one anti-join plus one reconcile join per tick, both fleet-sized.
+**No index helps the reconcile predicate** — `scheduled_interval_s IS DISTINCT
+FROM e.interval_s` compares two tables rather than looking a value up — so
+every worker inspects every previously-claimed row every tick, and adding
+workers multiplies that database work rather than dividing it. Raised as a P2
+by Codex (#4057852658) and **deferred**, for reasons worth stating rather than
+assuming: adoption's anti-join is already fleet-sized and per-tick, so this
+does not change the order of a tick's cost; `ENDPOINT_QUOTA_PER_USER` defaults
+to 100, so the fleet is hundreds of rows, not millions; and both scans are
+measured in revalidation and again in M10's load test, which is where NFR-7's
+scaling claim is actually established. If it bites, the fix is an indexable
+dirty marker — `reconcile_due boolean` with a partial index, or a version
+counter — which needs a second writer or a trigger and is therefore a real
+design change, not a tuning knob. Tracker follow-up. The price paid is that a newly created endpoint waits
 up to one tick plus its jitter before its first probe, instead of being due
 instantly. That is a bounded, stated delay (≤ `SCHEDULER_TICK_MS` +
 `SCHEDULER_ADOPT_JITTER_MAX_S`), and the jitter is wanted anyway (D8).
