@@ -11,10 +11,26 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 command -v openssl >/dev/null
-openssl version | grep -q '^OpenSSL 3' || {
-  echo "need OpenSSL 3, found: $(openssl version)" >&2
+
+# Checked by capability, not by version string, and checked *before* anything
+# is written. `-not_before`/`-not_after` arrived in OpenSSL 3.2, so a plain
+# `^OpenSSL 3` match accepts 3.0.x and then fails partway through -- after
+# several committed keys and certificates have already been replaced, leaving
+# the fixtures in a state no test can use.
+if ! openssl req -help 2>&1 | grep -q -- '-not_after'; then
+  echo "this openssl cannot set explicit validity dates, so the expired" >&2
+  echo "fixture cannot be generated: $(openssl version)" >&2
+  echo "needs OpenSSL 3.2 or newer (macOS ships LibreSSL; brew install openssl@3)" >&2
   exit 1
-}
+fi
+
+# Everything is generated into a scratch directory and moved into place only
+# once the whole run has succeeded, so a failure part-way leaves the committed
+# fixtures untouched.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+out="$PWD"
+cd "$work"
 
 SAN_LOCAL="subjectAltName=DNS:localhost,IP:127.0.0.1"
 
@@ -46,4 +62,6 @@ openssl req -x509 -newkey rsa:2048 -keyout expired.key -out expired.crt -nodes \
   -not_before 20200101000000Z -not_after 20210101000000Z
 
 rm -f ca.srl
+mv ./*.crt ./*.key "$out"/
+cd "$out"
 echo "regenerated:"; ls -1 ./*.crt
