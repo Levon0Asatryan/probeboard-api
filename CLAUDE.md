@@ -121,6 +121,17 @@ Applies to every chat, with or without a handoff prompt. The report
 ### While writing
 
 - Never push to `main`. One PR per coherent step.
+- **Check the branch is still live before committing to it.** A branch whose
+  pull request is merged or closed is dead: commits on it are stranded and have
+  to be cherry-picked onto a fresh branch. This has happened twice in one
+  session, both times after Levon merged while work continued on the branch. So
+  every commit goes either to a branch with an **open** pull request, or to a
+  branch just cut from the current `origin/main` — never to yesterday's branch,
+  and never to one whose pull request has landed. `scripts/check-branch.sh`
+  enforces it on `git push`; run it by hand when committing with
+  `--no-verify`, or in a worktree with no `node_modules` where hooks do not
+  run. After a merge, `git fetch origin` and cut a new branch before writing
+  anything else.
 - **Split commits by logical change — never one commit for a whole PR.** A PR
   with several parts is several commits, for example: migration + `types.ts`;
   repository + its tests; service + its tests; controller + `http/` +

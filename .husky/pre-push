@@ -1,3 +1,7 @@
+# Cheapest check first: a push to main, or to a branch whose pull request is
+# already merged, is wrong no matter how green the tests are.
+sh scripts/check-branch.sh
+
 # Last gate before the change leaves the machine. Same checks CI runs, so a
 # red pipeline is a surprise rather than a routine.
 npm run verify
