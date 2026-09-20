@@ -802,12 +802,23 @@ treated as healthy, reached through a release path rather than through
 arithmetic. The abandon path is the release minus one assignment, and writing
 it out is cheaper than a boolean nobody can see at the call site.
 
-`start(row)` is one `try/catch` from first read to release, so **no path out
-of it is unhandled** — the loader's queries, the decryption, `probe()` itself
-and the release all settle inside it, and the only thing the tick sees is a
-promise that never rejects (D23). A thrown `probe()` and a rejected loader are
-both logged at `error` with the endpoint and slot: they are our bugs, not the
-endpoint's, and D10 still requires the lease to be released either way — a probe or loader that kept its lease would freeze the monitor
+**`start(row)` never rejects, and one outer `try/catch` is not enough to make
+that true.** The catch path itself awaits a database write — the fenced abandon
+`UPDATE` — so when PostgreSQL is the thing that failed, that write rejects
+_from inside the catch already entered_, escapes, and becomes an unhandled
+rejection that terminates the worker during exactly the outage D23 exists to
+survive. The recovery step must not be able to fail the recovery.
+
+So **both terminal writes are individually guarded** (D23): the settle release
+and the abandon release each have their own `try/catch` that logs and returns,
+and nothing outside a guarded block is awaited. A release that cannot be
+written leaves the lease standing until it lapses — bounded by
+`SCHEDULER_LEASE_MS`, reclaimed per §3.11, and logged at `error` — which is
+strictly better than losing the process. The outer `try/catch` stays for the
+loader and `probe()`; it is the inner pair that makes the promise total. A thrown `probe()`, a rejected loader and a failed
+release are all logged at `error` with the endpoint and slot: they are our
+bugs, not the endpoint's, and D10 still requires the lease to be released
+wherever the write can succeed — a probe or loader that kept its lease would freeze the monitor
 for the lease duration. **Tests:** a loader overrun, a rejected loader query
 and a thrown `probe()` each leave `last_probe_at` unchanged while clearing the
 lease; an outcome carrying a `failureClass` **does** advance it.
