@@ -16,6 +16,7 @@ import {
   respond,
   silent,
   stalledBody,
+  startObsoleteTlsServer,
   startServer,
   type Handler,
   type TestServer,
@@ -828,6 +829,119 @@ describe('probe, TLS', () => {
     const outcome = await probe(config({ url: `https://localhost:${server.port}/` }), deps());
 
     expect(outcome.certExpiresAt).toEqual(new Date('Jan 1 00:00:00 2021 GMT'));
+  });
+});
+
+describe('probe, the connector\u2019s share of the deadline', () => {
+  it('gives each hop only what is left of the budget, not the whole of it', async () => {
+    // The connector owns its socket until its own timer fires; the outer
+    // abort returns the probe without reaching inside it. Handing every hop
+    // the full budget lets a blackholed connection outlive probe() by
+    // nearly another whole timeout, so PROBE_CONCURRENCY stops bounding the
+    // sockets actually held.
+    //
+    // Driven by a stepped clock so the arithmetic is exact rather than raced:
+    // resolving costs 200ms of a 600ms budget, leaving 400ms.
+    let now = 0;
+    const captured: PinnedConnectOptions[] = [];
+
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com/', timeoutMs: 600 }),
+      deps({
+        clock: { wallClock: () => 1_700_000_000_000, monotonic: () => now },
+        ssrf: GUARD_ON,
+        resolver: {
+          resolve4: () => {
+            now += 200;
+            return Promise.resolve([ROUTABLE]);
+          },
+          resolve6: () => Promise.resolve([]),
+        },
+        dispatcherFactory: (options) => {
+          captured.push(options);
+          // Never calls back: the probe ends on its own deadline, which is
+          // not what this row is about -- the captured budget is.
+          return new Agent({
+            connect: ((_o: unknown, callback: (error: Error | null) => void) => {
+              setTimeout(() => callback(new Error('too late')), 60_000).unref();
+            }) as never,
+          });
+        },
+      }),
+    );
+
+    expect(outcome.success).toBe(false);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].timeoutMs).toBe(400);
+  });
+
+  it('never hands the connector a non-positive timer', async () => {
+    // A budget already spent must still produce a prompt failure: a timer
+    // of 0 or less would simply never fire.
+    let now = 0;
+    const captured: PinnedConnectOptions[] = [];
+
+    await probe(
+      config({ url: 'http://probe.example.com/', timeoutMs: 100 }),
+      deps({
+        clock: { wallClock: () => 1_700_000_000_000, monotonic: () => now },
+        ssrf: GUARD_ON,
+        resolver: {
+          resolve4: () => {
+            now += 5000;
+            return Promise.resolve([ROUTABLE]);
+          },
+          resolve6: () => Promise.resolve([]),
+        },
+        dispatcherFactory: (options) => {
+          captured.push(options);
+          return new Agent({
+            connect: ((_o: unknown, callback: (error: Error | null) => void) => {
+              callback(new Error('refused'));
+            }) as never,
+          });
+        },
+      }),
+    );
+
+    expect(captured[0].timeoutMs).toBe(1);
+  });
+});
+
+describe('probe, TLS handshake failures (not certificate verdicts)', () => {
+  it('classifies https against a plain HTTP port as TLS_HANDSHAKE_FAILED', async () => {
+    // A common misconfiguration: the endpoint is http, the monitor says
+    // https. Node reports ERR_SSL_WRONG_VERSION_NUMBER, not EPROTO, so
+    // before the ERR_SSL_ rule this was UNKNOWN_ERROR.
+    const server = await serve(respond('{}'));
+
+    const outcome = await probe(config({ url: `https://127.0.0.1:${server.port}/` }), deps());
+
+    expect(outcome.failureClass).toBe('TLS_HANDSHAKE_FAILED');
+    expect(outcome.code).toBe('ERR_SSL_WRONG_VERSION_NUMBER');
+  });
+
+  it('classifies a TLS version both ends cannot agree on', async () => {
+    const server = await startObsoleteTlsServer();
+    started.push(server);
+
+    const outcome = await probe(config({ url: `${server.origin}/` }), deps());
+
+    expect(outcome.failureClass).toBe('TLS_HANDSHAKE_FAILED');
+    // The raw code is kept, so an operator sees which OpenSSL error it was
+    // rather than only the class.
+    expect(outcome.code).toBe('ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION');
+  });
+
+  it('still reports a certificate verdict as its own class, not a handshake failure', async () => {
+    // The boundary that keeps the ERR_SSL_ rule honest: certificate
+    // problems arrive as authorizationError codes and must not be folded
+    // into TLS_HANDSHAKE_FAILED.
+    const server = await serve(respond('{}'), { cert: 'expired' });
+
+    const outcome = await probe(config({ url: `https://localhost:${server.port}/` }), deps());
+
+    expect(outcome.failureClass).toBe('TLS_EXPIRED');
   });
 });
 

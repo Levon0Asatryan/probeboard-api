@@ -128,8 +128,32 @@ export function classifyError(error: unknown): Classification {
   const code = transportCode(error);
   if (code === undefined) return { failureClass: 'UNKNOWN_ERROR' };
 
-  const mapped = Object.hasOwn(SIGNAL_TO_CLASS, code) ? SIGNAL_TO_CLASS[code] : undefined;
+  const mapped = Object.hasOwn(SIGNAL_TO_CLASS, code)
+    ? SIGNAL_TO_CLASS[code]
+    : sslProtocolFailure(code);
   return { failureClass: mapped ?? 'UNKNOWN_ERROR', code };
+}
+
+/**
+ * OpenSSL protocol-level failures, which do not arrive as `EPROTO`.
+ *
+ * §3.5 named `EPROTO` as the TLS_HANDSHAKE_FAILED signal, and that row stays
+ * — but measured against real handshakes, Node reports the specific OpenSSL
+ * code instead: `ERR_SSL_WRONG_VERSION_NUMBER` for https against a plain HTTP
+ * port, `ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION` for a version both ends cannot
+ * agree on. Neither is `EPROTO`, so TLS_HANDSHAKE_FAILED was unreachable for
+ * the two commonest real causes and both reported UNKNOWN_ERROR.
+ *
+ * A prefix rule rather than a list, because the `ERR_SSL_` family is open and
+ * every member of it means the same thing at this level: the TLS layer failed
+ * before any HTTP was exchanged. This is not the coercion §7.4 forbids — the
+ * raw code is still returned alongside, so an operator sees exactly which
+ * OpenSSL error it was. Certificate verdicts do not come through here at all;
+ * they arrive as `authorizationError` codes (`CERT_HAS_EXPIRED`,
+ * `ERR_TLS_CERT_ALTNAME_INVALID`) and keep their own distinct classes above.
+ */
+function sslProtocolFailure(code: string): FailureClass | undefined {
+  return code.startsWith('ERR_SSL_') ? 'TLS_HANDSHAKE_FAILED' : undefined;
 }
 
 /**

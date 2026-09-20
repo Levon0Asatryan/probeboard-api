@@ -10,6 +10,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo, Socket } from 'node:net';
+import tls from 'node:tls';
 import { readFixture, type FixtureCert } from './tls-fixtures.js';
 
 /** What the server saw, so a test can assert on what was actually sent. */
@@ -89,7 +90,15 @@ export async function startServer(
   // An unauthorised client aborting the handshake would otherwise emit an
   // unhandled 'error' and fail the whole file.
   server.on('tlsClientError', () => undefined);
-  server.on('clientError', () => undefined);
+  // Mirrors Node's documented default rather than swallowing the error. A
+  // plain swallow leaves the socket open, so a TLS client that reaches an
+  // HTTP port hangs until the deadline and reports CONNECTION_TIMEOUT --
+  // where a real server answers 400, which the client reads as a malformed
+  // TLS record. The fixture has to behave like the thing it stands in for.
+  server.on('clientError', (_error, socket) => {
+    if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+  });
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
@@ -177,5 +186,39 @@ export function resetMidBody(status = 200): Handler {
     response.writeHead(status, { 'Content-Type': 'text/plain', 'Content-Length': '1000' });
     response.write('partial');
     setTimeout(() => response.socket?.destroy(), 20);
+  };
+}
+
+/**
+ * A TLS server that will only speak TLSv1.1, which modern Node refuses.
+ *
+ * Produces a real handshake failure that is not a certificate problem — the
+ * `ERR_SSL_*` family, which is what Node actually reports rather than the
+ * `EPROTO` §3.5 named.
+ */
+export async function startObsoleteTlsServer(): Promise<TestServer> {
+  const server = tls.createServer(
+    {
+      key: readFixture('valid', 'key'),
+      cert: readFixture('valid', 'crt'),
+      minVersion: 'TLSv1.1',
+      maxVersion: 'TLSv1.1',
+    },
+    (socket) => socket.end(),
+  );
+  server.on('tlsClientError', () => undefined);
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  return {
+    port,
+    origin: `https://127.0.0.1:${port}`,
+    received: [],
+    openSockets: () => 0,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
   };
 }

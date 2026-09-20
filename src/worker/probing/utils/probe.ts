@@ -162,6 +162,7 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
   // D35: the persisted timeout is not trusted on its own. An endpoint saved
   // before the cap was lowered would otherwise keep its old, larger budget.
   const deadlineMs = Math.min(config.timeoutMs, deps.maxTimeoutMs);
+  const deadlineFrom = deps.clock.monotonic();
   const controller = new AbortController();
   const deadline = setTimeout(() => {
     controller.abort(new DOMException('probe deadline exceeded', 'TimeoutError'));
@@ -252,7 +253,7 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
         // evaluated response came from, not the configured endpoint's.
         certExpiresAt = tls.certExpiresAt ?? certExpiresAt;
       },
-      timeoutMs: deadlineMs,
+      timeoutMs: remainingBudget(),
     });
 
     let response: Response;
@@ -340,6 +341,24 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     headersDropped = hop.dropped;
     redirects += 1;
     return undefined;
+  }
+
+  /**
+   * What is left of the deadline, for this hop's connector.
+   *
+   * Not `deadlineMs`: the connector owns its socket until its *own* timer
+   * fires, and the outer abort returns the probe without reaching inside it.
+   * Handing every hop the full budget means that after a slow resolve or
+   * several redirect hops, a blackholed connection can stay alive for almost
+   * another whole timeout after `probe()` has returned and the worker has
+   * released its concurrency slot — so `PROBE_CONCURRENCY` would stop
+   * bounding the sockets actually held.
+   *
+   * Floored at 1ms rather than 0: a non-positive timer would never fire, so
+   * an already-spent budget must still produce a prompt failure.
+   */
+  function remainingBudget(): number {
+    return Math.max(deadlineMs - (deps.clock.monotonic() - deadlineFrom), 1);
   }
 
   /** Resolves and classifies this hop's target, yielding what to pin to. */
