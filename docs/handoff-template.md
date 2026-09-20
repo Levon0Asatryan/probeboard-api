@@ -58,6 +58,10 @@ Per the approved plan. Deviations go in the report under "Decisions made".
   docker compose run with psql checks: required for an HTTP surface, a
   migration, a database change, or the last PR of a milestone. For a
   pure-logic PR, CI plus the local suites are enough. Say which applied.
+- Leave the machine clean: `docker compose down`, and `docker ps -a` checked
+  for one-off containers a `docker run` started (use `--rm`). Leave
+  `probeboard-postgres-1`. Say in the report what was running and that it is
+  stopped.
 
 ## Phase 4 — Re-review (after revalidation)
 - Review the whole PR diff yourself, line by line, as a hostile reviewer
