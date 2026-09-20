@@ -55,6 +55,28 @@ round at this stage:
   number rather than a named uncovered behaviour;
 - anything already recorded as a deferred follow-up in `docs/tracker.md`.
 
+### Reviewing a design document
+
+A plan (`docs/mN-plan.md`) is a **proposal**, not an artifact that can be
+correct. It has no tests; the only thing a fix can produce is more prose, and
+each fix opens new surface. #52 — one markdown document — took seven review
+rounds in 82 minutes, and several rounds were defects introduced by the
+previous round's fix.
+
+On a plan, report only what changes the **design**:
+
+- a contradiction with a requirement, a story, an ADR or measured evidence;
+- an arithmetic or logical error in a stated invariant or bound;
+- a security property the plan omits from a surface it covers;
+- a test the plan specifies that could not fail.
+
+Do **not** report wording, completeness, section ordering, extra detail that
+could be added, or a test-matrix row that could be split. Those are settled in
+the implementation PR, where a test can decide them.
+
+**One round on a plan, then it merges.** The plan's job is to be good enough to
+start from.
+
 **Shape of a finding.** One comment per defect, not per occurrence — if the
 same mistake appears in six places, that is one comment naming all six. State
 the concrete failure: the input, the resulting wrong behaviour, and why. A
