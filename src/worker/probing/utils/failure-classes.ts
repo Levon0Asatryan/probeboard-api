@@ -51,6 +51,14 @@ const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   ETIMEDOUT: 'CONNECTION_TIMEOUT',
   ECONNRESET: 'CONNECTION_RESET',
   EPIPE: 'CONNECTION_RESET',
+  // undici's own wrapper for "the socket closed when we did not expect it".
+  // Once the connector has handed the socket over, a peer reset reaches
+  // `fetch()` as a `SocketError` carrying this code, and the cause walk stops
+  // at the first code it finds -- so without this row an ordinary mid-response
+  // reset reports UNKNOWN_ERROR, which M6 excludes from uptime instead of
+  // counting as DOWN. Measured against a real local server that destroys the
+  // socket after sending headers.
+  UND_ERR_SOCKET: 'CONNECTION_RESET',
   CERT_HAS_EXPIRED: 'TLS_EXPIRED',
   UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS_UNTRUSTED',
   DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS_UNTRUSTED',

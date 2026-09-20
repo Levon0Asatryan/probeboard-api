@@ -177,6 +177,11 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
   let headersDropped = false;
   let redirects = 0;
   let certExpiresAt: Date | undefined;
+  // The status of the hop actually being evaluated, kept so a body that
+  // stalls or resets *after* the headers arrived still reports what the
+  // endpoint answered. Set only in `evaluate()`: a discarded redirect hop's
+  // status must not leak into the outcome.
+  let evaluatedStatus: number | undefined;
 
   try {
     for (;;) {
@@ -203,7 +208,7 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
           failureClass: classifyAbort(timing.boundaries(), { https: target.protocol === 'https:' }),
         }
       : classifyError(error);
-    return outcome({ success: false, ...classification });
+    return outcome({ success: false, status: evaluatedStatus, ...classification });
   } finally {
     clearTimeout(deadline);
   }
@@ -353,6 +358,10 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
 
   /** Reads and judges the one response that is actually evaluated. */
   async function evaluate(response: Response, dispatcher: Dispatcher): Promise<Verdict> {
+    // Recorded before the body is touched: this is the evaluated hop, so
+    // whatever happens to its body, the status it answered with is real and
+    // belongs in the outcome.
+    evaluatedStatus = response.status;
     try {
       const body = await readCappedBody(response.body, deps.maxBodyBytes);
       timing.markTerminal('transfer_done');

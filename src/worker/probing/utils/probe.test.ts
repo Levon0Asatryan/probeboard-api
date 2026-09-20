@@ -12,6 +12,7 @@ import type { SsrfGuardConfig } from '../../../core/ssrf/host-validator.js';
 import {
   neverEndingBody,
   redirect,
+  resetMidBody,
   respond,
   silent,
   stalledBody,
@@ -601,6 +602,44 @@ describe('probe, transport failures', () => {
     expect(outcome).toMatchObject({ success: false, failureClass: 'CONNECTION_REFUSED' });
     // D22: total_ms exists for a failure that never reached a response.
     expect(outcome.timings.totalMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('classifies a real mid-response reset as CONNECTION_RESET', async () => {
+    // Once the connector has handed the socket over, a peer reset reaches
+    // fetch() as undici's SocketError carrying UND_ERR_SOCKET -- not a raw
+    // ECONNRESET. The cause walk stops at the first code it finds, so
+    // without that row this reports UNKNOWN_ERROR, which M6 excludes from
+    // uptime instead of counting as DOWN.
+    const server = await serve(resetMidBody());
+
+    const outcome = await probe(config({ url: server.origin }), deps());
+
+    expect(outcome.failureClass).toBe('CONNECTION_RESET');
+    expect(outcome.code).toBe('UND_ERR_SOCKET');
+    expect(outcome.success).toBe(false);
+  });
+
+  it('keeps the status the endpoint answered with when its body then fails', async () => {
+    // The headers arrived and this was the evaluated hop, so the status is
+    // real data about the endpoint. Dropping it leaves a reset or timeout
+    // diagnosis with nothing to say about what the server actually replied.
+    const server = await serve(resetMidBody(200));
+
+    const outcome = await probe(config({ url: server.origin }), deps());
+
+    expect(outcome.status).toBe(200);
+  });
+
+  it('does not leak a discarded redirect hop\u2019s status into a later failure', async () => {
+    // The counterpart: an intermediate 302 is never evaluated, so its status
+    // must not appear in the outcome when a later hop fails.
+    const destination = await serve(silent());
+    const source = await serve(redirect(`${destination.origin}/final`));
+
+    const outcome = await probe(config({ url: source.origin, timeoutMs: 400 }), deps());
+
+    expect(outcome.failureClass).toBe('RESPONSE_TIMEOUT');
+    expect(outcome.status).toBeUndefined();
   });
 
   it('classifies the deadline by the phase it fired in (D16)', async () => {

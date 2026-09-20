@@ -164,3 +164,18 @@ export function stalledBody(status = 200): Handler {
 export function silent(): Handler {
   return () => undefined;
 }
+
+/**
+ * Sends headers and part of a body, then destroys the socket.
+ *
+ * A real mid-response reset. It reaches `fetch()` as undici's `SocketError`
+ * (`UND_ERR_SOCKET`), not as a raw `ECONNRESET` — the distinction the
+ * taxonomy mapping has to get right.
+ */
+export function resetMidBody(status = 200): Handler {
+  return (_request, response) => {
+    response.writeHead(status, { 'Content-Type': 'text/plain', 'Content-Length': '1000' });
+    response.write('partial');
+    setTimeout(() => response.socket?.destroy(), 20);
+  };
+}
