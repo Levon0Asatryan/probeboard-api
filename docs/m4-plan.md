@@ -640,8 +640,8 @@ running, which is this section's own failure case reached through a term the
 table had claimed was zero.
 
 It is bounded rather than estimated (D20): the load runs under
-`SCHEDULER_LOAD_BUDGET_MS`, and a load that overruns **releases the row without
-probing** and logs it. A slot is then missed — honestly, as `UNKNOWN` — instead
+`SCHEDULER_LOAD_BUDGET_MS`, and a load that **overruns or rejects** releases
+the row without probing and logs it. A slot is then missed — honestly, as `UNKNOWN` — instead
 of a lease silently expiring under a probe. Every term in the table is now a
 bound, which is what lets the inequality below be a proof rather than a hope.
 
@@ -960,6 +960,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D17 | M6's `state`/counter columns are **not** created now                                                                                                           | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                               | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                                                                                                                                                                                             |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing          | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                                                                                                                                                                                             |
+| D22 | Every loader read runs in **one read-only `REPEATABLE READ` transaction**                                                                                      | separate statements under `READ COMMITTED` each see a different snapshot, so a service update committing mid-load yields the old `base_url` with newly rotated secret headers — a new credential sent to the previous origin. §6. Codex #4057783048                                                                                                                                                                                                                                                                                                            |
 | D21 | Compose's `stop_grace_period` and `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair and move together; the worker gets `stop_grace_period: 40s`                         | at compose's 10 s default, D12's keep-the-lease path never runs outside its own test. §10.4                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | D18 | M4 logs the `ProbeOutcome` and discards it, with `workerId`, `endpointId` and `scheduledAt` on the line                                                        | M5 owns persistence; the exit test needs real probes in flight regardless. Those three fields are load-bearing, not incidental: the log is M4's **only** durable per-attempt record, so it is the sole source of the exit test's disjointness evidence — `endpoint_runtime` keeps just the latest `scheduled_at` and cannot answer it (§9)                                                                                                                                                                                                                     |
 
@@ -1058,6 +1059,32 @@ src/worker/scheduler/
     scheduler.int.test.ts                    two workers, races, reclaim, shutdown
 ```
 
+**The loader reads one snapshot, not three.** `start(row)` needs the endpoint,
+its service (for `base_url`) and the merged headers. Issued as separate
+statements under PostgreSQL's default `READ COMMITTED`, each sees a _different_
+snapshot, so a service update committing between them is read half-applied: the
+old `base_url` with the newly rotated secret headers. That probe then sends a
+freshly rotated credential to the **previous origin** — a configuration that
+never existed in the database at any instant, assembled by our own read
+pattern. It is AGENTS.md's check-then-act across an `await`, in its
+read-consistency form, and the harm is a credential disclosure rather than a
+wrong number.
+
+So every loader read happens inside **one read-only transaction at
+`REPEATABLE READ`**, which pins a single snapshot for its whole duration and
+costs nothing here: the loader takes no locks, writes nothing, and is bounded
+by `SCHEDULER_LOAD_BUDGET_MS` (D20), so it cannot hold a snapshot open long
+enough to matter for vacuum. `READ COMMITTED` with a join into one statement
+would fix the endpoint/service half and still leave headers in a second
+statement, so the transaction is the fix that covers every pair (D22).
+
+**Test, with a barrier:** the loader reads the endpoint, a competing
+transaction commits a `base_url` change _and_ a secret-header rotation, then
+the loader reads the headers. The assembled `EndpointProbeConfig` must be
+wholly the old service or wholly the new one, never the old URL with the new
+credential — and it must fail when the transaction is dropped to
+`READ COMMITTED`.
+
 `monitor-loader.service.ts` reuses `effectiveUrl`, `mergeHeaderRows` and
 `decryptHeaderValue` from `src/core/registration/` — all three are already in
 `core`, so there is no second implementation of header merging or URL joining
@@ -1102,6 +1129,7 @@ code, recorded in the commit message.
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scheduler.service.test.ts`           | re-arm delay is `max(0, tick − elapsed)`; a slow tick does not stack; capacity = `PROBE_CONCURRENCY − inFlight`; zero capacity claims nothing; stop clears the timer                  |
 | `probe-pool.service.test.ts`          | never exceeds the cap; a rejected probe leaves the set; drain resolves when the last settles; drain honours its grace and reports what was still in flight                            |
+| `monitor-loader.service.int.test.ts`  | the snapshot barrier: a `base_url` change and a secret-header rotation committed mid-load never combine (D22), and it fails at `READ COMMITTED`                                       |
 | `monitor-loader.service.test.ts`      | endpoint + service + headers → `EndpointProbeConfig`; service headers merged under endpoint headers; secret headers decrypted; `timeout_ms` passed as stored (M3 applies its own cap) |
 | `endpoint-runtime.repository.test.ts` | compiled SQL for claim/release/adopt: `now()` present, no bound timestamp parameter (D3); the fence conjuncts present                                                                 |
 | `schema.test.ts` additions            | each new bound rejects a bad value; each of the three cross-field rules rejects a violating pair                                                                                      |
