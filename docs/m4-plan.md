@@ -773,10 +773,10 @@ of it is unhandled** — the loader's queries, the decryption, `probe()` itself
 and the release all settle inside it, and the only thing the tick sees is a
 promise that never rejects (D23). A thrown `probe()` and a rejected loader are
 both logged at `error` with the endpoint and slot: they are our bugs, not the
-endpoint's, and D10 still requires the lease to be released either way — a rejected probe that kept its lease would freeze the
-monitor for the lease duration. **Tests:** a loader overrun and a thrown
-`probe()` each leave `last_probe_at` unchanged while clearing the lease; an
-outcome carrying a `failureClass` **does** advance it.
+endpoint's, and D10 still requires the lease to be released either way — a probe or loader that kept its lease would freeze the monitor
+for the lease duration. **Tests:** a loader overrun, a rejected loader query
+and a thrown `probe()` each leave `last_probe_at` unchanged while clearing the
+lease; an outcome carrying a `failureClass` **does** advance it.
 
 **Release is mandatory, not an optimisation.** `PROBE_ALLOWED_INTERVALS_S`
 starts at 30 s and `SCHEDULER_LEASE_MS` defaults to 60 000. Without a release,
