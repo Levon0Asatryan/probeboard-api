@@ -700,17 +700,41 @@ there is none; the invariant is asserted by a test instead.
 
 ### 3.7 Release, and the fence
 
-On settle — success, failure class, or a thrown error:
+There are **two** terminal writes, and the difference between them is a number
+M6 will publish. On settle — success, failure class, or a thrown error — the
+probe ran, so `last_probe_at` advances:
 
 ```sql
 UPDATE endpoint_runtime
 SET    leased_until  = NULL,
        leased_by     = NULL,
-       last_probe_at = now()
+       last_probe_at = now()      -- a probe happened
 WHERE  endpoint_id   = $id
   AND  leased_by     = $workerId
   AND  scheduled_at  = $slot;
 ```
+
+When the slot is **abandoned** — D20's loader overrun is the only path today —
+no probe ran, so `last_probe_at` must **not** move:
+
+```sql
+UPDATE endpoint_runtime
+SET    leased_until  = NULL,
+       leased_by     = NULL      -- last_probe_at deliberately untouched
+WHERE  endpoint_id   = $id
+  AND  leased_by     = $workerId
+  AND  scheduled_at  = $slot;
+```
+
+**Why this is two statements and not one with a flag.** §3.2 hands
+`last_probe_at` to M6 as the input to its `UNKNOWN` sweep. Advancing it for a
+slot that produced no probe makes an abandoned slot look freshly probed, so the
+sweep skips it and the gap is never recorded as `UNKNOWN` — it silently becomes
+nothing at all. That is AGENTS.md's first measurement rule, a missing probe
+treated as healthy, reached through a release path rather than through
+arithmetic. The abandon path is the release minus one assignment, and writing
+it out is cheaper than a boolean nobody can see at the call site. **Test:** a
+loader overrun leaves `last_probe_at` unchanged while clearing the lease.
 
 **Release is mandatory, not an optimisation.** `PROBE_ALLOWED_INTERVALS_S`
 starts at 30 s and `SCHEDULER_LEASE_MS` defaults to 60 000. Without a release,
