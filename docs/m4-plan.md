@@ -701,8 +701,10 @@ there is none; the invariant is asserted by a test instead.
 ### 3.7 Release, and the fence
 
 There are **two** terminal writes, and the difference between them is a number
-M6 will publish. On settle — success, failure class, or a thrown error — the
-probe ran, so `last_probe_at` advances:
+M6 will publish. The dividing line is **whether an observation exists**, not
+whether the probe succeeded. A `ProbeOutcome` — success _or_ any
+`failureClass`, including `BLOCKED_BY_POLICY` — is an observation M5 will
+persist, so `last_probe_at` advances:
 
 ```sql
 UPDATE endpoint_runtime
@@ -714,8 +716,14 @@ WHERE  endpoint_id   = $id
   AND  scheduled_at  = $slot;
 ```
 
-When the slot is **abandoned** — D20's loader overrun is the only path today —
-no probe ran, so `last_probe_at` must **not** move:
+When the slot is **abandoned**, no observation exists, so `last_probe_at` must
+**not** move. Two paths reach here:
+
+- D20's loader overrun, which never called `probe()` at all; and
+- `probe()` **throwing**. M3's contract is that it never throws for a network
+  condition — every failure the taxonomy covers comes back as a
+  `failureClass` — so a rejection means a bug in probeboard, and it yields no
+  `ProbeOutcome` for M5 to persist.
 
 ```sql
 UPDATE endpoint_runtime
@@ -728,21 +736,34 @@ WHERE  endpoint_id   = $id
 
 **Why this is two statements and not one with a flag.** §3.2 hands
 `last_probe_at` to M6 as the input to its `UNKNOWN` sweep. Advancing it for a
-slot that produced no probe makes an abandoned slot look freshly probed, so the
+slot that produced no observation makes that slot look freshly probed, so the
 sweep skips it and the gap is never recorded as `UNKNOWN` — it silently becomes
 nothing at all. That is AGENTS.md's first measurement rule, a missing probe
 treated as healthy, reached through a release path rather than through
 arithmetic. The abandon path is the release minus one assignment, and writing
-it out is cheaper than a boolean nobody can see at the call site. **Test:** a
-loader overrun leaves `last_probe_at` unchanged while clearing the lease.
+it out is cheaper than a boolean nobody can see at the call site.
+
+A thrown `probe()` is additionally logged at `error` with the endpoint and
+slot: it is our bug, not the endpoint's, and D10 still requires the lease to be
+released either way — a rejected probe that kept its lease would freeze the
+monitor for the lease duration. **Tests:** a loader overrun and a thrown
+`probe()` each leave `last_probe_at` unchanged while clearing the lease; an
+outcome carrying a `failureClass` **does** advance it.
 
 **Release is mandatory, not an optimisation.** `PROBE_ALLOWED_INTERVALS_S`
 starts at 30 s and `SCHEDULER_LEASE_MS` defaults to 60 000. Without a release,
 a 30-second monitor's next slot falls inside its own previous lease, and the
 predicate `leased_until < now()` excludes it: the monitor would be probed every
 60 s instead of every 30 s — a 100% drift, against NFR-2's 10%, produced by the
-lease that exists to protect NFR-3. **Test:** a 30 s monitor is claimed twice in
-~60 s, and that test fails if the release is removed.
+lease that exists to protect NFR-3.
+
+**Test, stated as a bound rather than a duration.** "Claimed twice in ~60 s"
+would pass with the release deleted — without it the row becomes claimable at
+lease expiry, which _is_ ~60 s, so the assertion cannot tell the fixed code
+from the broken code. The test asserts the second claim happens **strictly
+before the first claim's `leased_until`**: at the 30 s slot, inside the 60 s
+lease. Removal then misses that bound every time rather than occasionally,
+which is the standard §8 applies to every race here.
 
 **The fence.** `leased_by = $workerId AND scheduled_at = $slot` is what stops a
 worker whose lease already lapsed from clearing a lease a _different_ worker has
@@ -1079,12 +1100,14 @@ meaningfully testable otherwise):
 | lease: in-flight row excluded                                        | a leased row is not re-claimed before expiry                                                                                                                             | `leased_until` predicate                                                                      |
 | lease: reclaim, **interval below the lease** (30 s at a 60 s lease)  | claimable within one tick of **lease** expiry, **not** before; asserts the interval was not what governed                                                                | both bounds of NFR-4                                                                          |
 | lease: reclaim, **interval above the lease** (300 s at a 60 s lease) | the lapsed lease does **not** make it claimable; it returns at `next_run_at`, per §3.11's `max`                                                                          | D6's corrected bound                                                                          |
-| lease: release un-blocks the next slot                               | a 30 s monitor is claimed twice within ~60 s at a 60 s lease                                                                                                             | the release (§3.7)                                                                            |
+| lease: release un-blocks the next slot                               | a 30 s monitor's second claim lands **strictly before the first claim's `leased_until`** — not merely 'within ~60 s', which lease expiry alone satisfies                 | the release (§3.7)                                                                            |
 | fence: straggler release                                             | a stale `(workerId, slot)` release matches 0 rows and the live lease survives                                                                                            | the fence conjuncts                                                                           |
 | catch-up: 40 intervals behind                                        | one claim, `next_run_at` = next future slot, phase preserved                                                                                                             | the catch-up expression                                                                       |
 | catch-up: exact-multiple boundary                                    | `now − slot` an exact multiple → `next = now + interval`, strictly future                                                                                                | `floor(…)+1` vs `ceil`                                                                        |
 | drift: 10 cycles with injected delay                                 | every **actual probe start** within the NFR-2 budget of a slot that is an exact multiple of the interval from the first                                                  | slot-derived `next_run_at`                                                                    |
-| loader: overrun releases without probing                             | a load held past `SCHEDULER_LOAD_BUDGET_MS` releases the row, never calls `probe()`, and logs                                                                            | D20's budget                                                                                  |
+| loader: overrun releases without probing                             | a load held past `SCHEDULER_LOAD_BUDGET_MS` releases the row, never calls `probe()`, logs, and leaves `last_probe_at` **unchanged**                                      | D20's budget, and the abandon path                                                            |
+| abandon: a thrown `probe()`                                          | the lease is cleared, `last_probe_at` is **unchanged**, and the bug is logged at `error`                                                                                 | the abandon path for a rejection                                                              |
+| settle: an outcome with a `failureClass`                             | `last_probe_at` **does** advance — a failed probe is still an observation                                                                                                | the settle/abandon split                                                                      |
 | tick: survives an `adopt()` rejection                                | the error is logged and the **next tick still runs**                                                                                                                     | D19's `finally`                                                                               |
 | tick: survives a `claim()` rejection                                 | as above                                                                                                                                                                 | D19's `finally`                                                                               |
 | adopt: idempotent and concurrent                                     | two adopters, one row per endpoint                                                                                                                                       | `ON CONFLICT DO NOTHING`                                                                      |
