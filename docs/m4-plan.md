@@ -1218,17 +1218,18 @@ All five scheduler keys already exist in `src/core/config/schema.ts` and are
 read by nothing. M4 is their first reader, so each gains a rejection test in
 the same commit (AGENTS.md).
 
-| Key                            | Today                                     | Change                                                  | Why                                                                                   |
-| ------------------------------ | ----------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `WORKER_ID`                    | `min(1)`, defaults `${hostname()}-${pid}` | none                                                    | already correct; its comment already explains why PID alone is not enough             |
-| `SCHEDULER_TICK_MS`            | `int().min(100)`                          | **add `.max(60_000)`**                                  | D14                                                                                   |
-| `SCHEDULER_BATCH_SIZE`         | `int().min(1)`                            | **add `.max(10_000)`**                                  | a batch larger than any plausible pool is a claim that leases rows nothing will start |
-| `SCHEDULER_LEASE_MS`           | `int().min(1000)`                         | none, but see the refine below                          |                                                                                       |
-| `PROBE_CONCURRENCY`            | `int().min(1)`                            | **add `.max(10_000)`**                                  | it is the pool size; unbounded means unbounded sockets                                |
-| `SCHEDULER_LEASE_SLACK_MS`     | —                                         | **new**, `int().min(1000).max(300_000).default(15_000)` | the one judged term in §3.5's arithmetic                                              |
-| `SCHEDULER_SHUTDOWN_GRACE_MS`  | —                                         | **new**, `int().min(0).max(300_000).default(35_000)`    | §3.9                                                                                  |
-| `SCHEDULER_LOAD_BUDGET_MS`     | —                                         | **new**, `int().min(500).max(60_000).default(1_500)`    | D20; the loader's bound, a named term in §3.5's lease **and** in §3.10's drift budget |
-| `SCHEDULER_ADOPT_JITTER_MAX_S` | —                                         | **new**, `int().min(0).max(3600).default(60)`           | D8; `0` disables jitter, which the herd test uses                                     |
+| Key                                     | Today                                     | Change                                                  | Why                                                                                                                                                                      |
+| --------------------------------------- | ----------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WORKER_ID`                             | `min(1)`, defaults `${hostname()}-${pid}` | none                                                    | already correct; its comment already explains why PID alone is not enough                                                                                                |
+| `SCHEDULER_TICK_MS`                     | `int().min(100)`                          | **add `.max(60_000)`**                                  | D14                                                                                                                                                                      |
+| `SCHEDULER_BATCH_SIZE`                  | `int().min(1)`                            | **add `.max(10_000)`**                                  | a batch larger than any plausible pool is a claim that leases rows nothing will start                                                                                    |
+| `SCHEDULER_LEASE_MS`                    | `int().min(1000)`                         | none, but see the refine below                          |                                                                                                                                                                          |
+| `PROBE_CONCURRENCY`                     | `int().min(1)`                            | **add `.max(10_000)`**                                  | it is the pool size; unbounded means unbounded sockets                                                                                                                   |
+| `SCHEDULER_LEASE_SLACK_MS`              | —                                         | **new**, `int().min(1000).max(300_000).default(15_000)` | the one judged term in §3.5's arithmetic                                                                                                                                 |
+| `SCHEDULER_SHUTDOWN_GRACE_MS`           | —                                         | **new**, `int().min(0).max(300_000).default(35_000)`    | §3.9, floored by a refine below                                                                                                                                          |
+| `SCHEDULER_LOAD_BUDGET_MS`              | —                                         | **new**, `int().min(100).max(60_000).default(1_500)`    | D20; the loader's bound, a named term in §3.5's lease **and** in §3.10's drift budget. Floor lowered from 500 so the NFR-2 refine is satisfiable at every legal interval |
+| `PROBE_ALLOWED_INTERVALS_S` entry floor | `min: 1`                                  | **raise to `min: 10`**                                  | otherwise the NFR-2 refine is unsatisfiable at small intervals — see the note below                                                                                      |
+| `SCHEDULER_ADOPT_JITTER_MAX_S`          | —                                         | **new**, `int().min(0).max(3600).default(60)`           | D8; `0` disables jitter, which the herd test uses                                                                                                                        |
 
 Three cross-field rules, each turning a requirement into a boot-time check:
 
@@ -1241,9 +1242,14 @@ SCHEDULER_LEASE_MS >= SCHEDULER_LOAD_BUDGET_MS
   -- is not optional: without it the inequality is satisfiable by a
   -- configuration in which loading alone exhausts the slack (D20)
 
-SCHEDULER_SHUTDOWN_GRACE_MS < SCHEDULER_LEASE_MS
-  -- or a graceful stop can outlive the lease it is trying to release,
-  -- and a peer starts a second probe while ours is still draining (§3.9)
+SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS
+    <= SCHEDULER_SHUTDOWN_GRACE_MS
+    <  SCHEDULER_LEASE_MS
+  -- Bounded on both sides (§3.9). Below the floor a graceful stop cannot let
+  -- even one worst-case probe finish, so D12's keep-the-lease path becomes the
+  -- outcome of every ordinary restart and a redeploy produces the same UNKNOWN
+  -- gap as a crash. Above the lease a stop can outlive the lease it is trying
+  -- to release, and a peer starts a second probe while ours is still draining.
 
 SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS
     <= min(PROBE_ALLOWED_INTERVALS_S) * 1000 / 10
@@ -1253,7 +1259,29 @@ SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS
 ```
 
 Defaults satisfy all three: 60 000 ≥ 1 500 + 30 000 + 15 000 = 46 500;
-35 000 < 60 000; 1000 + 1500 = 2500 ≤ 3000.
+31 500 ≤ 35 000 < 60 000; 1000 + 1500 = 2500 ≤ 3000.
+
+**Every rule must be satisfiable at every legal value of its own keys**, and
+the NFR-2 one was not. `PROBE_ALLOWED_INTERVALS_S` accepts entries down to
+**1 s** (`numberList`, `min: 1`, `src/core/config/schema.ts:274`), so a set
+like `5,30,60` gives a 500 ms budget — while `SCHEDULER_TICK_MS` cannot go
+below 100 and `SCHEDULER_LOAD_BUDGET_MS` was floored at 500, a 600 ms minimum.
+The process could not boot at **any** value of the two keys the message names:
+a configuration trap rather than a check, since nothing the operator changes
+among them helps. Two changes make it total — the loader floor drops to 100,
+and the interval entry floor rises to 10 s — so the tightest legal budget
+(1000 ms) still admits the tightest legal pair (100 + 100).
+
+A one-second probe interval was never supported: FR-7 makes the interval a
+bounded set, NFR-6 is stated at 60 s, and the shipped default set starts at
+30 s. Nothing existing is affected — `.env.example` sets no interval list, the
+default `30,60,300,900,3600` is untouched, and the bound validates the allowed
+_set_ rather than stored `endpoints.interval_s` rows, so there is no data to
+migrate.
+
+Choosing a small interval still constrains the other two — 30 s allows 3000 ms
+and the defaults spend 2500 ms of it — so the refine's message names all three
+keys and the arithmetic rather than only the key its `path` reports on.
 
 **The configuration that already exists passes all three.** AGENTS.md asks for
 a story for data that predates a new rule, and a boot-time refine rejects a
@@ -1371,14 +1399,14 @@ code, recorded in the commit message.
 
 **Unit** (`npm test`, no I/O):
 
-| Test                                  | Asserts                                                                                                                                                                               |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scheduler.service.test.ts`           | re-arm delay is `max(0, tick − elapsed)`; a slow tick does not stack; capacity = `PROBE_CONCURRENCY − inFlight`; zero capacity claims nothing; stop clears the timer                  |
-| `probe-pool.service.test.ts`          | never exceeds the cap; a rejected probe leaves the set; drain resolves when the last settles; drain honours its grace and reports what was still in flight                            |
-| `monitor-loader.service.int.test.ts`  | the snapshot barrier: a `base_url` change and a secret-header rotation committed mid-load never combine (D22), and it fails at `READ COMMITTED`                                       |
-| `monitor-loader.service.test.ts`      | endpoint + service + headers → `EndpointProbeConfig`; service headers merged under endpoint headers; secret headers decrypted; `timeout_ms` passed as stored (M3 applies its own cap) |
-| `endpoint-runtime.repository.test.ts` | compiled SQL for claim/release/adopt: `now()` present, no bound timestamp parameter (D3); the fence conjuncts present                                                                 |
-| `schema.test.ts` additions            | each new bound rejects a bad value; each of the three cross-field rules rejects a violating pair                                                                                      |
+| Test                                  | Asserts                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scheduler.service.test.ts`           | re-arm delay is `max(0, tick − elapsed)`; a slow tick does not stack; capacity = `PROBE_CONCURRENCY − inFlight`; zero capacity claims nothing; stop clears the timer                                                                                                                                                                           |
+| `probe-pool.service.test.ts`          | never exceeds the cap; a rejected probe leaves the set; drain resolves when the last settles; drain honours its grace and reports what was still in flight                                                                                                                                                                                     |
+| `monitor-loader.service.int.test.ts`  | the snapshot barrier: a `base_url` change and a secret-header rotation committed mid-load never combine (D22), and it fails at `READ COMMITTED`                                                                                                                                                                                                |
+| `monitor-loader.service.test.ts`      | endpoint + service + headers → `EndpointProbeConfig`; service headers merged under endpoint headers; secret headers decrypted; `timeout_ms` passed as stored (M3 applies its own cap)                                                                                                                                                          |
+| `endpoint-runtime.repository.test.ts` | compiled SQL for claim/release/adopt: `now()` present, no bound timestamp parameter (D3); the fence conjuncts present                                                                                                                                                                                                                          |
+| `schema.test.ts` additions            | each new bound rejects a bad value; each of the three cross-field rules rejects a violating pair — **and each is satisfiable at its own keys' floors**: `PROBE_ALLOWED_INTERVALS_S=10,30` boots at `SCHEDULER_TICK_MS=100` and `SCHEDULER_LOAD_BUDGET_MS=100`, and a grace below `SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS` is rejected |
 
 **Integration** (`npm run test:int`, real Postgres — the claim is not
 meaningfully testable otherwise):
