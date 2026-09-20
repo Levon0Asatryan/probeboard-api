@@ -1731,6 +1731,21 @@ untouched, per §2.2; M4 is the first caller.
 
 ## 9. Open questions / tensions to flag, not resolve quietly
 
+- **`closeDispatcher` swallows a teardown failure silently (Codex P2,
+  PR #49).** A rejected `destroy()` is caught and dropped, so a recurring
+  cleanup failure would be invisible. Deferred rather than fixed: `probe()`
+  takes no logger by design (architecture §7.4 — no global state, and
+  CLAUDE.md forbids reading config or sinks from a module-level singleton),
+  so surfacing it means widening `ProbeDeps` with a diagnostic callback —
+  the same widening §9 already flags above. The right time is M4, which owns
+  the wiring and has a logger to hand; doing it here adds an untested
+  dependency to satisfy an observability need nothing yet consumes. The
+  verdict is deliberately preserved either way: letting teardown overwrite a
+  decided result would report a failure for a probe that succeeded.
+- **With redirects, `cert_expires_at` is the final https hop's certificate,**
+  not the configured endpoint's, matching D17's rule for timings. Worth
+  revisiting if a user ever monitors an endpoint that redirects across a
+  certificate boundary and expects a warning about their own.
 - **An endpoint on a WHATWG blocked port reports `UNKNOWN_ERROR` (D73).**
   undici's `fetch` refuses the Fetch spec's blocked-port list (1, 7, 9, 11,
   …) with a generic `bad port` network error carrying no `code`, before any

@@ -254,6 +254,11 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       onTls: (tls: TlsVerdict) => {
         // Recorded whether or not the peer was authorised: an expired
         // certificate is exactly where cert_expires_at earns its keep.
+        //
+        // Across a redirect chain the last https hop wins, matching D17's
+        // rule that the reported timings are the final hop's. A chain whose
+        // hops present different certificates therefore reports the one the
+        // evaluated response came from, not the configured endpoint's.
         certExpiresAt = tls.certExpiresAt ?? certExpiresAt;
       },
       timeoutMs: deadlineMs,
