@@ -4,7 +4,8 @@ Status of record for probeboard work. The orchestrator session updates it after
 validating a worker's report; workers read it and propose changes in their
 report rather than editing it, so two chats never edit it at once.
 
-Last updated: 2026-09-16, by the orchestrator, after validating #37 and #38.
+Last updated: 2026-09-20, by the orchestrator, after validating M3 (#43, #48,
+#49) and closing it out.
 
 ## Now
 
@@ -36,6 +37,24 @@ Last updated: 2026-09-16, by the orchestrator, after validating #37 and #38.
   - Social login is verified against the **local test provider** for now.
     Real Google and GitHub verification is **required, not optional** —
     scheduled in "Finish social login" below, and it blocks M9.
+
+- **Decided (2026-09-20):**
+  - **No Sentry and no Datadog.** Both are hosted services carrying an account,
+    a DSN or API key, and an agent, for a thesis project that runs on one
+    machine and is demonstrated, not operated. Failures are read from the logs
+    and from probe results, which are the product itself.
+  - **Grafana is not a dependency.** After `/metrics` exists (NFR-20) it can be
+    added as an **optional `docker compose` profile in M10** — off by default,
+    scraping the app's own endpoint, nothing to sign up for. Decide then, not
+    now.
+  - **GitHub community standards** are in place on `probeboard-api`:
+    `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `CONTRIBUTING.md`,
+    `SECURITY.md`, issue forms with a security contact link, and a PR template
+    mirroring the evidence a review asks for. Pushed to `main` directly
+    (`2f1207d..253cc33`) at Levon's explicit instruction — the one exception to
+    the never-push-to-`main` rule. Private vulnerability reporting is enabled,
+    because `SECURITY.md` routes reports through it. `probeboard-docs` (28%)
+    and `probeboard-web` (14%) have not had the same treatment.
 
 ## Milestones
 
@@ -137,8 +156,15 @@ Items found while validating, not yet scheduled.
 | #38            | No per-user cap on service count: only `ENDPOINT_QUOTA_PER_USER` exists, and `ServicesService.createExplicit` checks nothing. B-8 names only endpoints, so this is a gap in resource limits, not in the story.   | decide  |
 | process        | #18–#23, #29 and #34 merged before Codex finished reviewing. See the merge gate above.                                                                                                                           | process |
 | #24 validation | Workers missed Codex's no-findings signal: a 👍 reaction on the PR, not a review. `CLAUDE.md` now says where to look.                                                                                            | process |
+| #49 / D69      | The stalled-pipe reproduction is committed `it.skip` on `main`: D69's shipped fix does not release a pending write, and only `process.exit()` returns. Needs a bounded exit for the audit's stalled reader.      | fix     |
+| #46            | The production-group Dependabot bump breaks `bootstrap.e2e` and `docs.e2e` with server-start timeouts, reproduced on rerun. Suspects `@nestjs/platform-express` and `nestjs-pino` 5.2.0. Bisect or supersede.    | decide  |
+| M3 process     | Three of seven Codex defects on #49 were wrong results in failure classification that a green suite missed, because it fed synthetic error objects. `CLAUDE.md` now requires a real-transport row per class.     | process |
+| M3 process     | Two tests passed for the wrong reason and only the removal proof caught it. `CLAUDE.md` now applies the removal proof to every new test, not only to guards.                                                     | process |
+| M3 process     | Hostile self-review found one defect to Codex's seven, and missed three plain deviations from sentences in the plan. `CLAUDE.md` now makes re-review walk the plan's normative sentences.                        | process |
+| M3 process     | A Docker socket at `~/.docker/run/docker.sock` was reported as a blocker twice before being diagnosed. An environment failure is diagnosed to its cause before it is reported as blocking.                       | process |
 
-Closed since last update: the two #18 fixes and F1 (#27); seven unanswered
+Closed since last update: `jvONd` and `jp9DY`, both answered on #43; the two
+#18 fixes and F1 (#27); seven unanswered
 Codex threads, the missing verification record, `AggregateError` causes, the
 broken OpenAPI `$ref`, header/tag replace atomicity, `http/` consolidation and
 the SSRF registry audit (#37); the tag-filter hang (#38).
