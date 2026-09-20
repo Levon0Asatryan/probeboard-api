@@ -544,8 +544,42 @@ was down is adopted when one returns. `ON CONFLICT DO NOTHING` on top of the
 anti-join because two workers adopt concurrently by design; measured idempotent
 in §2.4.6. Deletion needs nothing: `ON DELETE CASCADE`.
 
-The cost is one anti-join per tick — two primary-key indexes, and it is
-measured in revalidation. The price paid is that a newly created endpoint waits
+**Adoption is only half of reconciliation.** Joining `interval_s` at claim time
+(D2) keeps a _future_ claim correct, but it does nothing for a row whose
+`next_run_at` was already computed from the **old** interval. Change an
+endpoint from 3600 s to 30 s just after a claim and the row sits idle for
+nearly an hour before the join ever looks; change it the other way and it fires
+early. FR-17 says every active monitor is probed **at its configured
+interval**, and for up to one old interval it would not be — a wrong cadence
+that no test of the claim query alone would show. The mirror §7.5 proposed does
+not fix this either: it would update `interval_s` on the row and still leave
+`next_run_at` stale, so this is a reconciliation gap, not a consequence of D2.
+
+So the same tick step also re-derives the next slot whenever it disagrees with
+the current interval (D24):
+
+```sql
+UPDATE endpoint_runtime r
+SET    next_run_at = r.scheduled_at + make_interval(secs => e.interval_s)
+FROM   endpoints e
+WHERE  e.id = r.endpoint_id
+  AND  r.scheduled_at IS NOT NULL                       -- never claimed: jitter stands
+  AND  (r.leased_until IS NULL OR r.leased_until < now())  -- never touch a live claim
+  AND  r.next_run_at <> r.scheduled_at + make_interval(secs => e.interval_s);
+```
+
+`scheduled_at + interval` is the same slot-derived expression the claim uses, so
+a shortened interval pulls the row forward and a lengthened one pushes it back,
+both onto the cadence the user just asked for. If the recomputed slot is already
+in the past, the catch-up guard (§3.6) handles it at claim time like any other
+overdue row — one probe, no burst. The write is idempotent: once the row agrees
+with its endpoint the predicate excludes it, so steady state costs a scan and no
+updates. **Tests:** 3600 s → 30 s is probed within the new interval rather than
+the old one, and 30 s → 3600 s does not fire early; both fail when the
+reconcile step is removed.
+
+The cost is one anti-join plus one reconcile scan per tick — both on primary-key
+and `next_run_at` indexes, and both measured in revalidation. The price paid is that a newly created endpoint waits
 up to one tick plus its jitter before its first probe, instead of being due
 instantly. That is a bounded, stated delay (≤ `SCHEDULER_TICK_MS` +
 `SCHEDULER_ADOPT_JITTER_MAX_S`), and the jitter is wanted anyway (D8).
@@ -982,6 +1016,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D17 | M6's `state`/counter columns are **not** created now                                                                                                                         | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                                             | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                                                                                                                                                                                             |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing                        | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                                                                                                                                                                                             |
+| D24 | The tick **reconciles** `next_run_at = scheduled_at + interval` whenever it disagrees, skipping leased and never-claimed rows                                                | joining `interval_s` at claim time fixes future claims but leaves a row whose slot was computed from the old interval: 3600 s → 30 s idles for nearly an hour, 30 s → 3600 s fires early. FR-17 is written as "at its configured interval". §7.5's mirror would not have fixed it either. Codex #4057810217                                                                                                                                                                                                                                                    |
 | D23 | `start(row)` never rejects: one `try/catch` spans the loader, `probe()` and the release, and every failure routes through the fenced abandon path                            | the tick does not await it (§3.4), so its rejection would bypass D19's `catch` entirely — an unhandled rejection terminates the worker under Node's default, and leaves the lease standing until expiry. Codex #4057783052                                                                                                                                                                                                                                                                                                                                     |
 | D22 | Every loader read runs in **one read-only `REPEATABLE READ` transaction**                                                                                                    | separate statements under `READ COMMITTED` each see a different snapshot, so a service update committing mid-load yields the old `base_url` with newly rotated secret headers — a new credential sent to the previous origin. §6. Codex #4057783048                                                                                                                                                                                                                                                                                                            |
 | D21 | Compose's `stop_grace_period` and `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair and move together; the worker gets `stop_grace_period: 40s`                                       | at compose's 10 s default, D12's keep-the-lease path never runs outside its own test. §10.4                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -1181,6 +1216,9 @@ meaningfully testable otherwise):
 | settle: an outcome with a `failureClass`                             | `last_probe_at` **does** advance — a failed probe is still an observation                                                                                                | the settle/abandon split                                                                      |
 | tick: survives an `adopt()` rejection                                | the error is logged and the **next tick still runs**                                                                                                                     | D19's `finally`                                                                               |
 | tick: survives a `claim()` rejection                                 | as above                                                                                                                                                                 | D19's `finally`                                                                               |
+| reconcile: interval shortened                                        | 3600 s → 30 s is claimed within the new interval, not the old one                                                                                                        | D24's reconcile                                                                               |
+| reconcile: interval lengthened                                       | 30 s → 3600 s does not fire early                                                                                                                                        | D24's reconcile                                                                               |
+| reconcile: idempotent                                                | a row already agreeing with its endpoint is not updated                                                                                                                  | the `<>` predicate                                                                            |
 | adopt: idempotent and concurrent                                     | two adopters, one row per endpoint                                                                                                                                       | `ON CONFLICT DO NOTHING`                                                                      |
 | adopt: jitter spreads                                                | with jitter on, slots spread across the window; with `0`, they do not                                                                                                    | D8                                                                                            |
 | e2e: two schedulers, one database                                    | over N ticks no `(endpoint, slot)` is probed twice                                                                                                                       | the whole claim                                                                               |
