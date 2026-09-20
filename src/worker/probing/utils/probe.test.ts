@@ -418,6 +418,27 @@ describe('probe, redirects', () => {
     expect(server.received).toHaveLength(3); // the initial hop plus two follows
   });
 
+  it('does not leak a hop whose Location is not a URL', async () => {
+    // `new URL(location, target)` throws on a malformed Location. Thrown
+    // from the hop loop it escapes past the discard, leaving the body
+    // streaming and the dispatcher open for the life of the process.
+    const server = await serve((_request, response) => {
+      response.writeHead(302, { Location: 'http://' });
+      const timer = setInterval(() => response.write('x'.repeat(1024)), 5);
+      response.on('close', () => clearInterval(timer));
+    });
+
+    const outcome = await probe(config({ url: server.origin }), deps());
+
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'UNKNOWN_ERROR',
+      code: 'INVALID_LOCATION',
+    });
+    expect(outcome.timings.totalMs).toBeGreaterThanOrEqual(0);
+    await vi.waitFor(() => expect(server.openSockets()).toBe(0), { timeout: 2000 });
+  });
+
   it('closes an intermediate hop whose body never ends before moving on (D26)', async () => {
     const destination = await serve(respond('{}'));
     const source = await serve(neverEndingBody(302, `${destination.origin}/final`));

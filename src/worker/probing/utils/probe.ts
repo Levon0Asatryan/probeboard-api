@@ -300,7 +300,22 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       return evaluate(response, dispatcher);
     }
 
-    const next = new URL(location, target);
+    // Parsed before anything else is touched, and inside its own try: a
+    // malformed `Location` throws, and thrown from here it would escape past
+    // `discardHop` below, leaving this hop's body streaming and its
+    // dispatcher open for the rest of the process's life.
+    let next: URL;
+    try {
+      next = new URL(location, target);
+    } catch {
+      await discardHop(response, dispatcher);
+      timing.markTerminal('failed_at');
+      // No taxonomy row fits a `3xx` whose Location is not a URL, and
+      // inventing a plausible-looking one would send an operator to the
+      // wrong system (architecture §7.4). The raw signal is kept instead.
+      return { success: false, failureClass: 'UNKNOWN_ERROR', code: 'INVALID_LOCATION' };
+    }
+
     const nextMethod = methodForRedirect(response.status, method);
     const hop = headersForHop({
       headers,
