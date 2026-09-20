@@ -189,7 +189,19 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       // D45: never automatic. A `3xx` has headers, so `first_byte` is set for
       // that hop; a stale one would make the abort classifier report a body
       // stall for a hop that never got that far.
-      if (redirects > 0) timing.resetHop();
+      //
+      // The certificate is reset with them, and for the same reason. `onTls`
+      // only fires once a handshake completes, so a hop that fails *before*
+      // `secureConnect` -- an incompatible protocol, say -- would otherwise
+      // leave the previous hop's expiry in place, and the outcome would
+      // report TLS_HANDSHAKE_FAILED alongside a plausible-looking
+      // `certExpiresAt` belonging to a different server. Clearing it keeps
+      // the final-hop semantics literal: no verdict on this hop, no
+      // certificate.
+      if (redirects > 0) {
+        timing.resetHop();
+        certExpiresAt = undefined;
+      }
 
       const verdict = await attemptHop();
       if (verdict !== undefined) return finish(verdict);

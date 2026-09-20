@@ -933,6 +933,27 @@ describe('probe, TLS handshake failures (not certificate verdicts)', () => {
     expect(outcome.code).toBe('ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION');
   });
 
+  it('does not carry a previous hop\u2019s certificate into a failed handshake', async () => {
+    // onTls only fires once a handshake completes. Without clearing it per
+    // hop, a redirect from a healthy https endpoint to one that fails
+    // before secureConnect reports TLS_HANDSHAKE_FAILED with the *first*
+    // server's expiry attached -- plausible, and about a different machine.
+    const restore = trustFixtureCa();
+    try {
+      const broken = await startObsoleteTlsServer();
+      started.push(broken);
+      const source = await serve(redirect(`${broken.origin}/final`), { cert: 'valid' });
+
+      const outcome = await probe(config({ url: source.origin }), deps());
+
+      expect(outcome.redirects).toBe(1);
+      expect(outcome.failureClass).toBe('TLS_HANDSHAKE_FAILED');
+      expect(outcome.certExpiresAt).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
   it('still reports a certificate verdict as its own class, not a handshake failure', async () => {
     // The boundary that keeps the ERR_SSL_ rule honest: certificate
     // problems arrive as authorizationError codes and must not be folded

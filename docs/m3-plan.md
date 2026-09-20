@@ -1743,9 +1743,11 @@ untouched, per §2.2; M4 is the first caller.
   verdict is deliberately preserved either way: letting teardown overwrite a
   decided result would report a failure for a probe that succeeded.
 - **With redirects, `cert_expires_at` is the final https hop's certificate,**
-  not the configured endpoint's, matching D17's rule for timings. Worth
-  revisiting if a user ever monitors an endpoint that redirects across a
-  certificate boundary and expects a warning about their own.
+  not the configured endpoint's, matching D17's rule for timings. It is
+  cleared at each hop, so a hop that fails before `secureConnect` reports no
+  certificate rather than inheriting the previous peer's (Codex, PR #49).
+  Worth revisiting if a user ever monitors an endpoint that redirects across
+  a certificate boundary and expects a warning about their own.
 - **An endpoint on a WHATWG blocked port reports `UNKNOWN_ERROR` (D73).**
   undici's `fetch` refuses the Fetch spec's blocked-port list (1, 7, 9, 11,
   …) with a generic `bad port` network error carrying no `code`, before any
