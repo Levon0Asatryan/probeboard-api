@@ -64,7 +64,11 @@ one — so the rules below move finding earlier and make each round carry more.
    behaviour changed. A **whole**-diff re-read is only required when a fix
    reaches outside the module the finding named — that is the case where the
    blast radius is not knowable from the fix alone.
-4. **Resolve a thread when its fix is pushed and verified.** Reply saying what
+4. **A plan PR gets one Codex round, then it merges.** A design document
+   cannot be made correct by review — it has no tests, and each fix opens new
+   surface. Fix only what changes the design; everything else becomes scope in
+   the implementation PR. See `AGENTS.md`, "Reviewing a design document".
+5. **Resolve a thread when its fix is pushed and verified.** Reply saying what
    changed and in which commit, then resolve it. A thread stays open only when
    it is a pushback awaiting Levon's judgement, or a deferral with a tracker
    row. "Answered" is not the same as "resolved": an open thread should mean

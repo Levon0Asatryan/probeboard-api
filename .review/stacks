@@ -1,0 +1,4 @@
+# Stacks declared for this repository. Declared values win over review-kit's
+# guessing, which would otherwise pull in stack rules from outside this repo.
+# probeboard keeps its rules in .review/rules/ and loads nothing else.
+probeboard
