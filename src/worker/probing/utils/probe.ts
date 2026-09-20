@@ -22,6 +22,7 @@ import {
 } from '../../../core/ssrf/host-validator.js';
 import type { EndpointAssertion, StatusRange } from '../../../core/db/types.js';
 import { evaluateAssertions } from '../assertions/evaluate.js';
+import { raceAbort } from './abort-race.js';
 import { readCappedBody } from './body-cap.js';
 import {
   classifyAbort,
@@ -107,25 +108,6 @@ interface Verdict {
 function statusMatches(status: number, expected: readonly StatusRange[]): boolean {
   if (expected.length === 0) return status >= 200 && status < 300;
   return expected.some((range) => status >= range.min && status <= range.max);
-}
-
-/**
- * A promise that rejects when the deadline fires.
- *
- * Used to race DNS (D44). Node cannot cancel an in-flight `dns.resolve`, so
- * the underlying call still runs to completion — its late result is simply
- * discarded. Without the race, a name server that never answers holds the
- * probe open past `timeout_ms` regardless of every other bound, because the
- * guard runs before any socket the `AbortSignal` could reach.
- */
-function rejectOnAbort(signal: AbortSignal): Promise<never> {
-  return new Promise((_resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason as Error);
-      return;
-    }
-    signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true });
-  });
 }
 
 /**
@@ -236,9 +218,10 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     // classification built on it -- a redirect to a name that fails DNS is a
     // DNS failure, not a policy refusal.
     let pin: PinnedConnectOptions;
+    const deadlineRace = raceAbort(controller.signal);
     try {
       timing.mark('dns_start');
-      pin = await Promise.race([resolvePin(), rejectOnAbort(controller.signal)]);
+      pin = await Promise.race([resolvePin(), deadlineRace.promise]);
       timing.mark('dns_done');
     } catch (error) {
       if (isGuardRejection(error)) {
@@ -246,6 +229,9 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
         return { success: false, ...classifyGuardRejection(error) };
       }
       throw error;
+    } finally {
+      // The race is over either way; the listener must not outlive it.
+      deadlineRace.dispose();
     }
 
     const dispatcher = deps.dispatcherFactory({
