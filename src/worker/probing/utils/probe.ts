@@ -237,10 +237,14 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     // DNS failure, not a policy refusal.
     let pin: PinnedConnectOptions;
     const deadlineRace = raceAbort(controller.signal);
+    const resolver = timedResolver();
     try {
-      timing.mark('dns_start');
-      pin = await Promise.race([resolvePin(), deadlineRace.promise]);
-      timing.mark('dns_done');
+      pin = await Promise.race([resolvePin(resolver), deadlineRace.promise]);
+      // §3.4: an IP-literal target does no DNS work, so both boundaries are
+      // the same instant and `dns_ms` reads 0 honestly rather than being
+      // undefined -- or, worse, reporting the guard's URL parsing and policy
+      // classification as DNS latency.
+      if (!resolver.ran()) timing.markSame(['dns_start', 'dns_done']);
     } catch (error) {
       if (isGuardRejection(error)) {
         timing.markTerminal('blocked_at');
@@ -373,9 +377,51 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     return Math.max(deadlineMs - (deps.clock.monotonic() - deadlineFrom), 1);
   }
 
+  /**
+   * The injected resolver, with the DNS boundaries wrapped around its actual
+   * calls.
+   *
+   * Instrumenting here rather than around `assertSaveableUrl` keeps `dns_ms`
+   * a measurement of resolution alone. The guard also parses the URL and
+   * classifies every address against a `BlockList`, and bracketing the whole
+   * call reported that work as DNS latency — on an IP-literal target, where
+   * the resolver is never called at all, it was the *only* thing reported.
+   *
+   * `resolve4` and `resolve6` run concurrently inside the guard, so
+   * `dns_start` is taken once at the first call and `dns_done` moves to
+   * whichever family finishes last, which is when resolution is actually
+   * over.
+   */
+  function timedResolver(): DnsResolver & { ran: () => boolean } {
+    let started = false;
+    const begin = (): void => {
+      if (started) return;
+      started = true;
+      timing.mark('dns_start');
+    };
+    // The call is passed as a thunk, not as an already-started promise:
+    // an argument is evaluated before the function receives it, so the
+    // eager form ran the resolver *before* `dns_start` was marked and the
+    // boundary landed in the middle of the work it was supposed to bracket.
+    const time = async (call: () => Promise<string[]>): Promise<string[]> => {
+      begin();
+      try {
+        return await call();
+      } finally {
+        timing.mark('dns_done');
+      }
+    };
+
+    return {
+      resolve4: (hostname) => time(() => deps.resolver.resolve4(hostname)),
+      resolve6: (hostname) => time(() => deps.resolver.resolve6(hostname)),
+      ran: () => started,
+    };
+  }
+
   /** Resolves and classifies this hop's target, yielding what to pin to. */
-  async function resolvePin(): Promise<PinnedConnectOptions> {
-    const validated = await assertSaveableUrl(target.toString(), deps.ssrf, deps.resolver);
+  async function resolvePin(resolver: DnsResolver): Promise<PinnedConnectOptions> {
+    const validated = await assertSaveableUrl(target.toString(), deps.ssrf, resolver);
     // D19: a *disabled* guard short-circuits before resolving and returns no
     // addresses, so there is nothing to pin to and an unpinned connector is
     // what "disabled" means. An *enabled* guard with no addresses never gets

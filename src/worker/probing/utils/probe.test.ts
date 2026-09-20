@@ -832,6 +832,53 @@ describe('probe, TLS', () => {
   });
 });
 
+describe('probe, dnsMs measures DNS and nothing else', () => {
+  it('reports exactly zero for an IP-literal target, which does no DNS work', async () => {
+    // Real clock on purpose: bracketing the whole guard call meant dnsMs
+    // reported URL parsing, policy classification and a promise turn as DNS
+    // latency -- on a literal, where the resolver is never called, that was
+    // the only thing it reported. The assertion is exact equality with 0,
+    // which is the only value that distinguishes the two implementations.
+    const server = await serve(respond('{}'));
+
+    const outcome = await probe(config({ url: server.origin }), deps());
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.timings.dnsMs).toBe(0);
+  });
+
+  it('times the resolver itself when the target is a hostname', async () => {
+    // Stepped clock: the resolver is the only thing that moves it, so the
+    // reported dnsMs can only have come from around the resolver calls.
+    let now = 0;
+    const server = await serve(respond('{}'));
+
+    const outcome = await probe(
+      config({ url: `http://probe.example.com:${server.port}/` }),
+      deps({
+        clock: { wallClock: () => 1_700_000_000_000, monotonic: () => now },
+        ssrf: GUARD_ON,
+        resolver: {
+          resolve4: () => {
+            now += 120;
+            return Promise.resolve([ROUTABLE]);
+          },
+          resolve6: () => {
+            now += 30;
+            return Promise.resolve([]);
+          },
+        },
+        dispatcherFactory: (options) =>
+          new Agent({ connect: createConnector({ ...options, address: '127.0.0.1' }) }),
+      }),
+    );
+
+    expect(outcome.success).toBe(true);
+    // Both families run, so dns_done lands after the later of the two.
+    expect(outcome.timings.dnsMs).toBe(150);
+  });
+});
+
 describe('probe, the connector\u2019s share of the deadline', () => {
   it('gives each hop only what is left of the budget, not the whole of it', async () => {
     // The connector owns its socket until its own timer fires; the outer
