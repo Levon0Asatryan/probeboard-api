@@ -37,7 +37,7 @@ const opts = (over: Partial<ConnectOptions> = {}): ConnectOptions => ({
 function connect(
   pin: Parameters<typeof createConnector>[0],
   options: Partial<ConnectOptions>,
-): Promise<{ error: Error | null; socket?: net.Socket }> {
+): Promise<{ error: Error | null; socket: net.Socket | null }> {
   return new Promise((resolve) => {
     createConnector(pin)(opts(options), (error, socket) => resolve({ error, socket }));
   });
@@ -196,7 +196,7 @@ describe('createConnector over a real handshake', () => {
 
       expect(error).toBeInstanceOf(TlsVerificationError);
       expect((error as TlsVerificationError).code).toBe(expected);
-      expect(socket).toBeUndefined();
+      expect(socket).toBeNull();
       expect(verdicts[0]).toMatchObject({ authorized: false, authorizationError: expected });
     } finally {
       await server.close();
@@ -250,7 +250,7 @@ describe('createConnector over a real handshake', () => {
         { hostname: 'localhost', port: server.port },
       );
 
-      expect(socket).toBeUndefined();
+      expect(socket).toBeNull();
       expect(server.requests()).toBe(0);
     } finally {
       await server.close();

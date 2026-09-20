@@ -41,7 +41,16 @@ export interface ConnectOptions {
   servername?: string | null;
 }
 
-export type ConnectCallback = (error: Error | null, socket?: net.Socket) => void;
+/**
+ * undici's own callback shape: either an error and no socket, or a socket and
+ * no error. Declared as that discriminated pair rather than
+ * `(error: Error | null, socket?: Socket)`, which is structurally *not*
+ * assignable to `undici.connector` and makes every `new Agent({ connect })`
+ * a type error at the call site.
+ */
+export type ConnectCallback = (
+  ...args: [error: null, socket: net.Socket] | [error: Error, socket: null]
+) => void;
 export type Connector = (options: ConnectOptions, callback: ConnectCallback) => void;
 
 /** What the completed handshake said, recorded whether or not it passed. */
@@ -200,7 +209,8 @@ export function createConnector(pin: PinnedConnectOptions = {}): Connector {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
-      callback(error, socket);
+      if (error !== null) callback(error, null);
+      else if (socket !== undefined) callback(null, socket);
     };
 
     try {
