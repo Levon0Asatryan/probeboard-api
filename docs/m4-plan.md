@@ -395,6 +395,30 @@ slot, on the original phase, at every interval length. The `FROM due JOIN
 endpoints e` form needed to reach `e.interval_s` from the `UPDATE` is valid and
 does not disturb the plan in §2.4.2.
 
+#### 2.4.8 The claim and its slot record, written in one statement
+
+The exit test needs a durable record of _which slot each worker took_, written
+before the probe runs and surviving a `docker kill` (§9). Data-modifying CTEs
+give it in the same statement as the claim, so the record cannot disagree with
+the claim or be lost between them. Run against three endpoints at 30/60/300 s:
+
+```
+             endpoint_id              |         scheduled_at          |          next_run_at
+ e06e185b-2ef0-4ddc-875c-5d8389e74222 | 2026-09-20 19:21:26.574217+00 | 2026-09-20 19:21:56.574217+00
+ 18daba34-1ad6-43c1-9d81-f13575ddbc36 | 2026-09-20 19:21:26.574217+00 | 2026-09-20 19:22:26.574217+00
+ 00294775-aa58-43ba-8d1d-3f941b365a01 | 2026-09-20 19:21:26.574217+00 | 2026-09-20 19:26:26.574217+00
+(3 rows)
+
+logged_rows = 3
+
+SELECT endpoint_id, scheduled_at, count(*) FROM claim_log GROUP BY 1,2 HAVING count(*) > 1;
+(0 rows)          -- no slot claimed twice
+```
+
+The `UPDATE`'s `RETURNING` still reaches the caller through the final `SELECT`,
+each endpoint advanced by **its own** interval, and the last query is the one
+§9 runs as the NFR-3 proof.
+
 ---
 
 ## 3. Design
@@ -427,6 +451,16 @@ FROM   due
 JOIN   endpoints e ON e.id = due.endpoint_id
 WHERE  r.endpoint_id = due.endpoint_id
 RETURNING r.endpoint_id, r.scheduled_at, r.next_run_at;
+```
+
+wrapped so the slot record is written by the same statement (D25, §2.4.8):
+
+```sql
+WITH due AS ( … ),
+     claimed AS ( UPDATE endpoint_runtime … RETURNING r.endpoint_id, r.scheduled_at, r.next_run_at ),
+     logged  AS ( INSERT INTO claim_log (endpoint_id, scheduled_at, worker_id)
+                  SELECT endpoint_id, scheduled_at, $workerId FROM claimed )
+SELECT * FROM claimed;
 ```
 
 **What it returns.** One row per endpoint this worker now owns, with the slot
@@ -471,7 +505,33 @@ CREATE TABLE endpoint_runtime (
     last_probe_at timestamptz
 );
 CREATE INDEX endpoint_runtime_next_run_at_idx ON endpoint_runtime (next_run_at);
+
+-- One row per claim: which worker took which slot, written by the claim
+-- statement itself (D25). This is the only durable, slot-keyed record of an
+-- attempt that M4 has, and it is what §9's NFR-3 proof reads.
+CREATE TABLE claim_log (
+    id           bigserial   PRIMARY KEY,
+    endpoint_id  uuid        NOT NULL REFERENCES endpoints (id) ON DELETE CASCADE,
+    scheduled_at timestamptz NOT NULL,
+    worker_id    text        NOT NULL,
+    claimed_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX claim_log_slot_idx ON claim_log (endpoint_id, scheduled_at);
 ```
+
+`id` is `bigserial`, so `types.ts` declares it `Generated<string>` — node-postgres
+returns `int8` as a string, and AGENTS.md makes typing it `number` a finding.
+There is deliberately **no** unique constraint on `(endpoint_id, scheduled_at)`:
+a duplicate claim is the defect this table exists to _record_, and a constraint
+would reject the evidence instead of capturing it.
+
+**Growth, stated rather than discovered.** One row per claim: 500 monitors at
+60 s is 720 k rows/day. That is fine for a thesis demonstration and for M10's
+evaluation run, and wrong as a permanent default. Retention is **deferred to
+M5**, which already owns partitioning and the retention sweep (ADR-0007, drop
+partitions, never `DELETE` on the write path) — recorded as a tracker follow-up
+so M5 extends its machinery here rather than meeting the table by surprise. If
+Levon would rather not carry the table at all, the alternative is in §10.5.
 
 **Why a separate table at all** (`07-architecture.md` §7.5, restated because it
 is the design's load-bearing claim): every column here is written on **every
@@ -1027,6 +1087,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D17 | M6's `state`/counter columns are **not** created now                                                                                                                                    | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                                                        | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                                                                                                                                                                                             |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing                                   | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                                                                                                                                                                                             |
+| D25 | The claim writes a `claim_log` row **in the same statement**, via data-modifying CTEs                                                                                                   | the exit test must detect a slot _executed twice_. `endpoint_runtime` keeps only the latest `scheduled_at`, the receiver's log has no slot identity, and a killed worker's own log line can be lost — so none of them can see the regression the test exists for. Written before the probe and inside the claim, so it cannot disagree with the claim or be lost between them. Measured, §2.4.8. Codex #4057810222                                                                                                                                             |
 | D24 | The tick **reconciles** `next_run_at = scheduled_at + interval` whenever it disagrees, skipping leased and never-claimed rows                                                           | joining `interval_s` at claim time fixes future claims but leaves a row whose slot was computed from the old interval: 3600 s → 30 s idles for nearly an hour, 30 s → 3600 s fires early. FR-17 is written as "at its configured interval". §7.5's mirror would not have fixed it either. Codex #4057810217                                                                                                                                                                                                                                                    |
 | D23 | `start(row)` never rejects: the loader and `probe()` sit under an outer `try/catch`, and **each terminal write is guarded separately** so the recovery release cannot fail the recovery | the tick does not await it (§3.4), so a rejection bypasses D19's `catch` entirely and an unhandled rejection terminates the worker under Node's default, leaving the lease standing until expiry. An outer catch alone is insufficient: it awaits the abandon `UPDATE`, which rejects from inside the catch already entered when PostgreSQL is what failed. Codex #4057783052, #4057810219                                                                                                                                                                     |
 | D22 | Every loader read runs in **one read-only `REPEATABLE READ` transaction**                                                                                                               | separate statements under `READ COMMITTED` each see a different snapshot, so a service update committing mid-load yields the old `base_url` with newly rotated secret headers — a new credential sent to the previous origin. §6. Codex #4057783048                                                                                                                                                                                                                                                                                                            |
@@ -1249,11 +1310,11 @@ directly here and cost M3 606 seconds; the barrier helper polls
 
 ## 9. Delivery — 3 PRs
 
-| PR                                  | Content                                                                                                                                                                                                                                                                                                                            | Commits                                                                                                   |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                      | 1                                                                                                         |
-| **2. Schema, config and the claim** | migration `0007` + `.down.sql` + `types.ts`; the config bounds, four new keys, three cross-field rules and their rejection tests, plus those keys in `.env.example`; `EndpointRuntimeRepository` (adopt, claim, release) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
-| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                              | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
+| PR                                  | Content                                                                                                                                                                                                                                                                                                                                                                     | Commits                                                                                                   |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                                                               | 1                                                                                                         |
+| **2. Schema, config and the claim** | migration `0007` (`endpoint_runtime` **and** `claim_log`) + `.down.sql` + `types.ts`; the config bounds, four new keys, three cross-field rules and their rejection tests, plus those keys in `.env.example`; `EndpointRuntimeRepository` (adopt, claim, release) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
+| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                                                                       | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
 
 PR 2 is coherent alone: it ships a table, its types, its configuration and a
 tested claim query. PR 3 is the only thing that makes any of it run, and
@@ -1281,25 +1342,38 @@ M4 discards outcomes (D18) and `endpoint_runtime` keeps only the _most recent_
 prove NFR-3 — it can only show the current lease state. The demonstration
 splits its evidence accordingly:
 
-| Claim                                           | Evidence                                                                                                                                                                                 | Why that source                                                                                                                                                                                        |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| No `(endpoint, slot)` probed twice              | **the probe receiver's own request log** — one container in the demo stack serving a distinct path per monitor; two requests to one monitor's path inside one slot window is a duplicate | it records the **attempt**, not the outcome, so it still sees the request the killed worker sent — and it sits outside the process under test, which is what makes it evidence rather than self-report |
-| Which worker made each attempt                  | `docker compose logs`: an `attempt` line emitted **before** dispatch with `workerId`, `endpointId`, `scheduledAt` and `claim_to_start_ms`, plus the `outcome` line after                 | attribution and the measured claim-to-start (§3.10). On its own it cannot prove disjointness: a killed worker emits no outcome line and may lose buffered ones                                         |
-| Time to reclaim, both regimes                   | `psql` on `endpoint_runtime`: `leased_by` flipping to the surviving worker, and `scheduled_at`/`next_run_at` before and after                                                            | current-state questions, which is exactly what the row can answer                                                                                                                                      |
-| The killed worker's claim was held, then lapsed | `psql` snapshot at kill time plus one after expiry                                                                                                                                       | as above                                                                                                                                                                                               |
+| Claim                                           | Evidence                                                                                                                                                                 | Why that source                                                                                                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No `(endpoint, slot)` claimed twice             | **`psql` on `claim_log`**: `SELECT endpoint_id, scheduled_at, count(*) … GROUP BY 1,2 HAVING count(*) > 1` returns no rows                                               | written inside the claim statement (D25), before the probe runs, keyed by slot — so it survives the `docker kill` and records the attempt the killed worker made |
+| No monitor's path requested twice in one slot   | the probe receiver's request log, corroborating                                                                                                                          | an independent view from outside both workers; it carries no slot identity, so it supports `claim_log` rather than replacing it                                  |
+| Which worker made each attempt                  | `docker compose logs`: an `attempt` line emitted **before** dispatch with `workerId`, `endpointId`, `scheduledAt` and `claim_to_start_ms`, plus the `outcome` line after | attribution and the measured claim-to-start (§3.10). On its own it cannot prove disjointness: a killed worker emits no outcome line and may lose buffered ones   |
+| Time to reclaim, both regimes                   | `psql` on `endpoint_runtime`: `leased_by` flipping to the surviving worker, and `scheduled_at`/`next_run_at` before and after                                            | current-state questions, which is exactly what the row can answer                                                                                                |
+| The killed worker's claim was held, then lapsed | `psql` snapshot at kill time plus one after expiry                                                                                                                       | as above                                                                                                                                                         |
 
 The log line's fields are therefore part of the design, not incidental: without
 `scheduledAt` on it there is no slot identity, and the exit test has nothing to
-group by. **Why the receiver and not the worker's own log.** The exit test kills a worker
-mid-probe. That attempt produces no outcome line at all, and `pino`'s buffered
-lines can die with the container — so a regression that re-ran the _same_ slot
-would show only the survivor's line, the duplicate check would pass, and the
-one test the milestone is accepted on would give a false negative. The receiver
-is a separate container, it logs on receipt, and it survives the `docker kill`
-untouched. The worker's `attempt` line stays, for attribution and timing, not
-as the proof. **The verification record says plainly that M4's disjointness
-evidence is receiver-derived**, rather than implying a stronger proof than the
-milestone can give.
+group by. **Why `claim_log` and not the logs.** Three sources were considered and two
+cannot answer the question:
+
+- the **worker's own log** — the killed worker emits no outcome line for the
+  attempt it died during, and `pino`'s buffered lines can die with the
+  container, so a slot re-run shows only the survivor's line;
+- the **receiver's request log** — it records a path and an arrival time, which
+  is a wall-clock window, not slot identity. If a regression advanced
+  `next_run_at` on release instead of on claim, the killed worker sends slot
+  `T` and the survivor retries slot `T` once the lease lapses; the two arrive
+  60 s apart, fall in different windows, and the check reports nothing. That is
+  exactly the regression D5 exists to prevent, invisible to the evidence meant
+  to catch it;
+- **`claim_log`** — written inside the claim statement, before any probe, keyed
+  by `(endpoint_id, scheduled_at)`. A second claim of one slot is a second row,
+  whoever made it and whatever became of that process afterwards.
+
+So `claim_log` is the proof and the receiver's log corroborates it from outside
+both workers. **The verification record states that M4's evidence proves no slot
+was _claimed_ twice** — which is what the claim query guarantees and what NFR-3
+is written in terms of — rather than implying a stronger claim about the
+network than the milestone can support.
 
 **A correction to hand M5, not to implement here.** `07-architecture.md` §7.5
 gives `probe_results` the natural key `(endpoint_id, started_at)`, and
@@ -1346,6 +1420,20 @@ discovering it. Raised by Codex (#4057783060).
    `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair**: raising the grace without
    raising `stop_grace_period` silently converts every graceful stop into a
    SIGKILL, so both move together or neither does (D21).
+
+5. **`claim_log` is a round-five addition, and it is schema.** D25 adds a table
+   whose only job is evidence: the exit test cannot otherwise detect a slot
+   executed twice, because `endpoint_runtime` keeps just the latest
+   `scheduled_at`, the receiver's log has no slot identity, and a killed
+   worker's own log line can be lost. It is one row per claim (720 k/day at 500
+   monitors on 60 s), with retention deferred to M5's partitioning machinery.
+   If you would rather not carry it, the alternative is to accept that the
+   containers demonstration shows the mechanism and the _reclaim_ timing, while
+   the rigorous no-duplicate-per-slot proof stays in the integration suite —
+   where a test observes every claim directly and needs no table. That is a
+   weaker reading of the milestone's exit criterion than your handoff asked
+   for ("record from `psql` that no slot was probed twice"), which is why I
+   added the table rather than choosing it myself.
 
 ---
 
