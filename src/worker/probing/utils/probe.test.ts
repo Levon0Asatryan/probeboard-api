@@ -369,6 +369,39 @@ describe('probe, redirects', () => {
     expect(server.received).toHaveLength(1);
   });
 
+  it('evaluates a followed 3xx that carries no Location', async () => {
+    // There is no next hop, so there is nothing for the budget to refuse.
+    const server = await serve((_request, response) => {
+      response.writeHead(302);
+      response.end('no location here');
+    });
+
+    const outcome = await probe(
+      config({ url: server.origin, expectedStatus: [{ min: 302, max: 302 }] }),
+      deps(),
+    );
+
+    expect(outcome).toMatchObject({ success: true, status: 302, redirects: 0 });
+  });
+
+  it('does not call a Location-less 3xx TOO_MANY_REDIRECTS when the budget is spent', async () => {
+    // The budget check used to run first, so an endpoint that legitimately
+    // answers 302 without a Location was recorded as downtime -- with its
+    // status dropped -- whenever max_redirects was zero or already spent.
+    const server = await serve((_request, response) => {
+      response.writeHead(302);
+      response.end('no location here');
+    });
+
+    const outcome = await probe(
+      config({ url: server.origin, maxRedirects: 0, expectedStatus: [{ min: 302, max: 302 }] }),
+      deps(),
+    );
+
+    expect(outcome).toMatchObject({ success: true, status: 302 });
+    expect(outcome.failureClass).toBeUndefined();
+  });
+
   it('returns TOO_MANY_REDIRECTS promptly even when the over-budget 3xx streams forever (D46)', async () => {
     // The over-budget 3xx is the last iteration but is still a discarded
     // hop. Treated as an evaluated one it would stall on this unread body

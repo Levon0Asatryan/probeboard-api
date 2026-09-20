@@ -282,6 +282,17 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     const followable = config.followRedirects && isFollowedRedirect(response.status);
     if (!followable) return evaluate(response, dispatcher);
 
+    // The `Location` check comes *before* the budget check, not after.
+    // A followed status with no `Location` is not a redirect we can act on —
+    // there is no next hop for a budget to refuse — so it is an ordinary
+    // response and is evaluated. Checking the budget first reported a `302`
+    // that an endpoint legitimately returns (and that a user may have put in
+    // `expected_status`) as TOO_MANY_REDIRECTS whenever the budget happened
+    // to be spent or configured as zero: recorded as downtime, with the
+    // status dropped from the outcome.
+    const location = response.headers.get('location');
+    if (location === null || location === '') return evaluate(response, dispatcher);
+
     if (redirects >= maxRedirects) {
       // D46: the over-budget `3xx` is the last iteration but is still a
       // discarded hop, not an evaluated one. Left to the evaluated path it
@@ -289,12 +300,6 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       timing.markTerminal('failed_at');
       await discardHop(response, dispatcher);
       return { success: false, failureClass: 'TOO_MANY_REDIRECTS' };
-    }
-
-    const location = response.headers.get('location');
-    if (location === null || location === '') {
-      // A followed status with no Location is not a redirect we can act on.
-      return evaluate(response, dispatcher);
     }
 
     // Parsed before anything else is touched, and inside its own try: a
