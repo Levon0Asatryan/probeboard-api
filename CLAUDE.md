@@ -57,7 +57,12 @@ Applies to every chat, with or without a handoff prompt. The report
    that only changes pure logic, CI plus the local suites are enough. Say in
    the report which applied.
 4. **Re-review**, after revalidation. Review the whole diff yourself as a
-   hostile reviewer against `AGENTS.md`. Then wait for Codex on the head SHA
+   hostile reviewer against `AGENTS.md`, and separately **walk the plan's
+   normative sentences** — every "must", "is anchored on", "is excluded from"
+   — and point at the line that implements each. Reading the diff for smells
+   finds lifetime and resource bugs; it does not find a measurement that
+   deviates from a sentence already written in the plan. On #49 both the
+   `dns_ms` and `total_ms` defects were that kind, and Codex found them. Then wait for Codex on the head SHA
    (see "Before calling it done", step 4), and answer every thread. A fix push
    repeats the checks it affects — but only for two rounds, after which the
    fix-now rule in "Cost discipline" decides what is fixed and what is
@@ -94,13 +99,30 @@ Applies to every chat, with or without a handoff prompt. The report
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`; PR bodies end with
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - **Prove every guard by removing it** and watching its test fail. A passing
-  test is not evidence until it has been seen failing against the bug. Force
+  test is not evidence until it has been seen failing against the bug — and
+  this applies to **every new test, not only to guards**. On #49 two tests
+  passed for the wrong reason: a loopback server is itself in the SSRF
+  blocklist, so a guard-enabled row returned `ADDRESS_NOT_ALLOWED` whether or
+  not the guard ran, and a listener test passed identically with and without
+  its fix. Force
   races with an explicit barrier (commit the competing write on a second
   connection) rather than hoping `Promise.all` interleaves; measure timing at
   production Argon2 cost.
+- **A mapping table from external signals is untested until one real row per
+  class has flowed through the real transport.** Every wrong-result defect on
+  #49 lived in failure classification, and all three survived a green suite
+  that fed it synthetic error objects: reality disagreed with the documented
+  signals on `UND_ERR_SOCKET`, `ERR_SSL_*`, and `authorizationError` being a
+  string. Drive the real client against a real server — one case per class —
+  before the table counts as covered.
+- An environment failure is **diagnosed to its actual cause** before it is
+  reported as blocking. "Cannot connect to the Docker daemon" meant the socket
+  was at `~/.docker/run/docker.sock` while the CLI looked in `/var/run`; it
+  cost two rounds of reporting a blocker that was one env var.
 - Keep in step, same change: `http/<module>.http` for every endpoint,
   `npm run openapi` for every route or schema change, coverage exclusion paths
-  when files move.
+  when files move, and a `:dist` twin in `package.json` for every new CLI
+  script — `migrate`/`migrate:dist` — or it cannot be run inside the image.
 
 ### Before calling it done
 
