@@ -1,6 +1,6 @@
 import type { DetailedPeerCertificate } from 'node:tls';
 import { describe, expect, it } from 'vitest';
-import { classifyAuthorizationError, earliestExpiry } from './tls-inspect.js';
+import { earliestExpiry } from './tls-inspect.js';
 
 /**
  * A chain node carries only what `earliestExpiry` reads. The cast is to the
@@ -12,35 +12,6 @@ function cert(validTo: string, issuer?: DetailedPeerCertificate): DetailedPeerCe
   node.issuerCertificate = issuer ?? node; // self-signed root by default
   return node;
 }
-
-describe('classifyAuthorizationError', () => {
-  it.each([
-    ['CERT_HAS_EXPIRED', 'TLS_EXPIRED'],
-    ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'TLS_UNTRUSTED'],
-    ['DEPTH_ZERO_SELF_SIGNED_CERT', 'TLS_UNTRUSTED'],
-    ['SELF_SIGNED_CERT_IN_CHAIN', 'TLS_UNTRUSTED'],
-    ['UNABLE_TO_GET_ISSUER_CERT', 'TLS_UNTRUSTED'],
-    ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'TLS_UNTRUSTED'],
-    ['ERR_TLS_CERT_ALTNAME_INVALID', 'TLS_HOSTNAME_MISMATCH'],
-  ] as const)('maps %s to %s', (code, expected) => {
-    expect(classifyAuthorizationError(code)).toBe(expected);
-  });
-
-  it('does not coerce an unrecognised code into the nearest-looking class', () => {
-    // Architecture §7.4. A new OpenSSL verify code must surface as UNKNOWN
-    // with its raw code kept by the caller, not be guessed at as TLS_UNTRUSTED.
-    expect(classifyAuthorizationError('CERT_REVOKED')).toBe('UNKNOWN_ERROR');
-    expect(classifyAuthorizationError('')).toBe('UNKNOWN_ERROR');
-  });
-
-  it('is not fooled by inherited Object properties', () => {
-    // `AUTHORIZATION_ERROR_CLASS[code]` alone would return a function for
-    // 'toString' and 'constructor'. Object.hasOwn is what keeps it honest.
-    for (const code of ['toString', 'constructor', 'hasOwnProperty', '__proto__']) {
-      expect(classifyAuthorizationError(code)).toBe('UNKNOWN_ERROR');
-    }
-  });
-});
 
 describe('earliestExpiry', () => {
   it('returns the leaf expiry for a single self-signed certificate', () => {

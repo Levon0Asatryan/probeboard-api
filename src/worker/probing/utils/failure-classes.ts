@@ -56,6 +56,15 @@ const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS_UNTRUSTED',
   ERR_TLS_CERT_ALTNAME_INVALID: 'TLS_HOSTNAME_MISMATCH',
   EPROTO: 'TLS_HANDSHAKE_FAILED',
+  // Beyond §3.4's own column: the same operational meaning as the two
+  // TLS_UNTRUSTED codes above — "chain incomplete or self-signed" — reached by
+  // a different OpenSSL verify path. They arrive here through
+  // `TlsVerificationError.code` (pinned-connect.ts), which is why they are in
+  // this one map rather than a second one beside it: two maps over the same
+  // codes disagree the first time either is edited.
+  SELF_SIGNED_CERT_IN_CHAIN: 'TLS_UNTRUSTED',
+  UNABLE_TO_GET_ISSUER_CERT: 'TLS_UNTRUSTED',
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY: 'TLS_UNTRUSTED',
   UND_ERR_HEADERS_TIMEOUT: 'RESPONSE_TIMEOUT',
   UND_ERR_BODY_TIMEOUT: 'BODY_TIMEOUT',
 };

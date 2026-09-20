@@ -10,35 +10,6 @@
  * unauthorised socket is torn down before a single request byte is written.
  */
 import type { DetailedPeerCertificate, PeerCertificate } from 'node:tls';
-import type { FailureClass } from './failure-classes.js';
-
-/**
- * `socket.authorizationError` values to the taxonomy.
- *
- * The first four are §3.4's own Node-signal column. The chain codes below
- * them are the same operational meaning — "chain incomplete or self-signed" —
- * reached by a different path, and are listed so a routine misconfigured
- * chain is not reported as UNKNOWN_ERROR.
- */
-const AUTHORIZATION_ERROR_CLASS: Readonly<Record<string, FailureClass>> = {
-  CERT_HAS_EXPIRED: 'TLS_EXPIRED',
-  UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS_UNTRUSTED',
-  DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS_UNTRUSTED',
-  ERR_TLS_CERT_ALTNAME_INVALID: 'TLS_HOSTNAME_MISMATCH',
-  SELF_SIGNED_CERT_IN_CHAIN: 'TLS_UNTRUSTED',
-  UNABLE_TO_GET_ISSUER_CERT: 'TLS_UNTRUSTED',
-  UNABLE_TO_GET_ISSUER_CERT_LOCALLY: 'TLS_UNTRUSTED',
-};
-
-/**
- * Classifies an `authorizationError`. Anything unlisted is UNKNOWN_ERROR with
- * the code kept by the caller, never coerced into the nearest-looking class.
- */
-export function classifyAuthorizationError(code: string): FailureClass {
-  return Object.hasOwn(AUTHORIZATION_ERROR_CLASS, code)
-    ? AUTHORIZATION_ERROR_CLASS[code]
-    : 'UNKNOWN_ERROR';
-}
 
 /** Parses Node's `valid_to` ("Mar  1 00:00:00 2030 GMT"). */
 function notAfter(cert: PeerCertificate): Date | undefined {
