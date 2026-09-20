@@ -18,9 +18,49 @@ references below point there.
 
 ## Code Review Rules
 
-Flag consequential, repository-specific problems. **Do not** report formatting,
-import order, naming style, or type errors — Prettier, ESLint and `tsc` run in
-CI on every pull request and already block on those.
+### What to report, and what to leave alone
+
+This is a university thesis on a deadline, reviewed by an automated reviewer
+whose every round costs five to seven minutes of waiting. A review that lists
+nine things of which two matter is more expensive than one that lists the two.
+So the bar is deliberately high.
+
+**Report a finding only if it is one of these:**
+
+- a **wrong result** — a number, status or verdict the user would read and
+  trust, that is not what the code computes;
+- a **security hole** — SSRF, a secret in a log or response, an authorization
+  gap, injection;
+- **data loss or corruption**, including a lost update or a broken invariant;
+- a **concurrency defect** — a duplicate, a lost claim, a race, a deadlock;
+- a **broken build, broken test, or a test that cannot fail** — including a
+  test that passes for a reason other than the behaviour it names;
+- a **resource leak** that a long-running process would accumulate;
+- a **documented contract violated** — the code contradicts a sentence in
+  `docs/mN-plan.md`, an ADR, `openapi.yaml` or the requirements.
+
+**Do not report** — these are either mechanically enforced, or not worth a
+round at this stage:
+
+- formatting, import order, naming style, or type errors: Prettier, ESLint and
+  `tsc` block on those in CI already;
+- suggestions phrased as "consider", "it might be cleaner", "a more idiomatic
+  way", or preference between two correct spellings of the same thing;
+- defensive code for inputs the type system or a validated config already
+  excludes;
+- hardening, tooling, abstraction or generality that only pays off at a scale
+  this system will never reach: there is no deployment, no production data and
+  no operator (see `CLAUDE.md`, "Build for this thesis, not for a fleet");
+- missing tests for a case already covered by another test, or coverage as a
+  number rather than a named uncovered behaviour;
+- anything already recorded as a deferred follow-up in `docs/tracker.md`.
+
+**Shape of a finding.** One comment per defect, not per occurrence — if the
+same mistake appears in six places, that is one comment naming all six. State
+the concrete failure: the input, the resulting wrong behaviour, and why. A
+finding that asserts a fact — a limit, a default, a specification, a library's
+behaviour — must cite it, because the author is instructed to check the premise
+and push back with evidence when it is wrong.
 
 ### Measurement correctness
 

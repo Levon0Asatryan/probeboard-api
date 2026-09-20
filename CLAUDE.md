@@ -37,6 +37,39 @@ defects; the loop around it is not.
   checks only: CI green on the head SHA, Codex reviewed that SHA, threads
   answered. Deep validation happens once, against the finished milestone.
 
+### The review loop — where the time actually goes
+
+Measured on #49 (2026-09-20): the loop ran 89 minutes over nine pushes and
+eight Codex rounds. Fixing took two to four minutes a round. **Codex's own
+latency, five to seven minutes a round, was 48 of the 89 minutes.** Each round
+carried about one defect. The cost is the number of rounds, not the work inside
+one — so the rules below move finding earlier and make each round carry more.
+
+1. **The first push is a finished PR, not a draft.** Phase 3 — the full suite,
+   the guard-removal proofs, the real `docker compose` run — happens **before**
+   the first push of code, not after it. Codex reviewing work the author has
+   not yet checked converts the author's own defects into review rounds at six
+   minutes each. Push once the PR is one you would merge.
+2. **One push per round, carrying every finding of that round.** Read all of
+   Codex's comments, decide on all of them, fix all of them, push once. A push
+   per finding is what turns four defects into four rounds and twenty-four
+   minutes of waiting.
+3. **Every fix push re-runs the full automated gate, and a review of the fix's
+   blast radius.** A review fix breaks other things — this has happened
+   repeatedly. So after fixing, before pushing: `npm run verify`, the full unit
+   and integration suites, and the real run again if the fix touched an HTTP
+   surface, a migration, the database or concurrency. Then re-read the fix
+   against what it could have broken: the guards it touches, re-proved by
+   removal, and the callers of anything whose signature, timing or error
+   behaviour changed. A **whole**-diff re-read is only required when a fix
+   reaches outside the module the finding named — that is the case where the
+   blast radius is not knowable from the fix alone.
+4. **Resolve a thread when its fix is pushed and verified.** Reply saying what
+   changed and in which commit, then resolve it. A thread stays open only when
+   it is a pushback awaiting Levon's judgement, or a deferral with a tracker
+   row. "Answered" is not the same as "resolved": an open thread should mean
+   something is still owed.
+
 ### Every task runs four phases — not optional
 
 Applies to every chat, with or without a handoff prompt. The report

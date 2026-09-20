@@ -64,6 +64,9 @@ Per the approved plan. Deviations go in the report under "Decisions made".
   stopped.
 
 ## Phase 4 — Re-review (after revalidation)
+- Phase 3 finishes **before the first push of code**. Codex reviewing work you
+  have not checked yourself turns your own defects into review rounds at six
+  minutes each. Push a PR you would merge.
 - Review the whole PR diff yourself, line by line, as a hostile reviewer
   against AGENTS.md: security, concurrency, error paths, naming, dead code,
   stale comments, docs/http/openapi drift. Fix or justify each finding.
@@ -74,6 +77,17 @@ Per the approved plan. Deviations go in the report under "Decisions made".
 - **Two rounds, then stop.** From round three, fix only a security hole, data
   loss, a wrong result or a broken build. Everything else gets a one-line
   reply saying it is deferred plus a tracker follow-up — never silence.
+- **One push per round, carrying every finding of that round.** Read all the
+  comments, decide on all of them, fix all of them, push once.
+- **Every fix push re-runs the full gate**: verify, unit, integration, and the
+  real run again if the fix touched HTTP, a migration, the database or
+  concurrency. Then review the fix's blast radius — the guards it touches,
+  re-proved by removal, and the callers of anything whose signature, timing or
+  error behaviour changed. Re-read the whole diff only when a fix reaches
+  outside the module the finding named.
+- **Resolve each thread** when its fix is pushed and verified: reply with what
+  changed and in which commit, then resolve. Leave a thread open only for a
+  pushback awaiting Levon, or a deferral with a tracker row.
 - Build for this thesis, not for a fleet: no deployment, no production data,
   no operator. Work that only pays off at unreachable scale is out of scope;
   say so and move on.
@@ -112,6 +126,8 @@ done | blocked | plan ready for approval
 
 ## Re-review
 - Self-review findings: <fixed n, justified n — one line each>
+- Rounds: <n>. Threads: <resolved>/<total>, <open> left open and why.
+- Regressions caught by the post-fix gate: <what broke while fixing, or none>
 - Codex: reviewed SHA <sha>, <review | 👍> at <time>, <n> rounds
 - Deferred to follow-ups: <finding — why it is not fix-now; one line each>
 
