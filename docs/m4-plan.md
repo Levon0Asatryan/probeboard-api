@@ -419,6 +419,35 @@ The `UPDATE`'s `RETURNING` still reaches the caller through the final `SELECT`,
 each endpoint advanced by **its own** interval, and the last query is the one
 §9 runs as the NFR-3 proof.
 
+#### 2.4.9 Reconciliation must not rewind a caught-up row
+
+Two rows: **A** caught up from 40 intervals behind with its interval
+_unchanged_ at 60 s (`scheduled_at` = the old slot, `next_run_at` = 41
+intervals on); **B** genuinely changed 3600 s → 30 s after its last claim.
+
+```
+=== arithmetic predicate:  next_run_at <> scheduled_at + interval ===
+   row    | would_reconcile | lands_in_past
+ 11111111 | t               | t                 <-- A: rewound into the past
+ 22222222 | t               | t
+
+=== provenance predicate:  scheduled_interval_s IS DISTINCT FROM interval_s ===
+   row    | would_reconcile
+ 11111111 | f                                   <-- A: left alone
+ 22222222 | t
+
+=== after applying the provenance reconcile ===
+   row    | scheduled_interval_s | next_in_s
+ 11111111 |                   60 |        60     <-- A: still on its caught-up slot
+ 22222222 |                   30 |       -70     <-- B: due now, on the new cadence
+```
+
+The arithmetic predicate reconciles A and lands it **in the past**, so it is
+immediately due and fires one probe per tick until the backlog replays — the
+burst §3.6 exists to prevent. The provenance predicate leaves A untouched and
+still moves B to the interval the user asked for; B being 70 s overdue is
+correct and is one probe, by the catch-up guard, at claim time.
+
 ---
 
 ## 3. Design
@@ -446,7 +475,10 @@ SET    scheduled_at  = r.next_run_at,
                            (floor(extract(epoch from (now() - r.next_run_at))
                                   / e.interval_s) + 1)),
        leased_until  = now() + make_interval(secs => $leaseMs / 1000.0),
-       leased_by     = $workerId
+       leased_by     = $workerId,
+       -- provenance for reconciliation (D26): the interval this slot was
+       -- computed with, always the one actually used a line above.
+       scheduled_interval_s = e.interval_s
 FROM   due
 JOIN   endpoints e ON e.id = due.endpoint_id
 WHERE  r.endpoint_id = due.endpoint_id
@@ -500,6 +532,11 @@ CREATE TABLE endpoint_runtime (
     endpoint_id   uuid        PRIMARY KEY REFERENCES endpoints (id) ON DELETE CASCADE,
     next_run_at   timestamptz NOT NULL,
     scheduled_at  timestamptz,
+    -- Which interval next_run_at was computed with. Provenance, never
+    -- authority: the claim joins endpoints for the value it schedules by
+    -- (D2), and this exists only so reconciliation can tell "the user changed
+    -- the interval" from "the catch-up guard jumped several slots" (D26).
+    scheduled_interval_s integer,
     leased_until  timestamptz,
     leased_by     text,
     last_probe_at timestamptz
@@ -590,8 +627,8 @@ Two candidates:
 - **The scheduler, at the top of each tick** (D1):
 
 ```sql
-INSERT INTO endpoint_runtime (endpoint_id, next_run_at)
-SELECT e.id, now() + make_interval(secs => random() * least(e.interval_s, $jitterMaxS))
+INSERT INTO endpoint_runtime (endpoint_id, next_run_at, scheduled_interval_s)
+SELECT e.id, now() + make_interval(secs => random() * least(e.interval_s, $jitterMaxS)), e.interval_s
 FROM   endpoints e
 WHERE  NOT EXISTS (SELECT 1 FROM endpoint_runtime r WHERE r.endpoint_id = e.id)
 ON CONFLICT (endpoint_id) DO NOTHING;
@@ -620,19 +657,42 @@ the current interval (D24):
 
 ```sql
 UPDATE endpoint_runtime r
-SET    next_run_at = r.scheduled_at + make_interval(secs => e.interval_s)
+SET    next_run_at          = r.scheduled_at + make_interval(secs => e.interval_s),
+       scheduled_interval_s = e.interval_s
 FROM   endpoints e
 WHERE  e.id = r.endpoint_id
-  AND  r.scheduled_at IS NOT NULL                       -- never claimed: jitter stands
+  AND  r.scheduled_at IS NOT NULL                          -- never claimed: jitter stands
   AND  (r.leased_until IS NULL OR r.leased_until < now())  -- never touch a live claim
-  AND  r.next_run_at <> r.scheduled_at + make_interval(secs => e.interval_s);
+  AND  r.scheduled_interval_s IS DISTINCT FROM e.interval_s;
 ```
+
+**The predicate is `scheduled_interval_s`, not the arithmetic — and the
+difference is a burst.** An obvious-looking version of this compares the slot
+arithmetic directly, `next_run_at <> scheduled_at + interval`. It is wrong, and
+wrong in the worst available way: after a catch-up (§3.6) `scheduled_at` is the
+old overdue slot while `next_run_at` has jumped `misses + 1` intervals, so the
+two _legitimately_ disagree. That version reconciles the row, rewinds
+`next_run_at` to one interval after the old slot — **in the past** — and the
+row is immediately due again, firing one probe per tick until the whole backlog
+replays. It recreates precisely the recovery burst §3.6 and ADR-0002 exist to
+prevent, from inside the fix for a different bug. Measured, §2.4.9: the
+arithmetic predicate reconciles a caught-up row and lands it in the past; the
+provenance predicate leaves it untouched and still reconciles a genuine change.
+
+`scheduled_interval_s` records **which interval this row's `next_run_at` was
+computed with**. It is written by adoption, by the claim (§3.1) and by this
+statement, always from the value that was actually used. It is **provenance,
+not authority**, and that distinction is what keeps D2 intact: the claim still
+joins `endpoints` for the interval it schedules by, so a stale copy here can
+never cause a probe at the wrong cadence. Its staleness _is_ the signal — the
+one thing a mirror is good for is telling you it has gone stale (D26).
 
 `scheduled_at + interval` is the same slot-derived expression the claim uses, so
 a shortened interval pulls the row forward and a lengthened one pushes it back,
 both onto the cadence the user just asked for. If the recomputed slot is already
-in the past, the catch-up guard (§3.6) handles it at claim time like any other
-overdue row — one probe, no burst. The write is idempotent: once the row agrees
+in the past — 3600 s → 30 s normally puts it there — the catch-up guard (§3.6)
+handles it at claim time like any other overdue row: one probe, then the new
+cadence. The write is idempotent: once the row agrees
 with its endpoint the predicate excludes it, so steady state costs a scan and no
 updates. **Tests:** 3600 s → 30 s is probed within the new interval rather than
 the old one, and 30 s → 3600 s does not fire early; both fail when the
@@ -1087,6 +1147,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D17 | M6's `state`/counter columns are **not** created now                                                                                                                                    | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                                                        | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                                                                                                                                                                                             |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing                                   | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                                                                                                                                                                                             |
+| D26 | `endpoint_runtime.scheduled_interval_s` records which interval the row's `next_run_at` was computed with — **provenance, never authority**                                              | reconciliation must distinguish "the user changed the interval" from "the catch-up guard jumped several slots". Comparing the slot arithmetic instead rewinds a caught-up row into the past and replays its backlog one probe per tick (§2.4.9). The claim still joins `endpoints` for the value it schedules by, so D2 stands and a stale copy cannot cause a wrong cadence. Codex #4057852655                                                                                                                                                                |
 | D25 | The claim writes a `claim_log` row **in the same statement**, via data-modifying CTEs                                                                                                   | the exit test must detect a slot _executed twice_. `endpoint_runtime` keeps only the latest `scheduled_at`, the receiver's log has no slot identity, and a killed worker's own log line can be lost — so none of them can see the regression the test exists for. Written before the probe and inside the claim, so it cannot disagree with the claim or be lost between them. Measured, §2.4.8. Codex #4057810222                                                                                                                                             |
 | D24 | The tick **reconciles** `next_run_at = scheduled_at + interval` whenever it disagrees, skipping leased and never-claimed rows                                                           | joining `interval_s` at claim time fixes future claims but leaves a row whose slot was computed from the old interval: 3600 s → 30 s idles for nearly an hour, 30 s → 3600 s fires early. FR-17 is written as "at its configured interval". §7.5's mirror would not have fixed it either. Codex #4057810217                                                                                                                                                                                                                                                    |
 | D23 | `start(row)` never rejects: the loader and `probe()` sit under an outer `try/catch`, and **each terminal write is guarded separately** so the recovery release cannot fail the recovery | the tick does not await it (§3.4), so a rejection bypasses D19's `catch` entirely and an unhandled rejection terminates the worker under Node's default, leaving the lease standing until expiry. An outer catch alone is insufficient: it awaits the abandon `UPDATE`, which rejects from inside the catch already entered when PostgreSQL is what failed. Codex #4057783052, #4057810219                                                                                                                                                                     |
@@ -1289,6 +1350,7 @@ meaningfully testable otherwise):
 | settle: an outcome with a `failureClass`                             | `last_probe_at` **does** advance — a failed probe is still an observation                                                                                                | the settle/abandon split                                                                      |
 | tick: survives an `adopt()` rejection                                | the error is logged and the **next tick still runs**                                                                                                                     | D19's `finally`                                                                               |
 | tick: survives a `claim()` rejection                                 | as above                                                                                                                                                                 | D19's `finally`                                                                               |
+| reconcile: an overdue, caught-up row is **not** touched              | interval unchanged, `scheduled_at` far behind and `next_run_at` several intervals on: no reconcile, no rewind, no burst                                                  | D26's provenance predicate — fails with the arithmetic predicate (§2.4.9)                     |
 | reconcile: interval shortened                                        | 3600 s → 30 s is claimed within the new interval, not the old one                                                                                                        | D24's reconcile                                                                               |
 | reconcile: interval lengthened                                       | 30 s → 3600 s does not fire early                                                                                                                                        | D24's reconcile                                                                               |
 | reconcile: idempotent                                                | a row already agreeing with its endpoint is not updated                                                                                                                  | the `<>` predicate                                                                            |
