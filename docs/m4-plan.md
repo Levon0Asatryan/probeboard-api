@@ -711,7 +711,8 @@ One loop, one tick in flight at a time:
 ```
 tick:
   try:
-    adopt()                                 -- §3.3
+    adopt()                                 -- §3.3, new endpoints
+    reconcile()                             -- §3.3, changed intervals (D24)
     capacity := PROBE_CONCURRENCY - inFlight.size
     if capacity > 0:                        -- else claim nothing (D9)
       rows := claim(min(SCHEDULER_BATCH_SIZE, capacity))
@@ -723,7 +724,7 @@ tick:
 ```
 
 **The re-arm is in `finally`, and that is the whole point of writing it out.**
-`adopt()` and `claim()` are database calls: a PostgreSQL restart, a dropped
+`adopt()`, `reconcile()` and `claim()` are database calls: a PostgreSQL restart, a dropped
 connection or a statement error rejects them. If the rejection escaped the
 timer callback, this worker would stay alive, healthy-looking, and schedule
 nothing ever again — the single worst failure this component has, because a
@@ -1238,7 +1239,7 @@ src/worker/scheduler/
   scheduler.service.ts                       the tick loop, capacity, start/stop
   scheduler.service.test.ts
   repositories/
-    endpoint-runtime.repository.ts           adopt, claim, release
+    endpoint-runtime.repository.ts           adopt, reconcile, claim, release, abandon
     endpoint-runtime.repository.test.ts      compiled-SQL assertions (D3)
     endpoint-runtime.repository.int.test.ts  the claim, against real Postgres
   services/
@@ -1372,11 +1373,11 @@ directly here and cost M3 606 seconds; the barrier helper polls
 
 ## 9. Delivery — 3 PRs
 
-| PR                                  | Content                                                                                                                                                                                                                                                                                                                                                                     | Commits                                                                                                   |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                                                               | 1                                                                                                         |
-| **2. Schema, config and the claim** | migration `0007` (`endpoint_runtime` **and** `claim_log`) + `.down.sql` + `types.ts`; the config bounds, four new keys, three cross-field rules and their rejection tests, plus those keys in `.env.example`; `EndpointRuntimeRepository` (adopt, claim, release) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
-| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                                                                       | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
+| PR                                  | Content                                                                                                                                                                                                                                                                                                                                                                                         | Commits                                                                                                   |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                                                                                   | 1                                                                                                         |
+| **2. Schema, config and the claim** | migration `0007` (`endpoint_runtime` **and** `claim_log`) + `.down.sql` + `types.ts`; the config bounds, four new keys, three cross-field rules and their rejection tests, plus those keys in `.env.example`; `EndpointRuntimeRepository` (adopt, reconcile, claim, release, abandon) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
+| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                                                                                           | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
 
 PR 2 is coherent alone: it ships a table, its types, its configuration and a
 tested claim query. PR 3 is the only thing that makes any of it run, and
