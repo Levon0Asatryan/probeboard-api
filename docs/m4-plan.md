@@ -882,10 +882,23 @@ Drift has two parts, and only one of them is the famous one.
    drift budget too. It is why `SCHEDULER_LOAD_BUDGET_MS` defaults to 1500
    rather than the 5000 the lease alone would have tolerated.
 
-   NFR-2 is therefore a configuration invariant rather than a hope — and the
-   drift **test measures actual probe start times**, not the scheduled slots,
-   since slots are computed by the arithmetic under test and would agree with
-   themselves however late the probe actually left.
+   **What the boot check does and does not bound.** It bounds the _configured_
+   budgets. It cannot bound the work between the timer firing and the loader
+   starting — the awaited `adopt()` and `claim()` round trips — because no
+   boot-time check can bound database latency. At the defaults that leaves
+   500 ms of headroom for them, and a configuration may legally spend the
+   whole 10% on the two configured terms, leaving none.
+
+   So NFR-2 is **half a configuration invariant and half a measurement**, and
+   saying otherwise would claim a stronger guarantee than this design has.
+   The configured half is checked at boot; the measured half is the drift
+   test, which asserts on **actual probe start times** rather than on
+   scheduled slots — slots are computed by the arithmetic under test and would
+   agree with themselves however late the probe really left — and the
+   at-scale half is M10's load test, where queueing under real load is the
+   thing being measured. The `claim_to_start_ms` on the probe log line
+   (§9) is what makes the measured half observable in the containers run
+   rather than only in the suite.
 
 Neither part covers a worker saturated past `PROBE_CONCURRENCY` — that is a
 load condition, it is visible as an overdue row, and quantifying it is the
