@@ -562,8 +562,11 @@ what keeps its loop alive. Citing that failure and then writing a loop with no
 rejection and a claim rejection each leave the next tick running, and each is
 logged.
 
-`start(row)` loads the monitor, calls `probe()`, and on settle releases the
-lease and removes itself from `inFlight`. The tick never awaits a probe.
+`start(row)` loads the monitor **under `SCHEDULER_LOAD_BUDGET_MS`** (D20),
+calls `probe()`, and on settle releases the lease and removes itself from
+`inFlight`. A load that overruns its budget releases the row without probing,
+so the slot is missed honestly rather than probed under a lease that has
+already lapsed. The tick never awaits a probe.
 
 **How many probes run at once:** at most `PROBE_CONCURRENCY` (default 50) per
 worker process, counted as `inFlight.size`.
@@ -599,17 +602,35 @@ overlap later ticks — that is the point — and their number is bounded by
 The lease must outlast everything between the claim committing and the release
 committing, for the worst row in the batch.
 
-| Term                          | Worst case                              | Why                                                                                                                          |
-| ----------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| claim → probe start           | **0**                                   | capacity-gated: every claimed row starts on the same tick (D9). This is openstatus's `waves` term, and D9 is what makes it 1 |
-| probe                         | `PROBE_MAX_TIMEOUT_MS` (default 30 000) | M3 caps the endpoint's own `timeout_ms` at this, so a row saved under an older, larger cap cannot exceed it (M3 D35)         |
-| teardown + release round trip | small, unbounded in principle           | dispatcher `destroy()`, one `UPDATE`                                                                                         |
-| clock granularity             | one tick                                | the release is not instantaneous                                                                                             |
+| Term                            | Worst case                                  | Why                                                                                                                          |
+| ------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| claim → pool admission          | **0**                                       | capacity-gated: every claimed row starts on the same tick (D9). This is openstatus's `waves` term, and D9 is what makes it 1 |
+| pool admission → deadline armed | `SCHEDULER_LOAD_BUDGET_MS` (default 5 000)  | monitor loading: endpoint + service + headers, then decryption. **Not zero** (D20)                                           |
+| probe                           | `PROBE_MAX_TIMEOUT_MS` (default 30 000)     | M3 caps the endpoint's own `timeout_ms` at this, so a row saved under an older, larger cap cannot exceed it (M3 D35)         |
+| teardown + release round trip   | `SCHEDULER_LEASE_SLACK_MS` (default 15 000) | dispatcher `destroy()`, one `UPDATE`, and the tick granularity around both                                                   |
 
-So `SCHEDULER_LEASE_MS ≥ PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS`,
-enforced at boot (§5). Defaults: 60 000 ≥ 30 000 + 15 000. The slack is
-configuration rather than a literal precisely because it is the only term that
-is judged rather than derived.
+**The second row is a correction, and it matters.** Capacity-gating removes the
+_queue_, but claim-to-deadline-armed is not zero: `start(row)` reads the
+endpoint, its service and its headers and decrypts the secret ones before
+`probe()` arms anything. Those are database round trips, and a batch of up to
+`PROBE_CONCURRENCY` (50) starting at once contends for a pool of
+`DATABASE_POOL_MAX` (default 10), so the last row of a batch waits behind nine
+others. At the _minimum permitted_ lease the only headroom is the slack, and
+slow loading consumes it silently — the lease lapses with the probe still
+running, which is this section's own failure case reached through a term the
+table had claimed was zero.
+
+It is bounded rather than estimated (D20): the load runs under
+`SCHEDULER_LOAD_BUDGET_MS`, and a load that overruns **releases the row without
+probing** and logs it. A slot is then missed — honestly, as `UNKNOWN` — instead
+of a lease silently expiring under a probe. Every term in the table is now a
+bound, which is what lets the inequality below be a proof rather than a hope.
+
+So
+`SCHEDULER_LEASE_MS ≥ SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS`,
+enforced at boot (§5). Defaults: 60 000 ≥ 5 000 + 30 000 + 15 000 = 50 000.
+The two budgets are configuration rather than literals precisely because they
+are the terms that are judged rather than derived.
 
 **What happens when the two cross** — a probe outliving its lease:
 
@@ -623,8 +644,10 @@ is judged rather than derived.
 3. When our probe finally settles, the fence (D13) stops it clearing the other
    worker's lease.
 
-Prevented three ways: the boot-time inequality makes it unreachable by
-configuration; M3's cap makes it unreachable by stale data; and a watchdog logs
+Prevented four ways: the boot-time inequality makes it unreachable by
+configuration; the loader budget bounds the one term that was previously
+assumed rather than bounded (D20); M3's cap makes it unreachable by stale
+data; and a watchdog logs
 a warning if a probe is still in flight at `deadline + slack`, so if it happens
 anyway there is a record rather than a mystery. We do **not** renew leases
 mid-probe — a heartbeat is the right answer for jobs of unbounded length, and
@@ -785,27 +808,28 @@ M10 load test's job, not a claim made here.
 
 ## 4. Decisions
 
-| #   | Decision                                                                                                          | Why                                                                                                                                                                                                                                                                                                                                                                                          |
-| --- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | The claim is **one statement** in autocommit, never `SELECT` then `UPDATE` with think-time                        | one `now()` governs due-check, lease check, lease grant and catch-up arithmetic (§2.4.4); the row lock is held for the statement only, with `leased_until` as the real exclusion afterwards                                                                                                                                                                                                  |
-| D2  | `endpoint_runtime` does **not** mirror `enabled`/`interval_s`; the claim joins `endpoints`                        | deviates from §7.5. A mirror needs a second writer and has no enforcement; a stale copy is a paused monitor that keeps being probed (FR-9 broken, silently) or an interval change that never lands. The join is measured at 0.594 ms/50k (§2.4.2). Cost: the §7.5 partial index `WHERE enabled` is not available; consequence measured, not assumed. **Docs follow-up for the orchestrator** |
-| D3  | The **database clock** is authoritative for every scheduling value; no `Date` is ever bound for one               | §3.8; enforced by a compiled-query test                                                                                                                                                                                                                                                                                                                                                      |
-| D4  | Catch-up is `floor((now − slot)/interval) + 1` intervals from the slot — one expression, no branch                | §3.6; the on-time case is the degenerate case, so there is no second code path to get wrong                                                                                                                                                                                                                                                                                                  |
-| D5  | **At-most-once per slot.** `next_run_at` advances at claim time (§7.2 step 2)                                     | NFR-3 in its own words. A crash loses that slot, which becomes `UNKNOWN` (§3.5.2), rather than producing a duplicate probe                                                                                                                                                                                                                                                                   |
-| D6  | The exit test's "reclaim" bound is **`SCHEDULER_LEASE_MS + SCHEDULER_TICK_MS`**                                   | follows from D5: the killed worker's row is due again at its next slot but excluded until the lease lapses, so it is picked up within one tick of lease expiry. This is the number the containers demonstration measures                                                                                                                                                                     |
-| D7  | The claim excludes a row whose probe is still in flight (`leased_until`)                                          | Uptime Kuma's 1 ms re-arm (§2.3) is what its absence looks like: an endpoint slower than its interval probed continuously                                                                                                                                                                                                                                                                    |
-| D8  | First `next_run_at` is jittered: `now() + random() × least(interval_s, SCHEDULER_ADOPT_JITTER_MAX_S)`             | monitors created together would otherwise share a phase forever and arrive in one tick. Written once to the database, so it survives restarts — unlike Gatus's boot-order stagger (§2.3). Measured flat, §2.4.6                                                                                                                                                                              |
-| D9  | **Capacity-gated claiming**: never claim more than `PROBE_CONCURRENCY − inFlight`; at zero capacity claim nothing | makes the pool's queue empty by construction, which removes the `waves` term from the lease arithmetic (§3.5), bounds per-slot drift, and leaves an unclaimed slot visible in the database instead of silently skipped (§2.3, Gatus)                                                                                                                                                         |
-| D10 | Every probe releases its lease on settle, including on a thrown error                                             | a rejected probe that kept its lease would freeze the monitor for the lease duration                                                                                                                                                                                                                                                                                                         |
-| D11 | `SCHEDULER_LEASE_MS ≥ PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS`, checked at boot                           | ADR-0002's second named edge case, made unreachable by configuration rather than watched for                                                                                                                                                                                                                                                                                                 |
-| D12 | On SIGTERM, a probe still in flight at grace expiry **keeps its lease**                                           | openstatus's rule (§2.3): releasing it invites a peer to start a second probe while ours is still running                                                                                                                                                                                                                                                                                    |
-| D13 | Release is fenced on `leased_by = $workerId AND scheduled_at = $slot`                                             | the openstatus defect in §2.3; both conjuncts needed (§3.7)                                                                                                                                                                                                                                                                                                                                  |
-| D14 | `SCHEDULER_TICK_MS` gains a maximum                                                                               | above 2³¹−1 ms `setTimeout` fires at 1 ms on the pinned runtime (§2.4.1), turning the tick into a hot loop                                                                                                                                                                                                                                                                                   |
-| D15 | The `SKIP LOCKED` removal proof asserts **promptness**, not disjointness                                          | measured: removal blocks, it does not duplicate (§2.4.3). A disjointness test would pass with the clause removed — the M3 "passes for the wrong reason" shape                                                                                                                                                                                                                                |
-| D16 | The scheduler owns adoption; M2's code is not touched                                                             | one writer for `endpoint_runtime` (§3.3)                                                                                                                                                                                                                                                                                                                                                     |
-| D17 | M6's `state`/counter columns are **not** created now                                                              | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                     |
-| D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback  | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                           |
-| D18 | M4 logs the `ProbeOutcome` and discards it                                                                        | M5 owns persistence; the exit test needs real probes in flight regardless                                                                                                                                                                                                                                                                                                                    |
+| #   | Decision                                                                                                                                              | Why                                                                                                                                                                                                                                                                                                                                                                                          |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | The claim is **one statement** in autocommit, never `SELECT` then `UPDATE` with think-time                                                            | one `now()` governs due-check, lease check, lease grant and catch-up arithmetic (§2.4.4); the row lock is held for the statement only, with `leased_until` as the real exclusion afterwards                                                                                                                                                                                                  |
+| D2  | `endpoint_runtime` does **not** mirror `enabled`/`interval_s`; the claim joins `endpoints`                                                            | deviates from §7.5. A mirror needs a second writer and has no enforcement; a stale copy is a paused monitor that keeps being probed (FR-9 broken, silently) or an interval change that never lands. The join is measured at 0.594 ms/50k (§2.4.2). Cost: the §7.5 partial index `WHERE enabled` is not available; consequence measured, not assumed. **Docs follow-up for the orchestrator** |
+| D3  | The **database clock** is authoritative for every scheduling value; no `Date` is ever bound for one                                                   | §3.8; enforced by a compiled-query test                                                                                                                                                                                                                                                                                                                                                      |
+| D4  | Catch-up is `floor((now − slot)/interval) + 1` intervals from the slot — one expression, no branch                                                    | §3.6; the on-time case is the degenerate case, so there is no second code path to get wrong                                                                                                                                                                                                                                                                                                  |
+| D5  | **At-most-once per slot.** `next_run_at` advances at claim time (§7.2 step 2)                                                                         | NFR-3 in its own words. A crash loses that slot, which becomes `UNKNOWN` (§3.5.2), rather than producing a duplicate probe                                                                                                                                                                                                                                                                   |
+| D6  | The exit test's "reclaim" bound is **`SCHEDULER_LEASE_MS + SCHEDULER_TICK_MS`**                                                                       | follows from D5: the killed worker's row is due again at its next slot but excluded until the lease lapses, so it is picked up within one tick of lease expiry. This is the number the containers demonstration measures                                                                                                                                                                     |
+| D7  | The claim excludes a row whose probe is still in flight (`leased_until`)                                                                              | Uptime Kuma's 1 ms re-arm (§2.3) is what its absence looks like: an endpoint slower than its interval probed continuously                                                                                                                                                                                                                                                                    |
+| D8  | First `next_run_at` is jittered: `now() + random() × least(interval_s, SCHEDULER_ADOPT_JITTER_MAX_S)`                                                 | monitors created together would otherwise share a phase forever and arrive in one tick. Written once to the database, so it survives restarts — unlike Gatus's boot-order stagger (§2.3). Measured flat, §2.4.6                                                                                                                                                                              |
+| D9  | **Capacity-gated claiming**: never claim more than `PROBE_CONCURRENCY − inFlight`; at zero capacity claim nothing                                     | makes the pool's queue empty by construction, which removes the `waves` term from the lease arithmetic (§3.5), bounds per-slot drift, and leaves an unclaimed slot visible in the database instead of silently skipped (§2.3, Gatus)                                                                                                                                                         |
+| D10 | Every probe releases its lease on settle, including on a thrown error                                                                                 | a rejected probe that kept its lease would freeze the monitor for the lease duration                                                                                                                                                                                                                                                                                                         |
+| D11 | `SCHEDULER_LEASE_MS ≥ PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS`, checked at boot                                                               | ADR-0002's second named edge case, made unreachable by configuration rather than watched for                                                                                                                                                                                                                                                                                                 |
+| D12 | On SIGTERM, a probe still in flight at grace expiry **keeps its lease**                                                                               | openstatus's rule (§2.3): releasing it invites a peer to start a second probe while ours is still running                                                                                                                                                                                                                                                                                    |
+| D13 | Release is fenced on `leased_by = $workerId AND scheduled_at = $slot`                                                                                 | the openstatus defect in §2.3; both conjuncts needed (§3.7)                                                                                                                                                                                                                                                                                                                                  |
+| D14 | `SCHEDULER_TICK_MS` gains a maximum                                                                                                                   | above 2³¹−1 ms `setTimeout` fires at 1 ms on the pinned runtime (§2.4.1), turning the tick into a hot loop                                                                                                                                                                                                                                                                                   |
+| D15 | The `SKIP LOCKED` removal proof asserts **promptness**, not disjointness                                                                              | measured: removal blocks, it does not duplicate (§2.4.3). A disjointness test would pass with the clause removed — the M3 "passes for the wrong reason" shape                                                                                                                                                                                                                                |
+| D16 | The scheduler owns adoption; M2's code is not touched                                                                                                 | one writer for `endpoint_runtime` (§3.3)                                                                                                                                                                                                                                                                                                                                                     |
+| D17 | M6's `state`/counter columns are **not** created now                                                                                                  | no writer, no reader, no test; M6 adds them with the code that increments them (§3.2). Tracker follow-up                                                                                                                                                                                                                                                                                     |
+| D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                      | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                           |
+| D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                           |
+| D18 | M4 logs the `ProbeOutcome` and discards it                                                                                                            | M5 owns persistence; the exit test needs real probes in flight regardless                                                                                                                                                                                                                                                                                                                    |
 
 ---
 
@@ -824,14 +848,19 @@ the same commit (AGENTS.md).
 | `PROBE_CONCURRENCY`            | `int().min(1)`                            | **add `.max(10_000)`**                                  | it is the pool size; unbounded means unbounded sockets                                |
 | `SCHEDULER_LEASE_SLACK_MS`     | —                                         | **new**, `int().min(1000).max(300_000).default(15_000)` | the one judged term in §3.5's arithmetic                                              |
 | `SCHEDULER_SHUTDOWN_GRACE_MS`  | —                                         | **new**, `int().min(0).max(300_000).default(35_000)`    | §3.9                                                                                  |
+| `SCHEDULER_LOAD_BUDGET_MS`     | —                                         | **new**, `int().min(500).max(60_000).default(5_000)`    | D20; the loader's bound, and a named term in §3.5                                     |
 | `SCHEDULER_ADOPT_JITTER_MAX_S` | —                                         | **new**, `int().min(0).max(3600).default(60)`           | D8; `0` disables jitter, which the herd test uses                                     |
 
 Three cross-field rules, each turning a requirement into a boot-time check:
 
 ```
-SCHEDULER_LEASE_MS >= PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS
+SCHEDULER_LEASE_MS >= SCHEDULER_LOAD_BUDGET_MS
+                      + PROBE_MAX_TIMEOUT_MS
+                      + SCHEDULER_LEASE_SLACK_MS
   -- or a slow probe's own lease expires mid-flight and a second worker
-  -- probes the same endpoint concurrently (ADR-0002; §3.5)
+  -- probes the same endpoint concurrently (ADR-0002; §3.5). The loader term
+  -- is not optional: without it the inequality is satisfiable by a
+  -- configuration in which loading alone exhausts the slack (D20)
 
 SCHEDULER_SHUTDOWN_GRACE_MS < SCHEDULER_LEASE_MS
   -- or a graceful stop can outlive the lease it is trying to release,
@@ -841,18 +870,19 @@ SCHEDULER_TICK_MS <= min(PROBE_ALLOWED_INTERVALS_S) * 1000 / 10
   -- NFR-2's 10% drift budget at the shortest permitted interval (§3.10)
 ```
 
-Defaults satisfy all three: 60 000 ≥ 30 000 + 15 000; 35 000 < 60 000;
-1000 ≤ 3000.
+Defaults satisfy all three: 60 000 ≥ 5 000 + 30 000 + 15 000 = 50 000;
+35 000 < 60 000; 1000 ≤ 3000.
 
 **The configuration that already exists passes all three.** AGENTS.md asks for
 a story for data that predates a new rule, and a boot-time refine rejects a
 running deployment as surely as a schema constraint rejects a row.
 `.env.example` already pins four of these keys — `SCHEDULER_TICK_MS=1000`,
 `SCHEDULER_BATCH_SIZE=100`, `SCHEDULER_LEASE_MS=60000`, `PROBE_CONCURRENCY=50`
-— and every one is inside the new bounds and satisfies every new refine, with
-the new keys falling to their defaults. `docker-compose.yml` sets none of them.
+— and every one is inside the new bounds and satisfies every new refine
+(notably `60000 ≥ 5000 + 30000 + 15000`), with the new keys falling to their
+defaults. `docker-compose.yml` sets none of them.
 So nothing that exists today stops booting, and there is no compatibility path
-to write. `.env.example` gains the three new keys with a comment each, in the
+to write. `.env.example` gains the four new keys with a comment each, in the
 same commit as the schema change.
 
 **`WORKER_ID` in containers.** The compose `worker` service does not set it, so
@@ -944,27 +974,28 @@ code, recorded in the commit message.
 **Integration** (`npm run test:int`, real Postgres — the claim is not
 meaningfully testable otherwise):
 
-| Test                                        | Asserts                                                                                    | Guard it proves by removal |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------- |
-| claim: disjoint under a barrier             | two connections, A's claim committed first, B's batch shares nothing                       | `leased_until` predicate   |
-| claim: prompt under a barrier               | B returns inside a bound while A holds an open transaction                                 | **`SKIP LOCKED`** (D15)    |
-| claim: respects `enabled`                   | a disabled endpoint is never returned                                                      | `e.enabled`                |
-| claim: ordering and batch bound             | oldest slots first; never more than `LIMIT`                                                | —                          |
-| lease: in-flight row excluded               | a leased row is not re-claimed before expiry                                               | `leased_until` predicate   |
-| lease: reclaim after expiry                 | claimable within one tick of expiry, **not** before                                        | both bounds of NFR-4       |
-| lease: release un-blocks the next slot      | a 30 s monitor is claimed twice within ~60 s at a 60 s lease                               | the release (§3.7)         |
-| fence: straggler release                    | a stale `(workerId, slot)` release matches 0 rows and the live lease survives              | the fence conjuncts        |
-| catch-up: 40 intervals behind               | one claim, `next_run_at` = next future slot, phase preserved                               | the catch-up expression    |
-| catch-up: exact-multiple boundary           | `now − slot` an exact multiple → `next = now + interval`, strictly future                  | `floor(…)+1` vs `ceil`     |
-| drift: 10 cycles with injected delay        | every slot an exact multiple of the interval from the first                                | slot-derived `next_run_at` |
-| tick: survives an `adopt()` rejection       | the error is logged and the **next tick still runs**                                       | D19's `finally`            |
-| tick: survives a `claim()` rejection        | as above                                                                                   | D19's `finally`            |
-| adopt: idempotent and concurrent            | two adopters, one row per endpoint                                                         | `ON CONFLICT DO NOTHING`   |
-| adopt: jitter spreads                       | with jitter on, slots spread across the window; with `0`, they do not                      | D8                         |
-| e2e: two schedulers, one database           | over N ticks no `(endpoint, slot)` is probed twice                                         | the whole claim            |
-| e2e: a killed scheduler's work is picked up | stop one mid-probe without releasing; the other claims within the D6 bound                 | lease expiry               |
-| e2e: graceful shutdown                      | settled probes released; an in-flight probe keeps its lease; stop returns inside the grace | D12                        |
-| e2e: hung endpoint                          | one endpoint hangs for its whole timeout; others keep turning over                         | NFR-1                      |
+| Test                                        | Asserts                                                                                       | Guard it proves by removal |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------- |
+| claim: disjoint under a barrier             | two connections, A's claim committed first, B's batch shares nothing                          | `leased_until` predicate   |
+| claim: prompt under a barrier               | B returns inside a bound while A holds an open transaction                                    | **`SKIP LOCKED`** (D15)    |
+| claim: respects `enabled`                   | a disabled endpoint is never returned                                                         | `e.enabled`                |
+| claim: ordering and batch bound             | oldest slots first; never more than `LIMIT`                                                   | —                          |
+| lease: in-flight row excluded               | a leased row is not re-claimed before expiry                                                  | `leased_until` predicate   |
+| lease: reclaim after expiry                 | claimable within one tick of expiry, **not** before                                           | both bounds of NFR-4       |
+| lease: release un-blocks the next slot      | a 30 s monitor is claimed twice within ~60 s at a 60 s lease                                  | the release (§3.7)         |
+| fence: straggler release                    | a stale `(workerId, slot)` release matches 0 rows and the live lease survives                 | the fence conjuncts        |
+| catch-up: 40 intervals behind               | one claim, `next_run_at` = next future slot, phase preserved                                  | the catch-up expression    |
+| catch-up: exact-multiple boundary           | `now − slot` an exact multiple → `next = now + interval`, strictly future                     | `floor(…)+1` vs `ceil`     |
+| drift: 10 cycles with injected delay        | every slot an exact multiple of the interval from the first                                   | slot-derived `next_run_at` |
+| loader: overrun releases without probing    | a load held past `SCHEDULER_LOAD_BUDGET_MS` releases the row, never calls `probe()`, and logs | D20's budget               |
+| tick: survives an `adopt()` rejection       | the error is logged and the **next tick still runs**                                          | D19's `finally`            |
+| tick: survives a `claim()` rejection        | as above                                                                                      | D19's `finally`            |
+| adopt: idempotent and concurrent            | two adopters, one row per endpoint                                                            | `ON CONFLICT DO NOTHING`   |
+| adopt: jitter spreads                       | with jitter on, slots spread across the window; with `0`, they do not                         | D8                         |
+| e2e: two schedulers, one database           | over N ticks no `(endpoint, slot)` is probed twice                                            | the whole claim            |
+| e2e: a killed scheduler's work is picked up | stop one mid-probe without releasing; the other claims within the D6 bound                    | lease expiry               |
+| e2e: graceful shutdown                      | settled probes released; an in-flight probe keeps its lease; stop returns inside the grace    | D12                        |
+| e2e: hung endpoint                          | one endpoint hangs for its whole timeout; others keep turning over                            | NFR-1                      |
 
 Every race uses an explicit barrier — a competing statement committed on a
 second connection, or `pg_stat_activity` polled for `wait_event_type = 'Lock'`
@@ -977,11 +1008,11 @@ directly here and cost M3 606 seconds; the barrier helper polls
 
 ## 9. Delivery — 3 PRs
 
-| PR                                  | Content                                                                                                                                                                                                                                                                                                                                     | Commits                                                                                                   |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                               | 1                                                                                                         |
-| **2. Schema, config and the claim** | migration `0007` + `.down.sql` + `types.ts`; the config bounds, three new keys, three cross-field rules and their rejection tests, plus the three new keys in `.env.example`; `EndpointRuntimeRepository` (adopt, claim, release) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
-| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                                       | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
+| PR                                  | Content                                                                                                                                                                                                                                                                                                                            | Commits                                                                                                   |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **1. Plan**                         | this document                                                                                                                                                                                                                                                                                                                      | 1                                                                                                         |
+| **2. Schema, config and the claim** | migration `0007` + `.down.sql` + `types.ts`; the config bounds, four new keys, three cross-field rules and their rejection tests, plus those keys in `.env.example`; `EndpointRuntimeRepository` (adopt, claim, release) and its unit + integration tests, including every guard-removal proof in §7 that is a property of the SQL | migration + types; config + `.env.example` + tests; repository + unit tests; repository integration tests |
+| **3. The loop**                     | `SchedulerService`, `ProbePoolService`, `MonitorLoaderService`, `SchedulerModule`, wiring into `worker.module.ts` and `main.ts`; the e2e integration suite; `docs/m4-verification.md`                                                                                                                                              | pool + tests; loader + tests; service + tests; wiring; e2e suite; verification record                     |
 
 PR 2 is coherent alone: it ships a table, its types, its configuration and a
 tested claim query. PR 3 is the only thing that makes any of it run, and
