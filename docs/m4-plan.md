@@ -725,19 +725,35 @@ One loop, one tick in flight at a time:
 ```
 tick:
   try:
-    adopt()                                 -- §3.3, new endpoints
-    reconcile()                             -- §3.3, changed intervals (D24)
+    try: adopt()                            -- §3.3, new endpoints
+    catch err: log.error(err)               -- D19: never blocks the claim
+    try: reconcile()                        -- §3.3, changed intervals (D24)
+    catch err: log.error(err)               -- D19: never blocks the claim
     capacity := PROBE_CONCURRENCY - inFlight.size
     if capacity > 0:                        -- else claim nothing (D9)
       rows := claim(min(SCHEDULER_BATCH_SIZE, capacity))
       for row in rows: start(row)           -- not awaited
   catch err:
-    log.error(err)                          -- never rethrown past here
+    log.error(err)                          -- the claim's own failure
   finally:
     if not stopping: re-arm                 -- D19
 ```
 
 **The re-arm is in `finally`, and that is the whole point of writing it out.**
+**Each step is guarded on its own, and that is not belt-and-braces.** With one
+`catch` around all three, a _persistently_ failing `adopt()` — a permission
+error, a bad statement, anything that does not heal — means `claim()` is never
+reached on any tick. The worker stays alive, its health check passes, and it
+probes nothing, for ever: D19's failure with the sequence rather than the
+rejection as its cause. The tick survives it only if a failure in one step
+cannot prevent the next.
+
+Adoption and reconciliation are **independent** of claiming. A monitor that
+cannot be adopted is one this worker will not probe yet; every already-adopted
+monitor is still due and still claimable. So both are caught individually and
+logged, and the claim runs regardless. The outer `catch` remains for the claim
+itself and for anything unanticipated.
+
 `adopt()`, `reconcile()` and `claim()` are database calls: a PostgreSQL restart, a dropped
 connection or a statement error rejects them. If the rejection escaped the
 timer callback, this worker would stay alive, healthy-looking, and schedule
@@ -1387,8 +1403,9 @@ meaningfully testable otherwise):
 | loader: overrun releases without probing                             | a load held past `SCHEDULER_LOAD_BUDGET_MS` releases the row, never calls `probe()`, logs, and leaves `last_probe_at` **unchanged**                                       | D20's budget, and the abandon path                                                            |
 | abandon: a thrown `probe()`                                          | the lease is cleared, `last_probe_at` is **unchanged**, and the bug is logged at `error`                                                                                  | the abandon path for a rejection                                                              |
 | settle: an outcome with a `failureClass`                             | `last_probe_at` **does** advance — a failed probe is still an observation                                                                                                 | the settle/abandon split                                                                      |
-| tick: survives an `adopt()` rejection                                | the error is logged and the **next tick still runs**                                                                                                                      | D19's `finally`                                                                               |
-| tick: survives a `claim()` rejection                                 | as above                                                                                                                                                                  | D19's `finally`                                                                               |
+| tick: survives an `adopt()` rejection                                | the error is logged, the **claim still runs in that same tick**, and the next tick still runs                                                                             | D19's `finally`                                                                               |
+| tick: a **persistently** failing `adopt()`                           | every tick still claims and probes — the loop cannot be wedged by sequence any more than by rejection                                                                     | D19's per-step guards                                                                         |
+| tick: survives a `claim()` rejection                                 | the error is logged and the next tick still runs                                                                                                                          | D19's `finally`                                                                               |
 | reconcile: an overdue, caught-up row is **not** touched              | interval unchanged, `scheduled_at` far behind and `next_run_at` several intervals on: no reconcile, no rewind, no burst                                                   | D26's provenance predicate — fails with the arithmetic predicate (§2.4.9)                     |
 | reconcile: interval shortened                                        | 3600 s → 30 s is claimed within the new interval, not the old one                                                                                                         | D24's reconcile                                                                               |
 | reconcile: interval lengthened                                       | 30 s → 3600 s does not fire early                                                                                                                                         | D24's reconcile                                                                               |
