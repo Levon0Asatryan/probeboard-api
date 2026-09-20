@@ -605,7 +605,7 @@ committing, for the worst row in the batch.
 | Term                            | Worst case                                  | Why                                                                                                                          |
 | ------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | claim → pool admission          | **0**                                       | capacity-gated: every claimed row starts on the same tick (D9). This is openstatus's `waves` term, and D9 is what makes it 1 |
-| pool admission → deadline armed | `SCHEDULER_LOAD_BUDGET_MS` (default 5 000)  | monitor loading: endpoint + service + headers, then decryption. **Not zero** (D20)                                           |
+| pool admission → deadline armed | `SCHEDULER_LOAD_BUDGET_MS` (default 1 500)  | monitor loading: endpoint + service + headers, then decryption. **Not zero** (D20)                                           |
 | probe                           | `PROBE_MAX_TIMEOUT_MS` (default 30 000)     | M3 caps the endpoint's own `timeout_ms` at this, so a row saved under an older, larger cap cannot exceed it (M3 D35)         |
 | teardown + release round trip   | `SCHEDULER_LEASE_SLACK_MS` (default 15 000) | dispatcher `destroy()`, one `UPDATE`, and the tick granularity around both                                                   |
 
@@ -628,7 +628,7 @@ bound, which is what lets the inequality below be a proof rather than a hope.
 
 So
 `SCHEDULER_LEASE_MS ≥ SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS + SCHEDULER_LEASE_SLACK_MS`,
-enforced at boot (§5). Defaults: 60 000 ≥ 5 000 + 30 000 + 15 000 = 50 000.
+enforced at boot (§5). Defaults: 60 000 ≥ 1 500 + 30 000 + 15 000 = 46 500.
 The two budgets are configuration rather than literals precisely because they
 are the terms that are judged rather than derived.
 
@@ -817,12 +817,26 @@ Drift has two parts, and only one of them is the famous one.
 1. **Accumulating drift** — eliminated by construction: `next_run_at` is
    derived from the slot, never from `now()` or from completion (§3.1, §3.6).
    A probe taking 25 s of a 30 s interval shifts nothing.
-2. **Per-slot drift** — bounded by the tick. A row becomes due at most
-   `SCHEDULER_TICK_MS` before the next claim looks. NFR-2's budget is 10% of T,
-   and the smallest T is `min(PROBE_ALLOWED_INTERVALS_S)` — 30 s by default, so
-   3000 ms. `SCHEDULER_TICK_MS` defaults to 1000, comfortably inside; but the
-   relationship is **checked at boot** rather than left to whoever edits the
-   two values (§5). NFR-2 becomes a configuration invariant instead of a hope.
+2. **Per-slot drift** — the gap between the slot and the moment the request
+   actually leaves, which is **two** terms, not one:
+
+   - `SCHEDULER_TICK_MS`, because a row becomes due up to one tick before the
+     next claim looks; and
+   - `SCHEDULER_LOAD_BUDGET_MS`, because D20 permits that much between the
+     claim and `probe()` arming its deadline.
+
+   NFR-2's budget is 10% of T, and the smallest T is
+   `min(PROBE_ALLOWED_INTERVALS_S)` — 30 s by default, so 3000 ms. **Both**
+   terms are inside it: 1000 + 1500 = 2500 ms, checked at boot (§5). Counting
+   only the tick would have left 1000 + 5000 = 6000 ms passing a 3000 ms
+   budget — the loader budget introduced for the lease silently spending the
+   drift budget too. It is why `SCHEDULER_LOAD_BUDGET_MS` defaults to 1500
+   rather than the 5000 the lease alone would have tolerated.
+
+   NFR-2 is therefore a configuration invariant rather than a hope — and the
+   drift **test measures actual probe start times**, not the scheduled slots,
+   since slots are computed by the arithmetic under test and would agree with
+   themselves however late the probe actually left.
 
 Neither part covers a worker saturated past `PROBE_CONCURRENCY` — that is a
 load condition, it is visible as an overdue row, and quantifying it is the
@@ -926,7 +940,7 @@ the same commit (AGENTS.md).
 | `PROBE_CONCURRENCY`            | `int().min(1)`                            | **add `.max(10_000)`**                                  | it is the pool size; unbounded means unbounded sockets                                |
 | `SCHEDULER_LEASE_SLACK_MS`     | —                                         | **new**, `int().min(1000).max(300_000).default(15_000)` | the one judged term in §3.5's arithmetic                                              |
 | `SCHEDULER_SHUTDOWN_GRACE_MS`  | —                                         | **new**, `int().min(0).max(300_000).default(35_000)`    | §3.9                                                                                  |
-| `SCHEDULER_LOAD_BUDGET_MS`     | —                                         | **new**, `int().min(500).max(60_000).default(5_000)`    | D20; the loader's bound, and a named term in §3.5                                     |
+| `SCHEDULER_LOAD_BUDGET_MS`     | —                                         | **new**, `int().min(500).max(60_000).default(1_500)`    | D20; the loader's bound, a named term in §3.5's lease **and** in §3.10's drift budget |
 | `SCHEDULER_ADOPT_JITTER_MAX_S` | —                                         | **new**, `int().min(0).max(3600).default(60)`           | D8; `0` disables jitter, which the herd test uses                                     |
 
 Three cross-field rules, each turning a requirement into a boot-time check:
@@ -944,12 +958,15 @@ SCHEDULER_SHUTDOWN_GRACE_MS < SCHEDULER_LEASE_MS
   -- or a graceful stop can outlive the lease it is trying to release,
   -- and a peer starts a second probe while ours is still draining (§3.9)
 
-SCHEDULER_TICK_MS <= min(PROBE_ALLOWED_INTERVALS_S) * 1000 / 10
-  -- NFR-2's 10% drift budget at the shortest permitted interval (§3.10)
+SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS
+    <= min(PROBE_ALLOWED_INTERVALS_S) * 1000 / 10
+  -- NFR-2's 10% drift budget at the shortest permitted interval (§3.10).
+  -- Both terms, because a probe starts late by the tick it waited to be
+  -- claimed *plus* the time it then spent loading (D20)
 ```
 
-Defaults satisfy all three: 60 000 ≥ 5 000 + 30 000 + 15 000 = 50 000;
-35 000 < 60 000; 1000 ≤ 3000.
+Defaults satisfy all three: 60 000 ≥ 1 500 + 30 000 + 15 000 = 46 500;
+35 000 < 60 000; 1000 + 1500 = 2500 ≤ 3000.
 
 **The configuration that already exists passes all three.** AGENTS.md asks for
 a story for data that predates a new rule, and a boot-time refine rejects a
@@ -957,7 +974,7 @@ running deployment as surely as a schema constraint rejects a row.
 `.env.example` already pins four of these keys — `SCHEDULER_TICK_MS=1000`,
 `SCHEDULER_BATCH_SIZE=100`, `SCHEDULER_LEASE_MS=60000`, `PROBE_CONCURRENCY=50`
 — and every one is inside the new bounds and satisfies every new refine
-(notably `60000 ≥ 5000 + 30000 + 15000`), with the new keys falling to their
+(notably `60000 ≥ 1500 + 30000 + 15000`), with the new keys falling to their
 defaults. `docker-compose.yml` sets none of them.
 So nothing that exists today stops booting, and there is no compatibility path
 to write. `.env.example` gains the four new keys with a comment each, in the
@@ -1066,7 +1083,7 @@ meaningfully testable otherwise):
 | fence: straggler release                                             | a stale `(workerId, slot)` release matches 0 rows and the live lease survives                                                                                            | the fence conjuncts                                                                           |
 | catch-up: 40 intervals behind                                        | one claim, `next_run_at` = next future slot, phase preserved                                                                                                             | the catch-up expression                                                                       |
 | catch-up: exact-multiple boundary                                    | `now − slot` an exact multiple → `next = now + interval`, strictly future                                                                                                | `floor(…)+1` vs `ceil`                                                                        |
-| drift: 10 cycles with injected delay                                 | every slot an exact multiple of the interval from the first                                                                                                              | slot-derived `next_run_at`                                                                    |
+| drift: 10 cycles with injected delay                                 | every **actual probe start** within the NFR-2 budget of a slot that is an exact multiple of the interval from the first                                                  | slot-derived `next_run_at`                                                                    |
 | loader: overrun releases without probing                             | a load held past `SCHEDULER_LOAD_BUDGET_MS` releases the row, never calls `probe()`, and logs                                                                            | D20's budget                                                                                  |
 | tick: survives an `adopt()` rejection                                | the error is logged and the **next tick still runs**                                                                                                                     | D19's `finally`                                                                               |
 | tick: survives a `claim()` rejection                                 | as above                                                                                                                                                                 | D19's `finally`                                                                               |
