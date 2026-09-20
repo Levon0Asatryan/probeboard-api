@@ -11,8 +11,16 @@ Last updated: 2026-09-16, by the orchestrator, after validating #37 and #38.
 - **M2 — Registration is done.** Five milestone PRs (#28–#35) plus two fix PRs
   (#37 review findings and the verification record, #38 the tag-filter hang).
   `main` is green at 5f22da3.
-- **Next:** M3 — Probe executor. The worker's first deliverable is
-  `docs/m3-plan.md` only; implementation starts after Levon approves it.
+- **M3 — Probe executor is done.** Three PRs: #43 (the shared `json_path`
+  grammar and the save-time contract), #48 (probing pure logic and the
+  connect-time SSRF pin), #49 (the executor). `main` is green at ec246b2.
+  Eight Codex rounds on #49 found seven real defects, three of them wrong
+  results that would have reached the database — see
+  [m3-verification.md](m3-verification.md).
+- **Next:** M4 — Scheduler. `probe()` is exported from
+  `src/worker/probing` and is not yet driven by anything; nothing persists a
+  result until M5. Run `npm run audit:json-path-assertions` once against each
+  deployed database before the scheduler starts probing (D48/D50/D51).
 - **Merge gate:** merge a code PR only after Codex has reviewed or 👍'd the
   **head SHA** and the orchestrator has validated. Small docs-only PRs (this
   tracker, `CLAUDE.md`, templates) skip the Codex wait — Levon merges them
@@ -40,8 +48,8 @@ added between M1 and M2; it is not in the thesis acceptance criteria.
 | M1        | Accounts               | done                  | [m1-plan.md](m1-plan.md)                     | [m1-verification.md](m1-verification.md) |
 | —         | Social login           | code done; F2–F5 open | [social-login-plan.md](social-login-plan.md) | stub only — F3 pending                   |
 | M2        | Registration           | done                  | [m2-plan.md](m2-plan.md)                     | [m2-verification.md](m2-verification.md) |
-| M3        | Probe executor         | next — plan           | —                                            | —                                        |
-| M4        | Scheduler              | not started           | —                                            | —                                        |
+| M3        | Probe executor         | done                  | [m3-plan.md](m3-plan.md)                     | [m3-verification.md](m3-verification.md) |
+| M4        | Scheduler              | next                  | —                                            | —                                        |
 | M5        | Storage                | not started           | —                                            | —                                        |
 | M6        | Incidents              | not started           | —                                            | —                                        |
 | M7        | Alerting               | not started           | —                                            | —                                        |
