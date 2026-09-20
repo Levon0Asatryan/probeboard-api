@@ -261,6 +261,12 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
         dispatcher,
       });
     } catch (error) {
+      // Marked *before* the teardown is awaited, not after. `markTerminal`
+      // is first-call-wins, so this fixes the instant the endpoint
+      // interaction ended; awaiting cleanup first would fold probeboard's
+      // own teardown into `total_ms`, inflating a latency M6 persists and
+      // computes from (NFR-5).
+      timing.markTerminal('failed_at');
       // The dispatcher is closed here rather than in a `finally`: on the
       // success path it has to outlive this block, because the response body
       // is still being streamed through it (D41).
@@ -280,8 +286,8 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       // D46: the over-budget `3xx` is the last iteration but is still a
       // discarded hop, not an evaluated one. Left to the evaluated path it
       // would stall on an unread streaming body until the deadline.
-      await discardHop(response, dispatcher);
       timing.markTerminal('failed_at');
+      await discardHop(response, dispatcher);
       return { success: false, failureClass: 'TOO_MANY_REDIRECTS' };
     }
 
@@ -299,8 +305,8 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
     try {
       next = new URL(location, target);
     } catch {
-      await discardHop(response, dispatcher);
       timing.markTerminal('failed_at');
+      await discardHop(response, dispatcher);
       // No taxonomy row fits a `3xx` whose Location is not a URL, and
       // inventing a plausible-looking one would send an operator to the
       // wrong system (architecture §7.4). The raw signal is kept instead.
@@ -366,6 +372,11 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       }
 
       return { success: true, status: response.status, truncated: body.truncated };
+    } catch (error) {
+      // Same ordering rule as the request path above: the endpoint
+      // interaction ended when the read failed, not when our cleanup did.
+      timing.markTerminal('failed_at');
+      throw error;
     } finally {
       // D41: the final hop's dispatcher, closed after the reader was
       // released and never by cancelling a stream a reader still holds.

@@ -648,6 +648,80 @@ describe('probe, deadline bounds', () => {
   });
 });
 
+describe('probe, total_ms excludes our own teardown', () => {
+  /**
+   * A real dispatcher that jumps the fake clock forward when it is destroyed.
+   *
+   * A Proxy rather than assigning `agent.destroy`: undici's own `destroy()`
+   * re-enters through `this.destroy` when called without a callback, so an
+   * overwritten method recurses into itself and never returns. Every access
+   * here is bound to the target, so that internal call reaches the real
+   * implementation.
+   */
+  function teardownJumps(advance: () => void): (options: PinnedConnectOptions) => Dispatcher {
+    return (options) => {
+      const agent = new Agent({ connect: createConnector(options) });
+      return new Proxy(agent, {
+        get(target, prop, receiver) {
+          const value: unknown = Reflect.get(target, prop, receiver);
+          if (typeof value !== 'function') return value;
+          const method = value.bind(target) as (...args: unknown[]) => unknown;
+          if (prop !== 'destroy') return method;
+          return (...args: unknown[]) => {
+            advance();
+            return method(...args);
+          };
+        },
+      });
+    };
+  }
+
+  /** A clock whose monotonic time only moves when the test says so. */
+  function steppedClock(): { clock: ProbeDeps['clock']; jump: (ms: number) => void } {
+    let now = 0;
+    return {
+      clock: { wallClock: () => 1_700_000_000_000, monotonic: () => now },
+      jump: (ms) => {
+        now += ms;
+      },
+    };
+  }
+
+  it('stops the clock when the request fails, not when cleanup finishes', async () => {
+    // total_ms is a latency M6 persists and reports on. Folding probeboard's
+    // own dispatcher teardown into it describes our cleanup rather than the
+    // endpoint -- a measurement NFR-5 commits to being trustworthy.
+    const server = await serve(respond('{}'));
+    const port = server.port;
+    await server.close();
+    started.splice(started.indexOf(server), 1);
+    const { clock, jump } = steppedClock();
+
+    const outcome = await probe(
+      config({ url: `http://127.0.0.1:${port}/` }),
+      deps({ clock, dispatcherFactory: teardownJumps(() => jump(10_000)) }),
+    );
+
+    expect(outcome.failureClass).toBe('CONNECTION_REFUSED');
+    // The 10s belongs to teardown, which happens after the endpoint already
+    // refused us.
+    expect(outcome.timings.totalMs).toBeLessThan(10_000);
+  });
+
+  it('stops the clock when an over-budget redirect is decided', async () => {
+    const server = await serve(redirect('/next'));
+    const { clock, jump } = steppedClock();
+
+    const outcome = await probe(
+      config({ url: `${server.origin}/0`, maxRedirects: 0 }),
+      deps({ clock, dispatcherFactory: teardownJumps(() => jump(10_000)) }),
+    );
+
+    expect(outcome.failureClass).toBe('TOO_MANY_REDIRECTS');
+    expect(outcome.timings.totalMs).toBeLessThan(10_000);
+  });
+});
+
 describe('probe, TLS', () => {
   it('records the certificate expiry of a healthy endpoint (FR-22)', async () => {
     const restore = trustFixtureCa();
