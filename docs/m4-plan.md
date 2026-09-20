@@ -942,7 +942,7 @@ read against the requirement's literal text, so the gap between "the slot" and
 | D19 | The tick re-arms in a `finally`, and its body's failures are caught and logged, never rethrown past the callback                                               | a rejected `adopt()`/`claim()` — a PostgreSQL restart is enough — would otherwise leave the process alive and permanently scheduling nothing. AGENTS.md's silently-exiting loop, and the Uptime Kuma defect §2.3 already quotes. Codex #4057684678                                                                                                                                           |
 | D20 | Monitor loading is **bounded** by `SCHEDULER_LOAD_BUDGET_MS` and is a named term in the lease arithmetic; an overrun releases the row without probing          | claim→deadline-armed is not zero: it is database round trips for endpoint, service and headers plus decryption, contending for `DATABASE_POOL_MAX` (10) across a batch of up to `PROBE_CONCURRENCY` (50). §3.5 had claimed zero. Codex #4057684684                                                                                                                                           |
 | D21 | Compose's `stop_grace_period` and `SCHEDULER_SHUTDOWN_GRACE_MS` are a pair and move together; the worker gets `stop_grace_period: 40s`                         | at compose's 10 s default, D12's keep-the-lease path never runs outside its own test. §10.4                                                                                                                                                                                                                                                                                                  |
-| D18 | M4 logs the `ProbeOutcome` and discards it                                                                                                                     | M5 owns persistence; the exit test needs real probes in flight regardless                                                                                                                                                                                                                                                                                                                    |
+| D18 | M4 logs the `ProbeOutcome` and discards it, with `workerId`, `endpointId` and `scheduledAt` on the line                                                        | M5 owns persistence; the exit test needs real probes in flight regardless. Those three fields are load-bearing, not incidental: the log is M4's **only** durable per-attempt record, so it is the sole source of the exit test's disjointness evidence — `endpoint_runtime` keeps just the latest `scheduled_at` and cannot answer it (§9)                                                   |
 
 ---
 
@@ -1148,11 +1148,31 @@ migration, a database change, and a multi-process behaviour claim. Fresh clone
 (`npm ci`, `npm run build`, `npm run verify`, `npm run test:int`), a real
 `docker compose up -d --build` with `psql` checks, every guard re-proved by
 removal on the final code, and the exit test run **in containers** — two worker
-processes, monitors due, `docker kill` one mid-probe, then `psql` evidence that
-no `(endpoint, slot)` was probed twice and the measured time to reclaim against
-the D6 bound — **in both regimes**, with one monitor whose interval is below
-the lease and one above it (§3.11), so the demonstration reports the `max` and
-not only the case that happens to be quick to run.
+processes, monitors due, `docker kill` one mid-probe, measured against the D6
+bound **in both regimes**, one monitor below the lease and one above it
+(§3.11), so the demonstration reports the `max` and not only the case that is
+quick to run.
+
+**Where the disjointness evidence comes from, since `psql` cannot give it.**
+M4 discards outcomes (D18) and `endpoint_runtime` keeps only the _most recent_
+`scheduled_at`, so a later claim overwrites any trace that an earlier
+`(endpoint, slot)` was executed twice. A final `psql` snapshot therefore cannot
+prove NFR-3 — it can only show the current lease state. The demonstration
+splits its evidence accordingly:
+
+| Claim                                           | Evidence                                                                                                                                                                               | Why that source                                                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| No `(endpoint, slot)` probed twice              | **`docker compose logs` from both workers**, each probe logged with `workerId`, `endpointId` and `scheduledAt`; the pairs are sorted and checked for duplicates across the two streams | the only durable per-attempt record M4 has — and the reason D18 logs the outcome rather than dropping it silently |
+| Time to reclaim, both regimes                   | `psql` on `endpoint_runtime`: `leased_by` flipping to the surviving worker, and `scheduled_at`/`next_run_at` before and after                                                          | current-state questions, which is exactly what the row can answer                                                 |
+| The killed worker's claim was held, then lapsed | `psql` snapshot at kill time plus one after expiry                                                                                                                                     | as above                                                                                                          |
+
+The log line's fields are therefore part of the design, not incidental: without
+`scheduledAt` on it there is no slot identity, and the exit test has nothing to
+group by. M5 replaces this with `probe_results`, whose natural key
+`(endpoint_id, started_at)` makes the same check a `GROUP BY … HAVING count(*) > 1`
+— **the verification record says plainly that M4's evidence is log-derived and
+M5 is where it becomes a database constraint**, rather than implying a
+stronger proof than the milestone can give.
 
 ---
 
