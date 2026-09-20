@@ -679,6 +679,17 @@ prevent, from inside the fix for a different bug. Measured, §2.4.9: the
 arithmetic predicate reconciles a caught-up row and lands it in the past; the
 provenance predicate leaves it untouched and still reconciles a genuine change.
 
+**`scheduled_at IS NOT NULL` is load-bearing, not an oversight.** Before the
+first claim there is no `scheduled_at`, so `scheduled_at + interval` is `NULL`
+and the statement would violate `next_run_at NOT NULL`. Nor is anything missed
+by skipping those rows: a never-claimed row's first slot is
+`now() + random() × least(interval, SCHEDULER_ADOPT_JITTER_MAX_S)` (D8), which
+is deliberately soon and **already independent of the interval** — an endpoint
+changed 30 s → 3600 s before its first claim fires within 60 s, exactly as a
+freshly created 3600 s endpoint does. The first claim then writes
+`scheduled_interval_s` from the joined `endpoints` row, and reconciliation
+applies from that point on.
+
 `scheduled_interval_s` records **which interval this row's `next_run_at` was
 computed with**. It is written by adoption, by the claim (§3.1) and by this
 statement, always from the value that was actually used. It is **provenance,
