@@ -711,7 +711,9 @@ measured in revalidation and again in M10's load test, which is where NFR-7's
 scaling claim is actually established. If it bites, the fix is an indexable
 dirty marker — `reconcile_due boolean` with a partial index, or a version
 counter — which needs a second writer or a trigger and is therefore a real
-design change, not a tuning knob. Tracker follow-up. The price paid is that a newly created endpoint waits
+design change, not a tuning knob. Tracker follow-up.
+
+The price paid is that a newly created endpoint waits
 up to one tick plus its jitter before its first probe, instead of being due
 instantly. That is a bounded, stated delay (≤ `SCHEDULER_TICK_MS` +
 `SCHEDULER_ADOPT_JITTER_MAX_S`), and the jitter is wanted anyway (D8).
