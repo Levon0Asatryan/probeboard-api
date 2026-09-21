@@ -385,4 +385,44 @@ describe('SchedulerService: stop', () => {
     await Promise.all([a, b]);
     expect(pool.drain).toHaveBeenCalledOnce();
   });
+
+  it(
+    'a terminal write started late in shutdown is bounded by the time REMAINING to the ' +
+      'deadline, not a fresh SCHEDULER_SHUTDOWN_GRACE_MS of its own',
+    async () => {
+      let resolveProbe!: (v: { monitorId: string; success: boolean; startedAt: number }) => void;
+      probeMock.mockReturnValue(
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        }),
+      );
+      const repo = fakeRepo();
+      repo.claim.mockResolvedValueOnce([row()]);
+      const pool = fakePool(1);
+      const { svc } = makeService({ repo, pool });
+      svc.start();
+      await vi.advanceTimersByTimeAsync(0); // claims, loads (fast), starts probe -- blocks there
+
+      const stopPromise = svc.stop(); // sets shutdownDeadline = now + GRACE
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A large chunk of the grace elapses before the row's own pipeline
+      // (independent of stop()'s own await chain, since pool.drain is faked
+      // here) finally settles its probe and reaches guardedRelease.
+      const elapsedBeforeRelease = cfg.SCHEDULER_SHUTDOWN_GRACE_MS - 1000;
+      await vi.advanceTimersByTimeAsync(elapsedBeforeRelease);
+      resolveProbe({ monitorId: 'e1', success: true, startedAt: Date.now() });
+      await vi.advanceTimersByTimeAsync(0);
+      await pool.started[0].work;
+
+      expect(repo.release).toHaveBeenCalledOnce();
+      const timeoutPassed = repo.release.mock.calls[0][4] as number;
+      // Remaining time, not a fresh grace: close to 1000ms, nowhere near the
+      // full SCHEDULER_SHUTDOWN_GRACE_MS.
+      expect(timeoutPassed).toBeLessThan(1500);
+      expect(timeoutPassed).toBeGreaterThan(0);
+
+      await stopPromise;
+    },
+  );
 });

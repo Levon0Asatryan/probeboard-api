@@ -43,6 +43,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private stopping = false;
   private tickInFlight: Promise<void> = Promise.resolve();
   private readonly probeDeps: ProbeDeps;
+  /**
+   * The wall-clock instant the shutdown grace expires, set once at the start
+   * of `doStop()`. Every terminal write's own `statement_timeout` is bounded
+   * by the *remaining* time to this deadline, not a fresh
+   * `SCHEDULER_SHUTDOWN_GRACE_MS` on every call -- a release starting near
+   * the end of the grace must not be handed a whole new grace period, or the
+   * global drain deadline can expire while that write is still legally
+   * running under its own budget (Codex round 2 on #61).
+   */
+  private shutdownDeadline: number | undefined;
 
   constructor(
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
@@ -242,14 +252,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Bounded by `SCHEDULER_SHUTDOWN_GRACE_MS`'s own value, not only during
+   * The remaining time to `shutdownDeadline`, or `SCHEDULER_SHUTDOWN_GRACE_MS`
+   * itself when no shutdown is in progress. Never 0: PostgreSQL treats
+   * `statement_timeout = 0` as disabled, the opposite of "no time left".
+   * A write starting with none of the grace left still gets a minimal,
+   * bounded attempt rather than either an unbounded one or none at all.
+   */
+  private terminalWriteTimeoutMs(): number {
+    if (this.shutdownDeadline === undefined) return this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS;
+    return Math.max(1, this.shutdownDeadline - Date.now());
+  }
+
+  /**
+   * Bounded by the time remaining to the shutdown deadline, not only during
    * shutdown: a release blocked on a row lock for longer than that is a
    * connection held indefinitely regardless of whether the process is
    * stopping, and it is exactly the write §3.9 requires to stop mattering
    * once a shutdown's grace has passed -- a statement still running when
    * `ProbePoolService.drain` reports it "still running" must not be able to
    * commit later, once the lock clears, or "still running" would have meant
-   * nothing.
+   * nothing. Recomputed at call time (`terminalWriteTimeoutMs`), not a flat
+   * constant, so a release starting near the end of the grace is not handed
+   * a fresh full grace period of its own (Codex round 2 on #61).
    */
   private async guardedRelease(row: ClaimedSlot): Promise<void> {
     try {
@@ -258,7 +282,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.cfg.WORKER_ID,
         row.scheduled_at,
         undefined,
-        this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+        this.terminalWriteTimeoutMs(),
       );
       if (n === 0) {
         this.logger.warn(
@@ -278,7 +302,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Same `SCHEDULER_SHUTDOWN_GRACE_MS` bound as `guardedRelease` -- see its doc comment. */
+  /** Same `terminalWriteTimeoutMs` bound as `guardedRelease` -- see its doc comment. */
   private async guardedAbandon(row: ClaimedSlot): Promise<void> {
     try {
       const n = await this.repo.abandon(
@@ -286,7 +310,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.cfg.WORKER_ID,
         row.scheduled_at,
         undefined,
-        this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+        this.terminalWriteTimeoutMs(),
       );
       if (n === 0) {
         this.logger.warn(
@@ -322,6 +346,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   private async doStop(): Promise<void> {
     this.stopping = true;
+    this.shutdownDeadline = Date.now() + this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS;
     if (this.timer) clearTimeout(this.timer);
     await this.tickInFlight;
 
