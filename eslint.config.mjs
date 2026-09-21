@@ -4,7 +4,10 @@ import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**'] },
+  // `.claude/workflows/*.js` runs in Claude Code's workflow runtime, not in
+  // this project: its `agent`, `pipeline`, `phase` and `log` are injected
+  // globals and it is outside tsconfig, so type-aware linting cannot parse it.
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.claude/**'] },
 
   js.configs.recommended,
 

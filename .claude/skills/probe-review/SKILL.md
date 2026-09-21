@@ -120,6 +120,33 @@ NOT CHECKED  what this pass could not establish, and why.
 Rank by severity, not by file order. "Nothing" is a valid finding list and is
 worth saying plainly.
 
+## The receipt — this is what unblocks the push
+
+The last step of every run writes `.review/.last-review.json`:
+
+```json
+{ "sha": "<git rev-parse HEAD>", "at": "<ISO timestamp>", "findings_open": 0 }
+```
+
+`scripts/require-review.sh` runs from the `pre-push` hook and refuses the push
+unless that file exists, its `sha` is exactly the commit being pushed, and
+`findings_open` is `0`. So the review is not something to remember — a code
+push without one is blocked, and a push after new commits is blocked until the
+review is re-run. Docs-only pushes are exempt. `SKIP_REVIEW_GATE=1` overrides
+it and must then be named in the PR's "Not verified".
+
+`findings_open` is the count the author still has to act on. Deferring a
+finding is a decision to record, not a way to reach zero.
+
+## The deeper version
+
+`/probe-review` is one reviewer doing every lens in turn. `/probe-review`'s
+workflow twin, `.claude/workflows/probe-review.js`, runs six independent
+reviewers — measurement, concurrency, security, tests, contract, architecture —
+then has a **separate** agent attack each finding before it is reported, and
+writes the same receipt. Use it before the first push of a PR that touches
+concurrency, a migration or a measurement; use this skill for a fix round.
+
 ## After the review
 
 - Findings that hold up get fixed **before** the first push (`CLAUDE.md`, "The
