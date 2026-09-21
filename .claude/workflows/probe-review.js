@@ -188,7 +188,7 @@ const report = await agent(
 
 Then write the receipt the pre-push gate reads. Write the file .review/.last-review.json containing exactly:
 
-{"sha": "${ctx.sha}", "at": "<ISO timestamp from the date command>", "findings_open": <number of CONFIRMED or PLAUSIBLE findings after deduplication>, "lenses": ${lenses.length}, "attacked": ${found.length}, "rejected": ${found.length - survived.length}}
+{"sha": "${ctx.sha}", "at": "<ISO timestamp from the date command>", "findings_open": <number of CONFIRMED or PLAUSIBLE findings after deduplication>, "method": "probe-review-workflow", "lenses": ${lenses.length}, "attacked": ${found.length}, "rejected": ${found.length - survived.length}}
 
 findings_open must be the deduplicated count of findings the author still has to act on. If it is zero the gate will let the push through, so do not round it down.
 

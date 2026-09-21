@@ -125,8 +125,19 @@ worth saying plainly.
 The last step of every run writes `.review/.last-review.json`:
 
 ```json
-{ "sha": "<git rev-parse HEAD>", "at": "<ISO timestamp>", "findings_open": 0 }
+{
+  "sha": "<git rev-parse HEAD>",
+  "at": "<ISO timestamp>",
+  "findings_open": 0,
+  "method": "probe-review"
+}
 ```
+
+`method` is `probe-review` from this skill, `probe-review-workflow` from the
+workflow, or a short name you choose when the passes were run another way. Any
+other value still opens the gate, but the push output says the receipt was not
+written by the tool and the PR must name the method and say which passes ran —
+an attestation is allowed, a silent one is not.
 
 `scripts/require-review.sh` runs from the `pre-push` hook and refuses the push
 unless that file exists, its `sha` is exactly the commit being pushed, and
