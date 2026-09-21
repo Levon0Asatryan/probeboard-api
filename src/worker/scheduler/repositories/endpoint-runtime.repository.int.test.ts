@@ -195,6 +195,50 @@ describe('claim: disjointness and non-blocking', () => {
   });
 });
 
+describe('claim: what it locks', () => {
+  it('locks endpoint_runtime and leaves endpoints unlocked', async () => {
+    // §3.1 says "endpoints is read but never locked ... a claim cannot block
+    // the API". That is true of `FOR UPDATE OF r` and was untrue of the
+    // statement as a whole: claim_log's foreign key made the insert take
+    // FOR KEY SHARE on the parent endpoints row, in the opposite order from a
+    // cascading delete. One claim of 300 rows against one
+    // `DELETE FROM endpoints WHERE service_id = ...` deadlocked 20 rounds out
+    // of 20; with the FK dropped, 0 of 20.
+    //
+    // Asserted on the lock catalogue rather than by racing a delete, because
+    // this is the property, and a deadlock test is a race whose absence proves
+    // nothing on a fast machine.
+    for (let i = 0; i < 3; i += 1) await makeEndpoint({ dueInS: -5 });
+
+    const client = new Client({
+      connectionString: testDatabaseUrl(),
+      application_name: 'claim-lock-probe',
+    });
+    await client.connect();
+    try {
+      await client.query('BEGIN');
+      const compiled = repo.claimQuery(WORKER_A, LEASE_MS, 10).compile(db);
+      await client.query(compiled.sql, [...compiled.parameters]);
+
+      const { rows } = await pool.query<{ relname: string; mode: string }>(
+        `SELECT c.relname, l.mode
+           FROM pg_locks l
+           JOIN pg_class c ON c.oid = l.relation
+           JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE a.application_name = 'claim-lock-probe'
+            AND c.relname IN ('endpoints', 'endpoint_runtime')`,
+      );
+      const onEndpoints = rows.filter((r) => r.relname === 'endpoints').map((r) => r.mode);
+      // RowShareLock is the table-level marker of SELECT ... FOR KEY SHARE.
+      expect(onEndpoints).not.toContain('RowShareLock');
+      expect(onEndpoints).not.toContain('RowExclusiveLock');
+      await client.query('ROLLBACK');
+    } finally {
+      await client.end();
+    }
+  });
+});
+
 describe('claim: what it selects', () => {
   it('skips a disabled endpoint', async () => {
     await makeEndpoint({ dueInS: -5, enabled: false });
@@ -554,6 +598,50 @@ describe('reconcile', () => {
     // scheduled_at is NULL: the expression would be NULL and violate NOT NULL,
     // and the adoption jitter is already independent of the interval.
     expect(await repo.reconcile()).toBe(0);
+  });
+
+  it('skips a row another worker is already reconciling, rather than blocking', async () => {
+    // Written as a bare UPDATE ... FROM endpoints it took row locks in
+    // whatever order the nested loop produced, so two workers' ticks
+    // deadlocked each other -- 18 spontaneous 40P01s in 15s across six
+    // workers over 200 endpoints. Selecting first, ordered and with
+    // SKIP LOCKED, is the claim's own shape.
+    const a = await makeEndpoint({ intervalS: 60, dueInS: -1 });
+    const b = await makeEndpoint({ intervalS: 60, dueInS: -1 });
+    for (const id of [a, b]) {
+      const [claimed] = await repo.claim(WORKER_A, LEASE_MS, 1);
+      await repo.release(claimed.endpoint_id, WORKER_A, claimed.scheduled_at);
+      expect(id).toBeDefined();
+    }
+    await pool.query(`UPDATE endpoints SET interval_s = 30`);
+
+    const holder = new Client({ connectionString: testDatabaseUrl() });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      // Hold one of the two stale rows.
+      await holder.query(`SELECT 1 FROM endpoint_runtime WHERE endpoint_id = $1 FOR UPDATE`, [a]);
+
+      // Skips the held row instead of waiting for it, and still does the
+      // other. Run on its own connection under statement_timeout so that
+      // losing SKIP LOCKED fails in two seconds rather than hanging until the
+      // runner's own timeout -- the shape that once turned an M3 suite into a
+      // 606-second one.
+      const worker = new Client({ connectionString: testDatabaseUrl() });
+      await worker.connect();
+      try {
+        await worker.query(`SET statement_timeout = '2s'`);
+        const compiled = repo.reconcileQuery().compile(db);
+        const result = await worker.query(compiled.sql, [...compiled.parameters]);
+        expect(result.rowCount).toBe(1);
+      } finally {
+        await worker.end();
+      }
+      await holder.query('ROLLBACK');
+    } finally {
+      await holder.end();
+    }
+    expect(await repo.reconcile()).toBe(1);
   });
 
   it('is a no-op once the row agrees with its endpoint', async () => {
