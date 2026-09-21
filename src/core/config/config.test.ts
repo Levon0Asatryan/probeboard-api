@@ -634,19 +634,31 @@ describe('session bounds', () => {
 
 describe('scheduler bounds reject invalid values at boot', () => {
   it.each([
-    ['SCHEDULER_TICK_MS', '99'],
-    ['SCHEDULER_BATCH_SIZE', '0'],
-    ['SCHEDULER_BATCH_SIZE', '10001'],
-    ['SCHEDULER_LEASE_MS', '999'],
-    ['SCHEDULER_LOAD_BUDGET_MS', '99'],
-    ['SCHEDULER_LOAD_BUDGET_MS', '60001'],
-    ['SCHEDULER_LEASE_SLACK_MS', '999'],
-    ['SCHEDULER_SHUTDOWN_GRACE_MS', '-1'],
-    ['SCHEDULER_ADOPT_JITTER_MAX_S', '3601'],
-    ['PROBE_CONCURRENCY', '0'],
-    ['PROBE_CONCURRENCY', '10001'],
-  ])('rejects %s=%s', (key, value) => {
-    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(key));
+    ['SCHEDULER_TICK_MS', '99', 'Too small: expected number to be >=100'],
+    ['SCHEDULER_BATCH_SIZE', '0', 'Too small: expected number to be >=1'],
+    ['SCHEDULER_BATCH_SIZE', '10001', 'Too big: expected number to be <=10000'],
+    ['SCHEDULER_LEASE_MS', '999', 'Too small: expected number to be >=1000'],
+    ['SCHEDULER_LOAD_BUDGET_MS', '99', 'Too small: expected number to be >=100'],
+    ['SCHEDULER_LOAD_BUDGET_MS', '60001', 'Too big: expected number to be <=60000'],
+    ['SCHEDULER_LEASE_SLACK_MS', '999', 'Too small: expected number to be >=1000'],
+    ['SCHEDULER_SHUTDOWN_GRACE_MS', '-1', 'Too small: expected number to be >=0'],
+    ['SCHEDULER_ADOPT_JITTER_MAX_S', '3601', 'Too big: expected number to be <=3600'],
+    ['PROBE_CONCURRENCY', '0', 'Too small: expected number to be >=1'],
+    ['PROBE_CONCURRENCY', '10001', 'Too big: expected number to be <=10000'],
+    // Capped at five minutes so the shutdown-grace floor stays satisfiable.
+    ['PROBE_MAX_TIMEOUT_MS', '300001', 'Too big: expected number to be <=300000'],
+    ['PROBE_DEFAULT_TIMEOUT_MS', '300001', 'Too big: expected number to be <=300000'],
+    ['SCHEDULER_SHUTDOWN_GRACE_MS', '600001', 'Too big: expected number to be <=600000'],
+  ])('rejects %s=%s', (key, value, message) => {
+    // Matching on the key name alone is not enough, and that is not a
+    // hypothetical: the cross-field rules added in this same change *name the
+    // other keys inside their own message text*, so deleting a field bound
+    // leaves a different rule throwing an error that still contains the key
+    // the test greps for. Confirmed by removing all four of
+    // SCHEDULER_LEASE_MS.min, SCHEDULER_LOAD_BUDGET_MS.max,
+    // SCHEDULER_SHUTDOWN_GRACE_MS.min and the interval floor at once: the
+    // suite stayed green. The assertion is on the bound's own message.
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(`${key}: ${message}`));
   });
 
   it('rejects a tick above its ceiling even where the drift budget allows it', () => {
@@ -680,8 +692,11 @@ describe('scheduler bounds reject invalid values at boot', () => {
     // 1s was accepted before M4. It makes the NFR-2 rule below unsatisfiable
     // at every legal value of both keys it names, which is a trap rather than
     // a check.
+    // On the entry message, not the key: the NFR-2 rule below also names
+    // PROBE_ALLOWED_INTERVALS_S in its text, so a bare key match passes with
+    // the floor reverted to 1.
     expect(() => loadConfig({ ...valid, PROBE_ALLOWED_INTERVALS_S: '1,30' })).toThrow(
-      /PROBE_ALLOWED_INTERVALS_S/,
+      /"1" is not a valid probe interval in seconds \(10-86400\)/,
     );
   });
 });
@@ -754,6 +769,24 @@ describe('scheduler cross-field rules', () => {
       loadConfig({ ...valid, SCHEDULER_TICK_MS: '500', SCHEDULER_LOAD_BUDGET_MS: '2600' }),
     ).toThrow(/SCHEDULER_TICK_MS/);
     expect(loadConfig({ ...valid, SCHEDULER_TICK_MS: '500' }).SCHEDULER_TICK_MS).toBe(500);
+  });
+
+  it('leaves the shutdown-grace floor satisfiable at the most permissive timeout', () => {
+    // The mirror of the floor test below: at PROBE_MAX_TIMEOUT_MS' ceiling and
+    // SCHEDULER_LOAD_BUDGET_MS' floor, a legal grace must still exist. Before
+    // PROBE_MAX_TIMEOUT_MS was capped, any timeout above 299,900ms could not
+    // be configured at all, and the error named a key the operator had not
+    // touched.
+    const cfg = loadConfig({
+      ...valid,
+      PROBE_MAX_TIMEOUT_MS: '300000',
+      PROBE_DEFAULT_TIMEOUT_MS: '300000',
+      SCHEDULER_LOAD_BUDGET_MS: '100',
+      SCHEDULER_SHUTDOWN_GRACE_MS: '300100',
+      SCHEDULER_LEASE_MS: '400000',
+      SCHEDULER_LEASE_SLACK_MS: '1000',
+    });
+    expect(cfg.PROBE_MAX_TIMEOUT_MS).toBe(300_000);
   });
 
   it('is satisfiable at every key floor, so no configuration is trapped', () => {
