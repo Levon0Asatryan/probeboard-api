@@ -698,3 +698,51 @@ describe('claim_log', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('release/abandon: statementTimeoutMs (Codex #61 round 1)', () => {
+  it('release cancels rather than waiting out a row lock held by another connection', async () => {
+    const id = await makeEndpoint({ dueInS: -1 });
+    const [claimed] = await repo.claim(WORKER_A, LEASE_MS, 10);
+    expect(claimed.endpoint_id).toBe(id);
+
+    const blocker = new Client({ connectionString: testDatabaseUrl() });
+    await blocker.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT 1 FROM endpoint_runtime WHERE endpoint_id = $1 FOR UPDATE', [id]);
+    try {
+      const started = Date.now();
+      await expect(
+        repo.release(claimed.endpoint_id, WORKER_A, claimed.scheduled_at, undefined, 200),
+      ).rejects.toThrow();
+      // Cancelled near the bound, not left to hang until the lock clears.
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await blocker.end();
+    }
+
+    // The row is untouched -- the cancelled statement did not commit.
+    const { rows } = await pool.query(
+      `SELECT leased_by FROM endpoint_runtime WHERE endpoint_id = $1`,
+      [id],
+    );
+    expect(rows[0].leased_by).toBe(WORKER_A);
+  });
+
+  it('without statementTimeoutMs, release waits for the lock as before (no behaviour change for existing callers)', async () => {
+    const id = await makeEndpoint({ dueInS: -1 });
+    const [claimed] = await repo.claim(WORKER_A, LEASE_MS, 10);
+
+    const blocker = new Client({ connectionString: testDatabaseUrl() });
+    await blocker.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT 1 FROM endpoint_runtime WHERE endpoint_id = $1 FOR UPDATE', [id]);
+
+    const releasePromise = repo.release(claimed.endpoint_id, WORKER_A, claimed.scheduled_at);
+    await waitForBlockedBackend();
+    await blocker.query('ROLLBACK');
+    await blocker.end();
+
+    await expect(releasePromise).resolves.toBe(1);
+  });
+});

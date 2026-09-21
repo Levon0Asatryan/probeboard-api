@@ -205,7 +205,13 @@ describe('SchedulerService: one claimed slot', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(pool.started).toHaveLength(1);
     await pool.started[0].work;
-    expect(repo.release).toHaveBeenCalledWith('e1', 'worker-1', row().scheduled_at);
+    expect(repo.release).toHaveBeenCalledWith(
+      'e1',
+      'worker-1',
+      row().scheduled_at,
+      undefined,
+      cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+    );
     expect(repo.abandon).not.toHaveBeenCalled();
     await svc.stop();
   });
@@ -220,7 +226,13 @@ describe('SchedulerService: one claimed slot', () => {
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await pool.started[0].work;
-    expect(repo.abandon).toHaveBeenCalledWith('e1', 'worker-1', row().scheduled_at);
+    expect(repo.abandon).toHaveBeenCalledWith(
+      'e1',
+      'worker-1',
+      row().scheduled_at,
+      undefined,
+      cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+    );
     expect(repo.release).not.toHaveBeenCalled();
     expect(probeMock).not.toHaveBeenCalled();
     await svc.stop();
@@ -237,7 +249,13 @@ describe('SchedulerService: one claimed slot', () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(cfg.SCHEDULER_LOAD_BUDGET_MS);
     await pool.started[0].work;
-    expect(repo.abandon).toHaveBeenCalledWith('e1', 'worker-1', row().scheduled_at);
+    expect(repo.abandon).toHaveBeenCalledWith(
+      'e1',
+      'worker-1',
+      row().scheduled_at,
+      undefined,
+      cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+    );
     expect(probeMock).not.toHaveBeenCalled();
     await svc.stop();
   });
@@ -251,7 +269,13 @@ describe('SchedulerService: one claimed slot', () => {
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await pool.started[0].work;
-    expect(repo.abandon).toHaveBeenCalledWith('e1', 'worker-1', row().scheduled_at);
+    expect(repo.abandon).toHaveBeenCalledWith(
+      'e1',
+      'worker-1',
+      row().scheduled_at,
+      undefined,
+      cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+    );
     expect(repo.release).not.toHaveBeenCalled();
     await svc.stop();
   });

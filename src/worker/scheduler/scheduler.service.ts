@@ -238,9 +238,25 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Bounded by `SCHEDULER_SHUTDOWN_GRACE_MS`'s own value, not only during
+   * shutdown: a release blocked on a row lock for longer than that is a
+   * connection held indefinitely regardless of whether the process is
+   * stopping, and it is exactly the write §3.9 requires to stop mattering
+   * once a shutdown's grace has passed -- a statement still running when
+   * `ProbePoolService.drain` reports it "still running" must not be able to
+   * commit later, once the lock clears, or "still running" would have meant
+   * nothing.
+   */
   private async guardedRelease(row: ClaimedSlot): Promise<void> {
     try {
-      const n = await this.repo.release(row.endpoint_id, this.cfg.WORKER_ID, row.scheduled_at);
+      const n = await this.repo.release(
+        row.endpoint_id,
+        this.cfg.WORKER_ID,
+        row.scheduled_at,
+        undefined,
+        this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+      );
       if (n === 0) {
         this.logger.warn(
           { endpointId: row.endpoint_id, scheduledAt: row.scheduled_at },
@@ -259,9 +275,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Same `SCHEDULER_SHUTDOWN_GRACE_MS` bound as `guardedRelease` -- see its doc comment. */
   private async guardedAbandon(row: ClaimedSlot): Promise<void> {
     try {
-      const n = await this.repo.abandon(row.endpoint_id, this.cfg.WORKER_ID, row.scheduled_at);
+      const n = await this.repo.abandon(
+        row.endpoint_id,
+        this.cfg.WORKER_ID,
+        row.scheduled_at,
+        undefined,
+        this.cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
+      );
       if (n === 0) {
         this.logger.warn(
           { endpointId: row.endpoint_id, scheduledAt: row.scheduled_at },
