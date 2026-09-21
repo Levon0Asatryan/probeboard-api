@@ -6,9 +6,27 @@ import type { Database } from '../../../core/db/types.js';
 /** One slot this worker now owns. Returned by `claim` (docs/m4-plan.md §3.1). */
 export interface ClaimedSlot {
   endpoint_id: string;
-  /** The slot claimed. The identity NFR-3 is written in terms of. */
-  scheduled_at: Date;
-  /** The slot after it, already written. */
+  /**
+   * The slot claimed, as PostgreSQL's own text form — the identity NFR-3 is
+   * written in terms of, and the value the release fence binds back.
+   *
+   * **Text, not a `Date`, and that is load-bearing.** `timestamptz` keeps
+   * microseconds; node-postgres parses it into a JS `Date`, which holds
+   * milliseconds. Round-tripping through `Date` therefore *changes the value*,
+   * so `scheduled_at = $slot` matches nothing. Measured on this database:
+   *
+   *     pg microseconds : 2026-09-21 08:45:12.178512+00
+   *     JS Date rounded : 2026-09-21T08:45:12.178Z
+   *     binding the Date back matches?  false
+   *     binding the text back matches?  true
+   *
+   * Every release and abandon would have matched zero rows — so no lease would
+   * ever be cleared, and every monitor would be probed once and then blocked
+   * until its lease lapsed. Carrying the exact text and casting it back is
+   * what makes the fence able to match at all.
+   */
+  scheduled_at: string;
+  /** The slot after it, already written. Informational; nothing fences on it. */
   next_run_at: Date;
 }
 
@@ -169,7 +187,7 @@ export class EndpointRuntimeRepository {
         INSERT INTO claim_log (endpoint_id, scheduled_at, worker_id)
         SELECT endpoint_id, scheduled_at, ${workerId} FROM claimed
       )
-      SELECT endpoint_id, scheduled_at, next_run_at FROM claimed
+      SELECT endpoint_id, scheduled_at::text AS scheduled_at, next_run_at FROM claimed
     `;
   }
 
@@ -199,7 +217,7 @@ export class EndpointRuntimeRepository {
    * the earlier one then releases it — the shape openstatus's per-row commits
    * get wrong, filtering on row id alone.
    */
-  releaseQuery(endpointId: string, workerId: string, slot: Date): RawBuilder<unknown> {
+  releaseQuery(endpointId: string, workerId: string, slot: string): RawBuilder<unknown> {
     return sql`
       UPDATE endpoint_runtime
       SET    leased_until  = NULL,
@@ -207,14 +225,14 @@ export class EndpointRuntimeRepository {
              last_probe_at = now()
       WHERE  endpoint_id   = ${endpointId}
         AND  leased_by     = ${workerId}
-        AND  scheduled_at  = ${slot}
+        AND  scheduled_at  = ${slot}::timestamptz
     `;
   }
 
   async release(
     endpointId: string,
     workerId: string,
-    slot: Date,
+    slot: string,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<number> {
     const result = await this.releaseQuery(endpointId, workerId, slot).execute(executor);
@@ -234,21 +252,21 @@ export class EndpointRuntimeRepository {
    * throws (which means a bug in probeboard: M3's contract is that a network
    * condition comes back as a `failureClass`, never as a rejection).
    */
-  abandonQuery(endpointId: string, workerId: string, slot: Date): RawBuilder<unknown> {
+  abandonQuery(endpointId: string, workerId: string, slot: string): RawBuilder<unknown> {
     return sql`
       UPDATE endpoint_runtime
       SET    leased_until = NULL,
              leased_by    = NULL
       WHERE  endpoint_id  = ${endpointId}
         AND  leased_by    = ${workerId}
-        AND  scheduled_at = ${slot}
+        AND  scheduled_at = ${slot}::timestamptz
     `;
   }
 
   async abandon(
     endpointId: string,
     workerId: string,
-    slot: Date,
+    slot: string,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<number> {
     const result = await this.abandonQuery(endpointId, workerId, slot).execute(executor);

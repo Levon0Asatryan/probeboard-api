@@ -14,7 +14,8 @@ import { EndpointRuntimeRepository } from './endpoint-runtime.repository.js';
 const db = createDb(new Pool({ connectionString: 'postgres://unused:unused@127.0.0.1:1/unused' }));
 const repo = new EndpointRuntimeRepository({ kysely: db } as never);
 
-const SLOT = new Date('2026-01-01T00:00:00.000Z');
+/** PostgreSQL's own text form, microseconds and all -- never a JS Date. */
+const SLOT = '2026-01-01 00:00:00.123456+00';
 
 /** Every column whose value is a scheduling decision the database must own. */
 const SCHEDULING_COLUMNS = ['next_run_at', 'leased_until', 'scheduled_at', 'last_probe_at'];
@@ -125,6 +126,35 @@ describe('the release fence', () => {
     const text = build();
     expect(text).toMatch(/leased_by\s*=\s*\$\d/);
     expect(text).toMatch(/scheduled_at\s*=\s*\$\d/);
+  });
+
+  it('casts the bound slot back to timestamptz, so microseconds survive', () => {
+    // timestamptz keeps microseconds; a JS Date holds milliseconds. Binding a
+    // round-tripped Date changes the value, so the fence would match nothing
+    // and no lease would ever be cleared. Measured against this database.
+    for (const text of [
+      repo.releaseQuery('e1', 'w1', SLOT).compile(db).sql,
+      repo.abandonQuery('e1', 'w1', SLOT).compile(db).sql,
+    ]) {
+      expect(text).toMatch(/scheduled_at\s*=\s*\$\d+::timestamptz/);
+    }
+    // And the claim must hand back the exact text the fence needs.
+    expect(repo.claimQuery('w', 1000, 1).compile(db).sql).toMatch(
+      /scheduled_at::text AS scheduled_at/,
+    );
+  });
+
+  it('binds the slot as text, never as a Date', () => {
+    for (const build of [
+      () => repo.releaseQuery('e1', 'w1', SLOT),
+      () => repo.abandonQuery('e1', 'w1', SLOT),
+    ]) {
+      expect(
+        build()
+          .compile(db)
+          .parameters.some((p) => p instanceof Date),
+      ).toBe(false);
+    }
   });
 
   it('release advances last_probe_at; abandon deliberately does not', () => {
