@@ -4,6 +4,7 @@ import { APP_CONFIG, ConfigModule } from '../core/config/config.module.js';
 import type { AppConfig } from '../core/config/schema.js';
 import { DbModule } from '../core/db/db.module.js';
 import { loggerOptions } from '../core/logging/index.js';
+import { SchedulerModule } from './scheduler/scheduler.module.js';
 
 /**
  * Probe worker. Same codebase as the API, different entrypoint and module set
@@ -19,6 +20,7 @@ import { loggerOptions } from '../core/logging/index.js';
       useFactory: (cfg: AppConfig) => loggerOptions('worker', cfg),
     }),
     DbModule,
+    SchedulerModule,
   ],
 })
 export class WorkerModule {}
