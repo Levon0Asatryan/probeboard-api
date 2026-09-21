@@ -103,17 +103,35 @@ export class EndpointRuntimeRepository {
    * claim the expression would be NULL and violate `next_run_at NOT NULL`, and
    * a never-claimed row's first slot is the adoption jitter, which is
    * deliberately soon and already independent of the interval.
+   *
+   * The rows are selected first, **ordered and with `SKIP LOCKED`**, exactly
+   * as the claim does. Written as a bare `UPDATE ... FROM endpoints` it took
+   * row locks in whatever order the nested loop produced them, so two workers
+   * running their ticks against the same fleet deadlocked each other: measured
+   * at 18 spontaneous `40P01`s in 15 seconds with six workers over 200
+   * endpoints, every one of them in this statement. D19's `catch` keeps that
+   * bounded -- the tick logs and skips, and the statement is idempotent next
+   * tick -- but it is a false error signal for a statement that has no reason
+   * to block at all. `FOR UPDATE OF r` again names the alias, so `endpoints`
+   * is read and not locked.
    */
   reconcileQuery(): RawBuilder<unknown> {
     return sql`
+      WITH stale AS (
+        SELECT r.endpoint_id, e.interval_s
+        FROM   endpoint_runtime r
+        JOIN   endpoints e ON e.id = r.endpoint_id
+        WHERE  r.scheduled_at IS NOT NULL
+          AND  (r.leased_until IS NULL OR r.leased_until < now())
+          AND  r.scheduled_interval_s IS DISTINCT FROM e.interval_s
+        ORDER  BY r.endpoint_id
+        FOR UPDATE OF r SKIP LOCKED
+      )
       UPDATE endpoint_runtime r
-      SET    next_run_at          = r.scheduled_at + make_interval(secs => e.interval_s),
-             scheduled_interval_s = e.interval_s
-      FROM   endpoints e
-      WHERE  e.id = r.endpoint_id
-        AND  r.scheduled_at IS NOT NULL
-        AND  (r.leased_until IS NULL OR r.leased_until < now())
-        AND  r.scheduled_interval_s IS DISTINCT FROM e.interval_s
+      SET    next_run_at          = r.scheduled_at + make_interval(secs => s.interval_s),
+             scheduled_interval_s = s.interval_s
+      FROM   stale s
+      WHERE  r.endpoint_id = s.endpoint_id
     `;
   }
 
