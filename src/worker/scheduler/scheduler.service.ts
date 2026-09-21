@@ -160,7 +160,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         workerId: this.cfg.WORKER_ID,
         endpointId: row.endpoint_id,
         scheduledAt: row.scheduled_at,
-        claimToStartMs: Date.now() - claimedAt,
+        // Snake case, deliberately, matching docs/m4-plan.md D18/§9's
+        // documented field name exactly -- the container exit test's
+        // evidence query reads this key by name (Codex round 2 on #61).
+        claim_to_start_ms: Date.now() - claimedAt,
         msg: 'attempt',
       },
       'attempt',
