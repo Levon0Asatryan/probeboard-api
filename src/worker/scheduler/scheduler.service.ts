@@ -99,6 +99,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.logger.error({ err }, 'reconcile() failed; claim still runs this tick (D19)');
       }
 
+      // Re-checked here, not only at arm-time: adopt()/reconcile() await the
+      // database, so a SIGTERM arriving mid-await resumes straight into this
+      // block unless it is asked again. Without this, a tick already in
+      // flight when stop() is called can still claim and dispatch fresh
+      // work after shutdown began -- the timer being cleared is not enough,
+      // because this tick was already running before it was (§3.9).
+      if (this.stopping) return;
+
       const capacity = this.pool.available;
       if (capacity > 0) {
         const rows = await this.repo.claim(

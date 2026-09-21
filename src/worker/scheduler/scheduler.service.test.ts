@@ -317,6 +317,30 @@ describe('SchedulerService: stop', () => {
     expect(repo.claim.mock.calls.length).toBe(callsBeforeStop);
   });
 
+  it('does not claim if stop() was called while this tick was still awaiting adopt()/reconcile()', async () => {
+    // The timer is cleared at stop(), but a tick already past the timer
+    // callback and awaiting the database is not stopped by that -- it must
+    // notice `stopping` itself before it reaches claim() (§3.9).
+    const repo = fakeRepo();
+    let resolveReconcile!: (n: number) => void;
+    repo.reconcile.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveReconcile = resolve;
+        }),
+    );
+    const { svc } = makeService({ repo });
+    svc.start();
+    await vi.advanceTimersByTimeAsync(0); // enters runTick, blocks on reconcile()
+
+    const stopPromise = svc.stop(); // stopping = true while the tick is still in flight
+    resolveReconcile(0); // the tick resumes
+    await vi.advanceTimersByTimeAsync(0);
+    await stopPromise;
+
+    expect(repo.claim).not.toHaveBeenCalled();
+  });
+
   it('drains the pool with SCHEDULER_SHUTDOWN_GRACE_MS and logs a warning for anything still running', async () => {
     const pool = fakePool();
     pool.drain.mockResolvedValue({ settled: [], stillRunning: ['e2:slot'] });
