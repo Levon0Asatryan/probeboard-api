@@ -95,14 +95,21 @@ export class ProbePoolService {
     const atStart = new Set(this.keys());
     if (atStart.size === 0) return { settled: [], stillRunning: [] };
 
+    // The timer is cleared whichever branch of the race wins. Left running,
+    // a still-referenced setTimeout keeps the event loop alive for up to
+    // graceMs after every in-flight slot has already settled -- observable
+    // as a worker that outlives app.close() by nearly the full grace, doing
+    // nothing (Codex round 2 on #61).
+    let timer: NodeJS.Timeout | undefined;
     await Promise.race([
       Promise.allSettled(
         [...atStart].map((k) => this.inFlight.get(k)).filter((p) => p !== undefined),
       ),
       new Promise<void>((resolve) => {
-        setTimeout(resolve, graceMs);
+        timer = setTimeout(resolve, graceMs);
       }),
     ]);
+    if (timer) clearTimeout(timer);
 
     const stillRunning = [...atStart].filter((k) => this.inFlight.has(k));
     const settled = [...atStart].filter((k) => !stillRunning.includes(k));

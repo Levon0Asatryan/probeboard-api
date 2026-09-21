@@ -104,6 +104,24 @@ describe('ProbePoolService: drain (§3.9)', () => {
     expect(result.stillRunning).toEqual([]);
   });
 
+  it(
+    'clears the grace timer once every in-flight slot has settled, rather than leaving it ' +
+      'referenced until the full grace elapses (Codex #61 round 2)',
+    async () => {
+      const pool = new ProbePoolService(cfg, fakeLogger());
+      const a = deferred();
+      pool.start('a', a.promise);
+      const drainPromise = pool.drain(10_000);
+      a.resolve();
+      await drainPromise;
+      // The "settled" branch won the race well before the 10s grace, so a
+      // cleared timer means none is left pending; an uncleared one would
+      // still be counted here, keeping the event loop alive for the
+      // remainder of the grace for no reason.
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it('reports a slot still running when the grace expires first, and leaves it tracked', async () => {
     const pool = new ProbePoolService(cfg, fakeLogger());
     const a = deferred();
