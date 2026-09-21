@@ -153,10 +153,60 @@ export interface EndpointsTable {
   /** No database default -- the caller supplies it from validated config (docs/m2-plan.md, FR-21). */
   max_redirects: number;
   assertions: JSONColumnType<EndpointAssertion[], string | undefined, string | undefined>;
-  /** Pause/resume (FR-9). Inert until M4's scheduler reads it. */
+  /** Pause/resume (FR-9). Read by M4's claim query, which joins this table. */
   enabled: Generated<boolean>;
   created_at: CreatedAt;
   updated_at: CreatedAt;
+}
+
+/**
+ * Scheduler state, 1:1 with `endpoints` and written on every probe
+ * (docs/m4-plan.md §3.2). The API never writes this table; the scheduler
+ * never writes `endpoints`.
+ */
+export interface EndpointRuntimeTable {
+  endpoint_id: string;
+  /** Always derived from the previous slot, never from `now()` (NFR-2). */
+  next_run_at: Timestamp;
+  /**
+   * The slot the current or most recent claim owns; null until the first
+   * claim. The identity NFR-3 is written in terms of.
+   */
+  scheduled_at: Timestamp | null;
+  /**
+   * Which interval `next_run_at` was computed with. Provenance, never
+   * authority: the claim joins `endpoints` for the value it schedules by, so
+   * a stale copy here cannot cause a probe at the wrong cadence. It exists so
+   * reconciliation can tell an interval change from a catch-up jump.
+   */
+  scheduled_interval_s: number | null;
+  leased_until: Timestamp | null;
+  /** Also the fence on every release (docs/m4-plan.md D13). */
+  leased_by: string | null;
+  /**
+   * Set only when a probe produced an observation. A slot abandoned without
+   * probing leaves this alone, or M6's `UNKNOWN` sweep reads it as freshly
+   * probed and skips the gap.
+   */
+  last_probe_at: Timestamp | null;
+}
+
+/**
+ * One row per claim, written by the claim statement itself before any probe
+ * runs (docs/m4-plan.md D25). The only durable, slot-keyed record of an
+ * attempt M4 has, and what the milestone's exit test reads.
+ */
+export interface ClaimLogTable {
+  /**
+   * `bigserial`. Typed as a string because node-postgres returns `int8` as
+   * one -- typing it `number` is a review finding, and would silently lose
+   * precision past 2^53.
+   */
+  id: Generated<string>;
+  endpoint_id: string;
+  scheduled_at: Timestamp;
+  worker_id: string;
+  claimed_at: CreatedAt;
 }
 
 export interface HeadersTable {
@@ -194,6 +244,8 @@ export interface Database {
   oauth_authorizations: OAuthAuthorizationsTable;
   services: ServicesTable;
   endpoints: EndpointsTable;
+  endpoint_runtime: EndpointRuntimeTable;
+  claim_log: ClaimLogTable;
   headers: HeadersTable;
   tags: TagsTable;
 }
@@ -234,6 +286,11 @@ export type NewEndpoint = Insertable<EndpointsTable>;
  * while `update()`'s `WHERE` only ever checked the row's *original* owner.
  */
 export type EndpointUpdate = Omit<Updateable<EndpointsTable>, 'user_id' | 'service_id'>;
+
+export type EndpointRuntime = Selectable<EndpointRuntimeTable>;
+export type NewEndpointRuntime = Insertable<EndpointRuntimeTable>;
+
+export type ClaimLogEntry = Selectable<ClaimLogTable>;
 
 export type Header = Selectable<HeadersTable>;
 export type NewHeader = Insertable<HeadersTable>;
