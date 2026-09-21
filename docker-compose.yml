@@ -99,6 +99,12 @@ services:
       migrate:
         condition: service_completed_successfully
     # Scale with: docker compose up --scale worker=3 (NFR-7)
+    # Longer than SCHEDULER_SHUTDOWN_GRACE_MS's default (35s, §3.9): Docker
+    # sends SIGKILL once this elapses, and a kill before the scheduler's own
+    # grace expires would cut off exactly the in-flight-probe handling that
+    # grace exists to allow. Compose's stop_grace_period is the outer bound,
+    # not the one the scheduler reasons about.
+    stop_grace_period: 40s
 
 volumes:
   pgdata:
