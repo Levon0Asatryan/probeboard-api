@@ -4,8 +4,8 @@ Status of record for probeboard work. The orchestrator session updates it after
 validating a worker's report; workers read it and propose changes in their
 report rather than editing it, so two chats never edit it at once.
 
-Last updated: 2026-09-20, by the orchestrator, after validating M3 (#43, #48,
-#49) and closing it out.
+Last updated: 2026-09-21, by the orchestrator, after validating M4 PR 2 (#59)
+and recording its deviations from the merged plan.
 
 ## Now
 
@@ -18,10 +18,17 @@ Last updated: 2026-09-20, by the orchestrator, after validating M3 (#43, #48,
   Eight Codex rounds on #49 found seven real defects, three of them wrong
   results that would have reached the database — see
   [m3-verification.md](m3-verification.md).
-- **Next:** M4 — Scheduler. `probe()` is exported from
-  `src/worker/probing` and is not yet driven by anything; nothing persists a
-  result until M5. Run `npm run audit:json-path-assertions` once against each
-  deployed database before the scheduler starts probing (D48/D50/D51).
+- **M4 — Scheduler is in progress.** The plan merged as #52. PR 1 was the
+  process work; **#59** (PR 2) carries `endpoint_runtime`, the claim statement,
+  reconcile and their configuration — CI 5/5 green on `7ca431e`, Codex round 1
+  answered and resolved, awaiting merge. PR 3 is the tick loop, lease release
+  and expiry, the exit test and compose `stop_grace_period`.
+  Its pre-push review found three defects before Codex saw the branch, two of
+  them deadlocks, and six tests that passed for the wrong reason — the first
+  evidence that the review-before-push ordering (#53, #57) pays for itself.
+- **Before the scheduler probes for real:** run
+  `npm run audit:json-path-assertions` once against each deployed database
+  (D48/D50/D51). Nothing persists a probe result until M5.
 - **Merge gate:** merge a code PR only after Codex has reviewed or 👍'd the
   **head SHA** and the orchestrator has validated. Small docs-only PRs (this
   tracker, `CLAUDE.md`, templates) skip the Codex wait — Levon merges them
@@ -68,7 +75,7 @@ added between M1 and M2; it is not in the thesis acceptance criteria.
 | —         | Social login           | code done; F2–F5 open | [social-login-plan.md](social-login-plan.md) | stub only — F3 pending                   |
 | M2        | Registration           | done                  | [m2-plan.md](m2-plan.md)                     | [m2-verification.md](m2-verification.md) |
 | M3        | Probe executor         | done                  | [m3-plan.md](m3-plan.md)                     | [m3-verification.md](m3-verification.md) |
-| M4        | Scheduler              | next                  | —                                            | —                                        |
+| M4        | Scheduler              | in progress (PR 3)    | [m4-plan.md](m4-plan.md)                     | —                                        |
 | M5        | Storage                | not started           | —                                            | —                                        |
 | M6        | Incidents              | not started           | —                                            | —                                        |
 | M7        | Alerting               | not started           | —                                            | —                                        |
@@ -97,6 +104,20 @@ filter's plan depended on statistics that do not exist immediately after a
 bulk insert — `EXISTS` let the planner start from `tags`, `LATERAL` removes
 that choice. The SSRF blocklist now covers the full IANA IPv4 and IPv6
 special-purpose registries, with 86 tests and a comparison table.
+
+## M4 — Scheduler
+
+Deviations from the merged plan (#52), found while implementing #59. The plan
+is not rewritten; these are the record of where the code and the document
+differ and why.
+
+| Plan | Deviation                                                                                                                    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §3.7 | The release fence binds PostgreSQL's own text form cast with `::timestamptz`, not a JavaScript `Date`.                       | `timestamptz` keeps microseconds and node-postgres parses to millisecond `Date`s, so `scheduled_at = $slot` matched **zero rows, always**: no lease ever cleared and every monitor probed once, then blocked until expiry. A zero-row write is not an error, so it failed open and silently. The plan's form cannot work.                                                                                                                            |
+| §3.2 | `claim_log`'s foreign key to `endpoints` is dropped.                                                                         | The plan says "Deletion needs nothing: `ON DELETE CASCADE`" — true for `endpoint_runtime`, fatal here. An insert against a referencing column takes `FOR KEY SHARE` on the parent, so a claim locked `endpoint_runtime` first and `endpoints` last, the inverse of a cascading delete: 20/20 deadlocks with the FK and 0/20 without, with `DELETE /services/:id` the victim 9 times in 20. It also made §3.1's "a claim cannot block the API" false. |
+| §3.3 | `reconcile` selects rows in an ordered CTE with `FOR UPDATE OF r SKIP LOCKED` instead of a bare `UPDATE ... FROM endpoints`. | The bare form took row locks in nested-loop order, so two workers' ticks deadlocked each other: 18 spontaneous `40P01`s in 15s with six workers over 200 endpoints.                                                                                                                                                                                                                                                                                  |
+| §3.1 | "`endpoints` is read but never locked" now holds for the whole statement, not only for the `FOR UPDATE OF r` clause.         | It was true of the clause and false of the statement while the `claim_log` FK existed.                                                                                                                                                                                                                                                                                                                                                               |
+| §5   | `PROBE_MAX_TIMEOUT_MS` and `PROBE_DEFAULT_TIMEOUT_MS` are capped at five minutes.                                            | At the int4 ceiling the shutdown-grace floor was unsatisfiable at every legal value of every other key.                                                                                                                                                                                                                                                                                                                                              |
 
 ## Social login
 
@@ -149,19 +170,26 @@ into that handoff.
 
 Items found while validating, not yet scheduled.
 
-| Source         | Item                                                                                                                                                                                                             | Kind    |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| #18            | Drift test reads routes from decorator metadata rather than the running application. Judgement call — reply with a decision or fix it.                                                                           | decide  |
-| #37            | The SSRF blocklist is hand-maintained, so an IANA change needs a code change. Codex asked for a generated classifier; pushed back as out of scope. Decide whether to generate it from the registries before M10. | decide  |
-| #38            | No per-user cap on service count: only `ENDPOINT_QUOTA_PER_USER` exists, and `ServicesService.createExplicit` checks nothing. B-8 names only endpoints, so this is a gap in resource limits, not in the story.   | decide  |
-| process        | #18–#23, #29 and #34 merged before Codex finished reviewing. See the merge gate above.                                                                                                                           | process |
-| #24 validation | Workers missed Codex's no-findings signal: a 👍 reaction on the PR, not a review. `CLAUDE.md` now says where to look.                                                                                            | process |
-| #49 / D69      | The stalled-pipe reproduction is committed `it.skip` on `main`: D69's shipped fix does not release a pending write, and only `process.exit()` returns. Needs a bounded exit for the audit's stalled reader.      | fix     |
-| #46            | The production-group Dependabot bump breaks `bootstrap.e2e` and `docs.e2e` with server-start timeouts, reproduced on rerun. Suspects `@nestjs/platform-express` and `nestjs-pino` 5.2.0. Bisect or supersede.    | decide  |
-| M3 process     | Three of seven Codex defects on #49 were wrong results in failure classification that a green suite missed, because it fed synthetic error objects. `CLAUDE.md` now requires a real-transport row per class.     | process |
-| M3 process     | Two tests passed for the wrong reason and only the removal proof caught it. `CLAUDE.md` now applies the removal proof to every new test, not only to guards.                                                     | process |
-| M3 process     | Hostile self-review found one defect to Codex's seven, and missed three plain deviations from sentences in the plan. `CLAUDE.md` now makes re-review walk the plan's normative sentences.                        | process |
-| M3 process     | A Docker socket at `~/.docker/run/docker.sock` was reported as a blocker twice before being diagnosed. An environment failure is diagnosed to its cause before it is reported as blocking.                       | process |
+| Source         | Item                                                                                                                                                                                                                                                                                                              | Kind    |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| #18            | Drift test reads routes from decorator metadata rather than the running application. Judgement call — reply with a decision or fix it.                                                                                                                                                                            | decide  |
+| #37            | The SSRF blocklist is hand-maintained, so an IANA change needs a code change. Codex asked for a generated classifier; pushed back as out of scope. Decide whether to generate it from the registries before M10.                                                                                                  | decide  |
+| #38            | No per-user cap on service count: only `ENDPOINT_QUOTA_PER_USER` exists, and `ServicesService.createExplicit` checks nothing. B-8 names only endpoints, so this is a gap in resource limits, not in the story.                                                                                                    | decide  |
+| process        | #18–#23, #29 and #34 merged before Codex finished reviewing. See the merge gate above.                                                                                                                                                                                                                            | process |
+| #24 validation | Workers missed Codex's no-findings signal: a 👍 reaction on the PR, not a review. `CLAUDE.md` now says where to look.                                                                                                                                                                                             | process |
+| #49 / D69      | The stalled-pipe reproduction is committed `it.skip` on `main`: D69's shipped fix does not release a pending write, and only `process.exit()` returns. Needs a bounded exit for the audit's stalled reader.                                                                                                       | fix     |
+| #46            | The production-group Dependabot bump breaks `bootstrap.e2e` and `docs.e2e` with server-start timeouts, reproduced on rerun. Suspects `@nestjs/platform-express` and `nestjs-pino` 5.2.0. Bisect or supersede.                                                                                                     | decide  |
+| M3 process     | Three of seven Codex defects on #49 were wrong results in failure classification that a green suite missed, because it fed synthetic error objects. `CLAUDE.md` now requires a real-transport row per class.                                                                                                      | process |
+| M3 process     | Two tests passed for the wrong reason and only the removal proof caught it. `CLAUDE.md` now applies the removal proof to every new test, not only to guards.                                                                                                                                                      | process |
+| M3 process     | Hostile self-review found one defect to Codex's seven, and missed three plain deviations from sentences in the plan. `CLAUDE.md` now makes re-review walk the plan's normative sentences.                                                                                                                         | process |
+| #59            | D2's paused-row re-measurement: a row paused and resumed keeps the slot computed before the pause. Decide whether resume re-measures or inherits.                                                                                                                                                                 | decide  |
+| #59            | `claim_log` has no retention policy. It exists for disjointness evidence; size it or prune it in M5.                                                                                                                                                                                                              | fix     |
+| #59            | D17's M6 columns are not in `endpoint_runtime` yet. M6 needs them; confirm the shape when M6 is planned, not before.                                                                                                                                                                                              | decide  |
+| #59            | `reconcile` scans the whole fleet every tick. Fine at thesis scale, measured at 50,000 rows; revisit only if M8's load work says so.                                                                                                                                                                              | decide  |
+| #59            | M5's `probe_results` key should be `(endpoint_id, scheduled_at)` — the claim already returns the slot as PostgreSQL text for exactly this.                                                                                                                                                                        | fix     |
+| #59            | Compose `stop_grace_period` is untouched; it belongs to M4 PR 3 with the exit test.                                                                                                                                                                                                                               | fix     |
+| #59 / Codex    | Codex asked the claim to exclude rows whose `scheduled_interval_s` differs from the live interval. Deferred: reconcile now uses `SKIP LOCKED`, so that predicate makes a skipped row unclaimable and turns one early probe into an unprobed endpoint. Revisit if M5 gives reconcile a guaranteed-completion path. | decide  |
+| M3 process     | A Docker socket at `~/.docker/run/docker.sock` was reported as a blocker twice before being diagnosed. An environment failure is diagnosed to its cause before it is reported as blocking.                                                                                                                        | process |
 
 Closed since last update: `jvONd` and `jp9DY`, both answered on #43; the two
 #18 fixes and F1 (#27); seven unanswered

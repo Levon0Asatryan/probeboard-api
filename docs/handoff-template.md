@@ -97,6 +97,36 @@ Per the approved plan. Deviations go in the report under "Decisions made".
   plan is approved.
 - Do not merge. Do not push to main.
 
+## When to report, and when not to
+One report per pull request, when it is finished: pushed, CI green, Codex's
+rounds done, threads resolved, machine clean. Not per push, not per review
+round, not per fix, not when the review finds something interesting.
+
+Report mid-flight only for these, and immediately:
+1. Blocked after diagnosing the cause, where clearing it needs a decision that
+   is not yours: scope, a credential, dropping something the plan promised.
+2. Something that invalidates the plan's **design** — a hole in its reasoning,
+   not a deviation from its wording.
+3. A defect in already-merged work.
+4. Something needed outside your checkout: docs, the tracker, another repo.
+
+Handle these yourself and put them in the report instead:
+- A review round arriving. Decide fix-or-defer against AGENTS.md's severity
+  contract, fix or post a one-line deferral, resolve the thread, carry on. A
+  rejection with a constructed counter-case is a complete answer and needs no
+  confirmation.
+- Deviations from the plan's wording — one line each under "Decisions made";
+  the orchestrator files them in the tracker.
+- Tests breaking while fixing review findings. That is phase 3 working.
+- Review tooling misbehaving: scratch files, stray processes, a lens reading a
+  mid-mutation tree. Note it under "Regressions caught by the post-fix gate".
+- Defects your own pre-push review caught. That is what it is for.
+- Anything answerable from CLAUDE.md, AGENTS.md, the plan, or the tracker.
+
+Fix-vs-defer, thread resolution, and moving from one pull request to the next
+are yours to decide. A deferral costs one line of reasoning in the thread and
+one line in the report — not a question.
+
 When done, reply in the report format from docs/handoff-template.md, part 2.
 ```
 
