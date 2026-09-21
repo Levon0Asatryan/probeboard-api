@@ -2,9 +2,6 @@ import { hostname } from 'node:os';
 import { z } from 'zod';
 import { parseByteSize } from './byte-size.js';
 
-/** PostgreSQL `integer` column range -- `timeout_ms` has no other bound. */
-const POSTGRES_INT4_MAX = 2_147_483_647;
-
 /**
  * An absolute `http://` or `https://` URL, or unset.
  *
@@ -262,7 +259,17 @@ const probing = {
     .int()
     .min(1024)
     .default(64 * 1024),
-  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).max(POSTGRES_INT4_MAX).default(30_000),
+  // Capped at five minutes, not at the int4 ceiling. The column can hold
+  // int4, but a *probe* timeout beyond minutes is pathological, and the
+  // scheduler's shutdown grace must cover one worst-case probe
+  // (SCHEDULER_SHUTDOWN_GRACE_MS >= SCHEDULER_LOAD_BUDGET_MS +
+  // PROBE_MAX_TIMEOUT_MS). Left at int4, that rule was unsatisfiable at every
+  // legal value of every other key for any timeout above 299,900ms -- the same
+  // configuration trap the interval floor below exists to avoid, reached
+  // through a different pair of keys. This bound is the system maximum FR-8
+  // speaks of; it is applied to a stored endpoints.timeout_ms at probe time
+  // (Math.min, M3 D35), so it validates no existing row.
+  PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
   // The worker's probe pool size (NFR-1). Capped: it bounds how many sockets
   // one process opens at once, and an unbounded value is an unbounded socket
   // count rather than more throughput.
@@ -289,7 +296,10 @@ const probing = {
   // FR-8: "bounded by a system maximum" -- PROBE_MAX_TIMEOUT_MS above is that
   // ceiling; this is only the value applied when an endpoint does not name
   // its own.
-  PROBE_DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).max(POSTGRES_INT4_MAX).default(10_000),
+  // Same ceiling as PROBE_MAX_TIMEOUT_MS, which it must not exceed: left at
+  // int4 while that one is capped at 300_000, every value above the cap would
+  // be unsatisfiable at any legal value of the key the error names.
+  PROBE_DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).max(300_000).default(10_000),
   // FR-21: redirect-following is per-monitor, but the count itself stays
   // system-bounded.
   PROBE_MAX_REDIRECTS_CAP: z.coerce.number().int().min(0).max(50).default(10),
@@ -406,7 +416,10 @@ const scheduler = {
   SCHEDULER_LEASE_SLACK_MS: z.coerce.number().int().min(1000).max(300_000).default(15_000),
   // How long a graceful stop waits for in-flight probes before giving up on
   // them. Bounded on both sides by the rules below.
-  SCHEDULER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(300_000).default(35_000),
+  // Ceiling above PROBE_MAX_TIMEOUT_MS' own, so the floor rule below always
+  // has a solution: 600_000 >= 100 + 300_000 at the most permissive legal
+  // values of both.
+  SCHEDULER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(600_000).default(35_000),
   // Spread applied to a newly adopted endpoint's first slot, so monitors
   // created together do not share a phase for ever and arrive in one tick.
   // Written to the database once, so it survives restarts -- unlike Gatus's
