@@ -304,3 +304,45 @@ standing rule that secret header values never appear in a response, a log, an
 error or a probe result.
 
 **Tags:** `concern:security` `concern:observability` `severity:must`
+
+### 21. A guard that can silently match zero rows is proved by a test asserting it matched
+
+An equality fence — a lease fence, an optimistic-concurrency check, a natural
+key — fails **open**: a statement that affects no rows is not an error, so
+nothing throws, nothing logs, and the guard is simply never enforced. Any such
+predicate ships with a test asserting the write touched the row it was
+supposed to touch, not merely that the call returned.
+
+Be most suspicious when the compared value crosses a driver boundary. A value
+read from PostgreSQL and bound back is not necessarily the value PostgreSQL
+stored: `timestamptz` keeps microseconds, node-postgres parses it into a JS
+`Date`, which holds milliseconds, and the comparison then never matches.
+
+```ts
+// ✅ carry PostgreSQL's own text, cast it back, and assert on rows affected
+scheduled_at: string; // 2026-09-21 08:45:12.178512+00
+sql`... AND scheduled_at = ${slot}::timestamptz`;
+expect(await repo.release(id, worker, slot)).toBe(1);
+
+// ❌ round-tripped through Date: 178512µs becomes 178ms, and this matches nothing,
+//    quietly, for ever
+sql`... AND scheduled_at = ${slot}`;
+```
+
+**Why:** M4's release fence. The claim returned `scheduled_at` as a `Date` and
+the release bound it back to identify the slot it was ending, so every release
+and every abandon matched **zero rows**. No lease would ever have been
+cleared: each monitor would be probed once and then sit blocked until its
+lease lapsed — the failure `docs/m4-plan.md` §3.7 names as the reason release
+is mandatory rather than an optimisation. Measured on PostgreSQL 17:
+`2026-09-21 08:45:12.178512+00` arrives as `...178Z`; binding the `Date` back
+compares false, binding the text compares true.
+
+The timestamp is the instance; the class is the point. Rule #13 says a test
+must fail for the reason it names. This is its mirror — a guard that never
+fires, and whose silence is indistinguishable from success.
+
+**Tags:** `concern:data-integrity` `concern:concurrency` `layer:persistence` `severity:must`
+**Check:** [ts] `scheduled_at\s*=\s*\$\{[a-zA-Z]+\}(?!::)` :: a value bound back into a fence without a cast may not match what the database stored
+**Relates:** mirrors #13; proves #5
+**Sources:** M4 PR 2
