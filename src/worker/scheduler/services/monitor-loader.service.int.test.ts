@@ -223,3 +223,22 @@ describe('MonitorLoaderService.load: REPEATABLE READ (D22)', () => {
     },
   );
 });
+
+describe('MonitorLoaderService.load: statement_timeout (Codex #61 round 1)', () => {
+  it('cancels a blocked read rather than holding the connection until the lock clears', async () => {
+    const blocker = new Client({ connectionString: testDatabaseUrl() });
+    await blocker.connect();
+    await blocker.query('BEGIN');
+    // ACCESS EXCLUSIVE blocks even a plain, non-locking SELECT -- the shape
+    // the loader's own reads take (REPEATABLE READ, no FOR UPDATE).
+    await blocker.query('LOCK TABLE endpoints IN ACCESS EXCLUSIVE MODE');
+    try {
+      const started = Date.now();
+      await expect(loader.load(endpointId, 200)).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await blocker.end();
+    }
+  });
+});

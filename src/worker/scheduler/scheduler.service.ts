@@ -199,11 +199,20 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * Loads under `SCHEDULER_LOAD_BUDGET_MS` (D20). `undefined` on any
    * failure -- overrun or rejection are the same case for the caller, which
    * abandons the slot either way; only the log line distinguishes them.
+   *
+   * The budget is passed to the loader itself, which bounds the underlying
+   * transaction with `statement_timeout` on the connection -- not only
+   * raced here. Racing alone stops *awaiting* an overrun, but leaves the
+   * transaction running and its connection checked out for however long it
+   * actually takes, which is how enough overruns exhaust the pool. This
+   * race is kept anyway, as a backstop for whatever is not itself a
+   * database statement (e.g. pool acquisition, already separately bounded
+   * by `connectionTimeoutMillis`).
    */
   private async tryLoad(row: ClaimedSlot) {
     const budgetMs = this.cfg.SCHEDULER_LOAD_BUDGET_MS;
     try {
-      return await this.withDeadline(this.loader.load(row.endpoint_id), budgetMs);
+      return await this.withDeadline(this.loader.load(row.endpoint_id, budgetMs), budgetMs);
     } catch (err) {
       this.logger.error(
         { err, endpointId: row.endpoint_id, scheduledAt: row.scheduled_at },
