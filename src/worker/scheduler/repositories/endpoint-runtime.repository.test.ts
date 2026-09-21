@@ -25,12 +25,45 @@ const SCHEDULING_COLUMNS = ['next_run_at', 'leased_until', 'scheduled_at', 'last
  *
  * Deliberately only the SET clause: a bound timestamp in `WHERE` is the fence
  * (`scheduled_at = $slot`), which is required, not forbidden.
+ *
+ * Depth-aware, and that is not fussiness. A regex ending the clause at the
+ * first `/\bFROM\b/i` stops inside `extract(epoch from (now() - …))`, which
+ * the claim's own catch-up arithmetic contains -- so it returned two
+ * assignments instead of five and never looked at `leased_until` or
+ * `leased_by`, the two a worker clock would most plausibly be written into.
+ * The clause ends at a `FROM` or `WHERE` that is at paren depth zero.
  */
 function setAssignments(sqlText: string): { column: string; value: string }[] {
-  const set = /\bSET\b([\s\S]*?)(\bFROM\b|\bWHERE\b|$)/i.exec(sqlText);
-  if (!set) return [];
-  return set[1]
-    .split(/,(?![^(]*\))/)
+  const setAt = /\bSET\b/i.exec(sqlText);
+  if (!setAt) return [];
+
+  let depth = 0;
+  let end = sqlText.length;
+  for (let i = setAt.index + setAt[0].length; i < sqlText.length; i += 1) {
+    const ch = sqlText[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (depth === 0 && /\bFROM\b|\bWHERE\b/i.test(sqlText.slice(i, i + 6))) {
+      end = i;
+      break;
+    }
+  }
+
+  const clause = sqlText.slice(setAt.index + setAt[0].length, end);
+  const parts: string[] = [];
+  let current = '';
+  depth = 0;
+  for (const ch of clause) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else current += ch;
+  }
+  parts.push(current);
+
+  return parts
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part) => {
@@ -46,13 +79,43 @@ describe('no worker clock reaches a scheduling column (D3)', () => {
     ['abandon', () => repo.abandonQuery('e1', 'worker-a', SLOT)],
     ['reconcile', () => repo.reconcileQuery()],
     ['adopt', () => repo.adoptQuery(60)],
-  ])('%s assigns scheduling columns only from SQL expressions', (_name, build) => {
+  ])('%s anchors every scheduling column in the database', (_name, build) => {
     const compiled = build().compile(db);
     for (const { column, value } of setAssignments(compiled.sql)) {
       if (!SCHEDULING_COLUMNS.includes(column)) continue;
-      // A bound parameter here would be a value from this process's clock.
-      expect(value, `${column} is assigned a bound parameter`).not.toMatch(/\$\d/);
+      // Clearing a lease is not an instant at all.
+      if (/^null$/i.test(value)) continue;
+
+      // The instant must come from the database: either now(), or another
+      // column of the row being updated. "No bound parameter at all" is the
+      // wrong rule and would fail a correct statement -- `leased_until =
+      // now() + make_interval(secs => $n)` binds a *duration* from validated
+      // config, which is fine; what must never be bound is an *instant*.
+      expect(value, `${column} is not anchored on now() or a row column`).toMatch(/now\(\)|\br\./);
+
+      // And no parameter in the assignment may be cast to a timestamp, which
+      // is how an instant from this process would get in past the check above.
+      expect(value, `${column} binds a timestamp parameter`).not.toMatch(
+        /\$\d+\s*::\s*(timestamptz|timestamp|date)/i,
+      );
     }
+  });
+
+  // Without this the check above degrades silently: a parser that stops early
+  // inspects nothing and reports no violation, which is indistinguishable from
+  // a clean statement.
+  it.each([
+    [
+      'claim',
+      () => repo.claimQuery('worker-a', 60_000, 100),
+      ['scheduled_at', 'next_run_at', 'leased_until'],
+    ],
+    ['release', () => repo.releaseQuery('e1', 'worker-a', SLOT), ['leased_until', 'last_probe_at']],
+    ['abandon', () => repo.abandonQuery('e1', 'worker-a', SLOT), ['leased_until']],
+    ['reconcile', () => repo.reconcileQuery(), ['next_run_at']],
+  ])('%s: every scheduling column it writes is actually examined', (_name, build, expected) => {
+    const columns = setAssignments(build().compile(db).sql).map((a) => a.column);
+    for (const column of expected) expect(columns).toContain(column);
   });
 
   it('binds no Date parameter on any statement that writes a schedule', () => {
