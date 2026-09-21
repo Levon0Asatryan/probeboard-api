@@ -121,6 +121,27 @@ async function holdUncommittedClaim(batch: number): Promise<{
   };
 }
 
+/**
+ * Blocks until some other backend is waiting on a lock.
+ *
+ * `pg_stat_activity`, not `pg_locks` joined to `pg_class`: a statement blocked
+ * on a row or index tuple waits on the holding transaction's `transactionid`,
+ * whose `pg_locks.relation` is NULL, so a relation-name join never fires and
+ * the barrier times out instead of releasing. That mistake turned an M3 suite
+ * into a 606-second one.
+ */
+async function waitForBlockedBackend(): Promise<void> {
+  for (let i = 0; i < 500; i += 1) {
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT count(*) n FROM pg_stat_activity
+       WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+    );
+    if (Number(rows[0].n) > 0) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error('no backend ever blocked: the barrier did not engage');
+}
+
 describe('claim: disjointness and non-blocking', () => {
   it('returns a disjoint batch while the other claim is still uncommitted', async () => {
     // The row-lock half of NFR-3. A committed-first ordering would only
@@ -189,6 +210,25 @@ describe('claim: what it selects', () => {
     const id = await makeEndpoint({ dueInS: -5 });
     await pool.query(
       `UPDATE endpoint_runtime SET leased_until = now() + interval '30 s', leased_by = $2
+       WHERE endpoint_id = $1`,
+      [id, WORKER_B],
+    );
+    expect(await repo.claim(WORKER_A, LEASE_MS, 10)).toEqual([]);
+  });
+
+  it('does not take a row whose lease lapsed but whose next slot is still ahead', async () => {
+    // NFR-4's bound is max(next_run_at, lease expiry) -- both predicates, not
+    // either. At a 300s interval and a 60s lease the *interval* governs, and
+    // nothing in the suite covered that regime: mutating the due predicate to
+    // `next_run_at <= now() OR leased_until < now()` -- a 300s monitor probed
+    // early every time a lease lapses, exactly the bug §3.11 names -- left all
+    // 29 tests green.
+    //
+    // "not due yet" does not cover it either: that row has leased_until NULL,
+    // so an OR-shaped bug short-circuits on NULL and the row is skipped anyway.
+    const id = await makeEndpoint({ intervalS: 300, dueInS: 250 });
+    await pool.query(
+      `UPDATE endpoint_runtime SET leased_until = now() - interval '1 s', leased_by = $2
        WHERE endpoint_id = $1`,
       [id, WORKER_B],
     );
@@ -293,7 +333,8 @@ describe('the catch-up guard', () => {
     const id = await makeEndpoint({ intervalS: 30, dueInS: -10 });
     const origin = (await runtimeRow(id)).next_run_at.getTime();
 
-    for (let i = 0; i < 5; i += 1) {
+    // Ten, as §7's NFR-2 row specifies.
+    for (let i = 0; i < 10; i += 1) {
       const [claimed] = await repo.claim(WORKER_A, LEASE_MS, 10);
       // Math.abs: a negative multiple yields -0, which Object.is
       // distinguishes from +0.
@@ -382,23 +423,39 @@ describe('adopt', () => {
     expect(rows[0].n).toBe('2');
   });
 
-  it('two workers adopting concurrently still produce one row each', async () => {
-    for (let i = 0; i < 20; i += 1) await makeEndpoint({});
-    const other = new Client({ connectionString: testDatabaseUrl() });
-    await other.connect();
+  it('survives losing the insert race, rather than raising a unique violation', async () => {
+    // ON CONFLICT DO NOTHING only matters when two adopts both pass the
+    // NOT EXISTS check and both reach the insert. Promise.all does not force
+    // that -- the anti-join alone carries the test whenever the statements do
+    // not genuinely interleave, and deleting ON CONFLICT left it green 5 runs
+    // out of 5.
+    //
+    // The barrier: another transaction inserts the row and holds it
+    // uncommitted. Our adopt still sees no row, tries to insert, and blocks on
+    // the primary key. Releasing the holder is what puts the conflict in front
+    // of ON CONFLICT.
+    const id = await makeEndpoint({});
+    const holder = new Client({ connectionString: testDatabaseUrl() });
+    await holder.connect();
     try {
-      const compiled = repo.adoptQuery(60).compile(db);
-      // Both statements race for real; ON CONFLICT DO NOTHING is what makes
-      // the loser a no-op rather than a unique violation.
-      await Promise.all([
-        repo.adopt(60),
-        other.query(compiled.sql, compiled.parameters as unknown[]),
-      ]);
+      await holder.query('BEGIN');
+      await holder.query(
+        `INSERT INTO endpoint_runtime (endpoint_id, next_run_at, scheduled_interval_s)
+         VALUES ($1, now(), 60)`,
+        [id],
+      );
+
+      const adopting = repo.adopt(60);
+      await waitForBlockedBackend();
+      await holder.query('COMMIT');
+
+      // Without ON CONFLICT DO NOTHING this rejects with 23505.
+      await expect(adopting).resolves.toBe(0);
     } finally {
-      await other.end();
+      await holder.end();
     }
     const { rows } = await pool.query<{ n: string }>(`SELECT count(*) n FROM endpoint_runtime`);
-    expect(rows[0].n).toBe('20');
+    expect(rows[0].n).toBe('1');
   });
 
   it('spreads first slots when jitter is on, and does not when it is off', async () => {
@@ -417,13 +474,30 @@ describe('adopt', () => {
     expect(Number(none[0].n)).toBe(1);
   });
 
-  it('bounds a long interval’s first slot by the jitter, not by the interval', async () => {
+  it('bounds a long interval\u2019s first slot by the jitter', async () => {
     await makeEndpoint({ intervalS: 3600 });
     await repo.adopt(60);
     const { rows } = await pool.query<{ ahead: number }>(
       `SELECT extract(epoch from (next_run_at - now())) ahead FROM endpoint_runtime`,
     );
     expect(Number(rows[0].ahead)).toBeLessThanOrEqual(60);
+  });
+
+  it('bounds a short interval\u2019s first slot by the interval, not the jitter', async () => {
+    // This is the branch least() actually guards, and the case above cannot
+    // reach: with interval 3600 and jitter 60, least() *is* 60, so the bare
+    // jitter term satisfies it and dropping least() changes nothing.
+    //
+    // Here the interval is the smaller of the two by a factor of 360. Without
+    // least(), each slot would spread over an hour; every one of 40 rows
+    // landing inside 10s by chance is (10/3600)^40, which is not a number that
+    // happens.
+    for (let i = 0; i < 40; i += 1) await makeEndpoint({ intervalS: 10 });
+    await repo.adopt(3600);
+    const { rows } = await pool.query<{ worst: number }>(
+      `SELECT max(extract(epoch from (next_run_at - now()))) worst FROM endpoint_runtime`,
+    );
+    expect(Number(rows[0].worst)).toBeLessThanOrEqual(10);
   });
 });
 
