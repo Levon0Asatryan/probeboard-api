@@ -263,15 +263,25 @@ const probing = {
     .min(1024)
     .default(64 * 1024),
   PROBE_MAX_TIMEOUT_MS: z.coerce.number().int().min(1000).max(POSTGRES_INT4_MAX).default(30_000),
-  PROBE_CONCURRENCY: z.coerce.number().int().min(1).default(50),
+  // The worker's probe pool size (NFR-1). Capped: it bounds how many sockets
+  // one process opens at once, and an unbounded value is an unbounded socket
+  // count rather than more throughput.
+  PROBE_CONCURRENCY: z.coerce.number().int().min(1).max(10_000).default(50),
   // FR-7: interval is chosen from a bounded set, not an arbitrary integer --
   // an unbounded per-endpoint interval is itself an abuse vector (NFR-6/7).
   // Membership is checked in the registration service, not a DTO field
   // bound, the same reason PASSWORD_MIN_LENGTH is enforced in AuthService
   // rather than in a static zod schema (dto/fields.ts): a parameter
   // decorator's schema is built before config injection runs.
+  // The floor is 10, not 1: the NFR-2 drift rule below caps
+  // SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS at 10% of the shortest
+  // permitted interval, and those two cannot together go below 200ms. A 1s
+  // interval would make that rule unsatisfiable at *every* legal value of
+  // both keys -- a configuration trap rather than a check. A one-second probe
+  // interval was never supported anyway: FR-7 makes the interval a bounded
+  // set and NFR-6 is stated at 60s.
   PROBE_ALLOWED_INTERVALS_S: numberList('30,60,300,900,3600', {
-    min: 1,
+    min: 10,
     max: 86_400,
     label: 'probe interval in seconds',
   }),
@@ -372,9 +382,36 @@ const scheduler = {
     .string()
     .min(1)
     .default(() => `${hostname()}-${process.pid}`),
-  SCHEDULER_TICK_MS: z.coerce.number().int().min(100).default(1000),
-  SCHEDULER_BATCH_SIZE: z.coerce.number().int().min(1).default(100),
+  // How often the tick looks for due work. Bounded above, not only below: a
+  // delay over 2^31-1 ms does not become a long timer, it silently becomes
+  // 1ms -- measured on the pinned runtime, node:22-alpine reports
+  // TimeoutOverflowWarning and fires immediately -- which turns the tick into
+  // a hot loop hammering the database. This is why Uptime Kuma depends on
+  // `unlimited-timeout`; a bound is cheaper than a dependency.
+  SCHEDULER_TICK_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  // Rows claimed per tick. Capped because a batch larger than any plausible
+  // pool leases rows nothing will start within the lease.
+  SCHEDULER_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(100),
   SCHEDULER_LEASE_MS: z.coerce.number().int().min(1000).default(60_000),
+  // Everything between the claim committing and probe() arming its deadline:
+  // the endpoint, service and header reads plus decryption. Not zero, and not
+  // an estimate -- the load runs under this budget and an overrun releases
+  // the row without probing, so the lease arithmetic below is a proof rather
+  // than a hope. The floor is 100 so the NFR-2 rule stays satisfiable at the
+  // shortest permitted interval.
+  SCHEDULER_LOAD_BUDGET_MS: z.coerce.number().int().min(100).max(60_000).default(1_500),
+  // Teardown, the release round trip, and the tick granularity around both.
+  // The one judged term in the lease arithmetic, which is why it is
+  // configuration rather than a literal.
+  SCHEDULER_LEASE_SLACK_MS: z.coerce.number().int().min(1000).max(300_000).default(15_000),
+  // How long a graceful stop waits for in-flight probes before giving up on
+  // them. Bounded on both sides by the rules below.
+  SCHEDULER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(300_000).default(35_000),
+  // Spread applied to a newly adopted endpoint's first slot, so monitors
+  // created together do not share a phase for ever and arrive in one tick.
+  // Written to the database once, so it survives restarts -- unlike Gatus's
+  // boot-order stagger. 0 disables it, which the herd test uses.
+  SCHEDULER_ADOPT_JITTER_MAX_S: z.coerce.number().int().min(0).max(3600).default(60),
 };
 
 const baseSchema = z.object({
@@ -452,6 +489,61 @@ export const configSchema = baseSchema
   .refine((c) => c.PROBE_DEFAULT_MAX_REDIRECTS <= c.PROBE_MAX_REDIRECTS_CAP, {
     path: ['PROBE_DEFAULT_MAX_REDIRECTS'],
     message: 'must not exceed PROBE_MAX_REDIRECTS_CAP',
-  });
+  })
+  // ADR-0002's second named edge case, made unreachable by configuration
+  // rather than watched for. The lease must outlast everything between the
+  // claim committing and the release committing: loading the monitor, the
+  // probe itself, then teardown and the release round trip.
+  .refine(
+    (c) =>
+      c.SCHEDULER_LEASE_MS >=
+      c.SCHEDULER_LOAD_BUDGET_MS + c.PROBE_MAX_TIMEOUT_MS + c.SCHEDULER_LEASE_SLACK_MS,
+    {
+      path: ['SCHEDULER_LEASE_MS'],
+      message:
+        'must be at least SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS + ' +
+        'SCHEDULER_LEASE_SLACK_MS, or a slow probe outlives its own lease and a ' +
+        'second worker probes the same endpoint concurrently',
+    },
+  )
+  // Bounded on both sides. Below the floor a graceful stop cannot let even one
+  // worst-case probe finish, so every ordinary restart abandons in-flight work
+  // and produces the same UNKNOWN gap as a crash. At or above the lease, a stop
+  // can outlive the lease it is trying to release, and a peer starts a second
+  // probe while ours is still draining.
+  .refine(
+    (c) => c.SCHEDULER_SHUTDOWN_GRACE_MS >= c.SCHEDULER_LOAD_BUDGET_MS + c.PROBE_MAX_TIMEOUT_MS,
+    {
+      path: ['SCHEDULER_SHUTDOWN_GRACE_MS'],
+      message:
+        'must be at least SCHEDULER_LOAD_BUDGET_MS + PROBE_MAX_TIMEOUT_MS, or a ' +
+        'graceful stop cannot let one worst-case probe finish and every restart ' +
+        'leaves the same UNKNOWN gap as a crash',
+    },
+  )
+  .refine((c) => c.SCHEDULER_SHUTDOWN_GRACE_MS < c.SCHEDULER_LEASE_MS, {
+    path: ['SCHEDULER_SHUTDOWN_GRACE_MS'],
+    message:
+      'must be less than SCHEDULER_LEASE_MS, or a graceful stop can outlive the ' +
+      'lease it is trying to release and a peer starts a second probe while ours ' +
+      'is still draining',
+  })
+  // NFR-2: a monitor due at interval T is probed with drift under 10% of T.
+  // Two terms, not one: a row becomes due up to one tick before the next claim
+  // looks, and the claim is then up to one load budget from probe() arming its
+  // deadline. Counting only the tick left the loader budget silently spending
+  // the drift budget as well.
+  .refine(
+    (c) =>
+      c.SCHEDULER_TICK_MS + c.SCHEDULER_LOAD_BUDGET_MS <=
+      (Math.min(...c.PROBE_ALLOWED_INTERVALS_S) * 1000) / 10,
+    {
+      path: ['SCHEDULER_TICK_MS'],
+      message:
+        'SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS must not exceed 10% of the ' +
+        'shortest interval in PROBE_ALLOWED_INTERVALS_S, or a monitor at that ' +
+        'interval can start outside NFR-2 drift budget',
+    },
+  );
 
 export type AppConfig = z.infer<typeof baseSchema>;

@@ -631,3 +631,143 @@ describe('session bounds', () => {
     expect(cfg.SESSION_TOUCH_INTERVAL_MS).toBe(300_000);
   });
 });
+
+describe('scheduler bounds reject invalid values at boot', () => {
+  it.each([
+    ['SCHEDULER_TICK_MS', '99'],
+    ['SCHEDULER_BATCH_SIZE', '0'],
+    ['SCHEDULER_BATCH_SIZE', '10001'],
+    ['SCHEDULER_LEASE_MS', '999'],
+    ['SCHEDULER_LOAD_BUDGET_MS', '99'],
+    ['SCHEDULER_LOAD_BUDGET_MS', '60001'],
+    ['SCHEDULER_LEASE_SLACK_MS', '999'],
+    ['SCHEDULER_SHUTDOWN_GRACE_MS', '-1'],
+    ['SCHEDULER_ADOPT_JITTER_MAX_S', '3601'],
+    ['PROBE_CONCURRENCY', '0'],
+    ['PROBE_CONCURRENCY', '10001'],
+  ])('rejects %s=%s', (key, value) => {
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(key));
+  });
+
+  it('rejects a tick above its ceiling even where the drift budget allows it', () => {
+    // The ceiling has to be proved on its own. A 2^31 tick is rejected by the
+    // NFR-2 drift rule too -- Node would coerce such a delay to 1ms and warn,
+    // turning the loop into a hot loop against the database (measured on
+    // node:22-alpine, the pinned major) -- so asserting on that value proves
+    // nothing about this bound. Removing `.max()` was confirmed to leave such
+    // a test passing.
+    //
+    // A day-long allowed interval gives the drift rule an 8,640,000ms budget,
+    // so 100s passes it and only the ceiling can reject it.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        PROBE_ALLOWED_INTERVALS_S: '86400',
+        PROBE_DEFAULT_INTERVAL_S: '86400',
+        SCHEDULER_LOAD_BUDGET_MS: '100',
+        SCHEDULER_TICK_MS: '100000',
+      }),
+    ).toThrow(/SCHEDULER_TICK_MS/);
+  });
+
+  it('rejects a fractional tick rather than truncating it', () => {
+    expect(() => loadConfig({ ...valid, SCHEDULER_TICK_MS: '1000.5' })).toThrow(
+      /SCHEDULER_TICK_MS/,
+    );
+  });
+
+  it('rejects a probe interval below the floor the drift rule needs', () => {
+    // 1s was accepted before M4. It makes the NFR-2 rule below unsatisfiable
+    // at every legal value of both keys it names, which is a trap rather than
+    // a check.
+    expect(() => loadConfig({ ...valid, PROBE_ALLOWED_INTERVALS_S: '1,30' })).toThrow(
+      /PROBE_ALLOWED_INTERVALS_S/,
+    );
+  });
+});
+
+describe('scheduler cross-field rules', () => {
+  it('accepts the shipped defaults', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.SCHEDULER_LEASE_MS).toBeGreaterThanOrEqual(
+      cfg.SCHEDULER_LOAD_BUDGET_MS + cfg.PROBE_MAX_TIMEOUT_MS + cfg.SCHEDULER_LEASE_SLACK_MS,
+    );
+    expect(cfg.SCHEDULER_SHUTDOWN_GRACE_MS).toBeGreaterThanOrEqual(
+      cfg.SCHEDULER_LOAD_BUDGET_MS + cfg.PROBE_MAX_TIMEOUT_MS,
+    );
+    expect(cfg.SCHEDULER_SHUTDOWN_GRACE_MS).toBeLessThan(cfg.SCHEDULER_LEASE_MS);
+    expect(cfg.SCHEDULER_TICK_MS + cfg.SCHEDULER_LOAD_BUDGET_MS).toBeLessThanOrEqual(
+      (Math.min(...cfg.PROBE_ALLOWED_INTERVALS_S) * 1000) / 10,
+    );
+  });
+
+  it('refuses a lease that a slow probe could outlive', () => {
+    // Exactly one millisecond short of load + timeout + slack.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        SCHEDULER_LOAD_BUDGET_MS: '1500',
+        PROBE_MAX_TIMEOUT_MS: '30000',
+        SCHEDULER_LEASE_SLACK_MS: '15000',
+        SCHEDULER_LEASE_MS: '46499',
+      }),
+    ).toThrow(/SCHEDULER_LEASE_MS/);
+  });
+
+  it('accepts a lease exactly at the sum', () => {
+    const cfg = loadConfig({
+      ...valid,
+      SCHEDULER_LOAD_BUDGET_MS: '1500',
+      PROBE_MAX_TIMEOUT_MS: '30000',
+      SCHEDULER_LEASE_SLACK_MS: '15000',
+      SCHEDULER_LEASE_MS: '46500',
+      SCHEDULER_SHUTDOWN_GRACE_MS: '31500',
+    });
+    expect(cfg.SCHEDULER_LEASE_MS).toBe(46500);
+  });
+
+  it('refuses a grace too short for one worst-case probe', () => {
+    // Legal on its own bounds, and it would make the keep-the-lease path the
+    // outcome of every ordinary restart.
+    expect(() => loadConfig({ ...valid, SCHEDULER_SHUTDOWN_GRACE_MS: '1000' })).toThrow(
+      /SCHEDULER_SHUTDOWN_GRACE_MS/,
+    );
+  });
+
+  it('refuses a grace that can outlive the lease it releases', () => {
+    expect(() =>
+      loadConfig({ ...valid, SCHEDULER_SHUTDOWN_GRACE_MS: '60000', SCHEDULER_LEASE_MS: '60000' }),
+    ).toThrow(/SCHEDULER_SHUTDOWN_GRACE_MS/);
+  });
+
+  it('refuses a tick and load budget that together break the NFR-2 drift budget', () => {
+    // 30s interval gives a 3000ms budget; 1000 + 2500 exceeds it.
+    expect(() =>
+      loadConfig({ ...valid, SCHEDULER_TICK_MS: '1000', SCHEDULER_LOAD_BUDGET_MS: '2500' }),
+    ).toThrow(/SCHEDULER_TICK_MS/);
+  });
+
+  it('counts the load budget, not the tick alone', () => {
+    // The tick alone is well inside 10% of 30s; only the sum breaks it. This
+    // is the case that passed before the loader term was added.
+    expect(() =>
+      loadConfig({ ...valid, SCHEDULER_TICK_MS: '500', SCHEDULER_LOAD_BUDGET_MS: '2600' }),
+    ).toThrow(/SCHEDULER_TICK_MS/);
+    expect(loadConfig({ ...valid, SCHEDULER_TICK_MS: '500' }).SCHEDULER_TICK_MS).toBe(500);
+  });
+
+  it('is satisfiable at every key floor, so no configuration is trapped', () => {
+    // The rule must have a solution at the tightest legal values of the keys
+    // its own message names. Before the interval floor rose to 10s and the
+    // load floor fell to 100ms, `PROBE_ALLOWED_INTERVALS_S=5,30` could not
+    // boot at any tick or budget the operator chose.
+    const cfg = loadConfig({
+      ...valid,
+      PROBE_ALLOWED_INTERVALS_S: '10,30',
+      PROBE_DEFAULT_INTERVAL_S: '30',
+      SCHEDULER_TICK_MS: '100',
+      SCHEDULER_LOAD_BUDGET_MS: '100',
+    });
+    expect(cfg.SCHEDULER_TICK_MS + cfg.SCHEDULER_LOAD_BUDGET_MS).toBeLessThanOrEqual(1000);
+  });
+});
