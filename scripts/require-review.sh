@@ -60,4 +60,22 @@ if [ "${open:-0}" != "0" ]; then
   exit 1
 fi
 
-echo "review gate: reviewed clean at ${head}." >&2
+method=$(sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$receipt" | head -1)
+
+case "${method:-unset}" in
+  probe-review | probe-review-workflow)
+    echo "review gate: reviewed clean at ${head} by ${method}." >&2
+    ;;
+  *)
+    # A receipt written by hand is still a receipt -- the review may genuinely
+    # have happened, for instance when /probe-review is not loadable in that
+    # session. But it is an attestation rather than a tool's output, so it says
+    # so in the push output where it cannot be missed, and belongs in the PR.
+    cat >&2 <<MSG
+review gate: reviewed clean at ${head}, method "${method:-unset}".
+
+This receipt was not written by /probe-review. Name the method in the PR's
+"Evidence" section and say which passes actually ran.
+MSG
+    ;;
+esac
