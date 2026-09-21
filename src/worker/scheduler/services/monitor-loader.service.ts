@@ -57,27 +57,36 @@ export class MonitorLoaderService {
   }
 
   /**
-   * `timeoutMs`, when given, bounds every read in this transaction with
-   * `SET LOCAL statement_timeout` on the connection itself -- not merely
-   * how long the caller waits for it. `SchedulerService`'s own load budget
-   * (D20) previously raced this promise against a JS timer and stopped
-   * *awaiting* it on expiry, but the transaction kept running underneath:
-   * a slow read holds a checked-out pool connection for however long it
-   * actually takes, regardless of whether anyone is still waiting on it, so
-   * enough overruns exhaust `DATABASE_POOL_MAX` and stall every other
-   * scheduling statement. A cancelled statement surfaces as a rejection,
-   * which the caller already treats as a load failure -- abandon the slot.
+   * `timeoutMs`, when given, bounds the **whole transaction** -- not each
+   * statement independently. `statement_timeout` is a per-statement setting
+   * (PostgreSQL's own docs are explicit about this); a single `SET LOCAL`
+   * before the first read would let every later read start a fresh full
+   * budget, so four reads could together run to nearly `4 × timeoutMs`
+   * before any of them is cancelled -- silently defeating D20's bound on
+   * enough overruns to still exhaust `DATABASE_POOL_MAX` (Codex round 2 on
+   * #61). Instead, `remaining()` is recomputed from one fixed deadline and
+   * re-applied before every read, so the budget only ever shrinks across
+   * the transaction and can never restart.
+   *
+   * Clamped to at least 1ms rather than allowed to reach exactly 0:
+   * PostgreSQL treats `statement_timeout = 0` as "disabled", the opposite of
+   * what an expired deadline means here.
    */
   async load(endpointId: string, timeoutMs?: number): Promise<EndpointProbeConfig> {
     const key = this.key;
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
 
     return this.db.kysely
       .transaction()
       .setIsolationLevel('repeatable read')
       .execute(async (trx) => {
-        if (timeoutMs !== undefined) {
-          await sql`SET LOCAL statement_timeout = ${sql.lit(Math.trunc(timeoutMs))}`.execute(trx);
-        }
+        const applyRemainingTimeout = async (): Promise<void> => {
+          if (deadline === undefined) return;
+          const remaining = Math.max(1, deadline - Date.now());
+          await sql`SET LOCAL statement_timeout = ${sql.lit(Math.trunc(remaining))}`.execute(trx);
+        };
+
+        await applyRemainingTimeout();
         const endpoint = await trx
           .selectFrom('endpoints')
           .selectAll()
@@ -85,6 +94,7 @@ export class MonitorLoaderService {
           .executeTakeFirst();
         if (!endpoint) throw new MonitorNotFoundError(endpointId);
 
+        await applyRemainingTimeout();
         const service = await trx
           .selectFrom('services')
           .selectAll()
@@ -94,11 +104,13 @@ export class MonitorLoaderService {
         // "nothing to load" case rather than assumed away (AGENTS.md).
         if (!service) throw new MonitorNotFoundError(endpointId);
 
+        await applyRemainingTimeout();
         const serviceHeaders = await trx
           .selectFrom('headers')
           .selectAll()
           .where('service_id', '=', service.id)
           .execute();
+        await applyRemainingTimeout();
         const endpointHeaders = await trx
           .selectFrom('headers')
           .selectAll()

@@ -241,4 +241,49 @@ describe('MonitorLoaderService.load: statement_timeout (Codex #61 round 1)', () 
       await blocker.end();
     }
   });
+
+  it('bounds the whole transaction, not each statement independently (Codex #61 round 2)', async () => {
+    // A statement_timeout re-applied verbatim before every read would let
+    // each one restart a fresh budget. To catch that: block the *first*
+    // read for a while, let it through, then block the *last* read
+    // permanently. A transaction-wide bound cancels near the original
+    // budget regardless; a per-statement bug would let the last read
+    // consume a second full budget on top of the first block's delay.
+    const firstBlocker = new Client({ connectionString: testDatabaseUrl() });
+    await firstBlocker.connect();
+    await firstBlocker.query('BEGIN');
+    await firstBlocker.query('LOCK TABLE endpoints IN ACCESS EXCLUSIVE MODE');
+
+    const lastBlocker = new Client({ connectionString: testDatabaseUrl() });
+    await lastBlocker.connect();
+    await lastBlocker.query('BEGIN');
+    await lastBlocker.query('LOCK TABLE headers IN ACCESS EXCLUSIVE MODE');
+
+    const budgetMs = 400;
+    const firstBlockMs = 200; // well inside the budget, so the transaction proceeds
+
+    const releaseFirst = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        firstBlocker
+          .query('ROLLBACK')
+          .then(() => firstBlocker.end())
+          .then(resolve, resolve);
+      }, firstBlockMs);
+    });
+
+    try {
+      const started = Date.now();
+      await expect(loader.load(endpointId, budgetMs)).rejects.toThrow();
+      const elapsed = Date.now() - started;
+      // Transaction-wide: cancelled near budgetMs total, not
+      // firstBlockMs + budgetMs (~600ms), which is what a fresh
+      // per-statement timeout on the headers read would produce.
+      expect(elapsed).toBeGreaterThanOrEqual(firstBlockMs);
+      expect(elapsed).toBeLessThan(firstBlockMs + budgetMs * 0.8);
+    } finally {
+      await releaseFirst;
+      await lastBlocker.query('ROLLBACK');
+      await lastBlocker.end();
+    }
+  }, 5000);
 });
