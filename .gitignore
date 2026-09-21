@@ -11,3 +11,7 @@ dist/
 coverage/
 .DS_Store
 coverage/
+
+# Written by /probe-review; a receipt for one commit, never shared.
+.review/.last-review.json
+.review/violations.jsonl
