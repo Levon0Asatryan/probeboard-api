@@ -55,9 +55,28 @@ CREATE INDEX endpoint_runtime_next_run_at_idx ON endpoint_runtime (next_run_at);
 -- own log line can die with the container it was killed in; and the probe
 -- receiver sees a path and an arrival time, which is a wall-clock window
 -- rather than slot identity.
+-- No foreign key on endpoint_id, deliberately, and it is a correctness
+-- requirement rather than a preference.
+--
+-- An INSERT against a referencing column takes FOR KEY SHARE on the parent
+-- row. The claim locks endpoint_runtime first (the `due` CTE) and would then
+-- ask for endpoints last -- the exact inverse of the order a cascading
+-- DELETE takes them, since that locks endpoints first and fires the cascade
+-- into endpoint_runtime at statement end. Measured: one claim of 300 rows
+-- racing one `DELETE FROM endpoints WHERE service_id = ...` deadlocked in
+-- **20 of 20** rounds with the FK present and **0 of 20** without it. It also
+-- contradicts docs/m4-plan.md §3.1 in its own words -- "endpoints is read but
+-- never locked ... a claim cannot block the API" -- which is true of the
+-- `FOR UPDATE OF r` clause and was untrue of the statement as a whole.
+--
+-- Nothing is lost. This is an append-only evidence log, not relational state:
+-- "endpoint X was claimed for slot T by worker W" stays true after the
+-- endpoint is deleted, and the exit test's duplicate query groups by
+-- (endpoint_id, scheduled_at) without ever joining endpoints. Retention is
+-- M5's, along with the partitioning it already owns.
 CREATE TABLE claim_log (
     id           bigserial   PRIMARY KEY,
-    endpoint_id  uuid        NOT NULL REFERENCES endpoints (id) ON DELETE CASCADE,
+    endpoint_id  uuid        NOT NULL,
     scheduled_at timestamptz NOT NULL,
     worker_id    text        NOT NULL,
     claimed_at   timestamptz NOT NULL DEFAULT now()

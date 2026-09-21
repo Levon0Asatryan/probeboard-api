@@ -203,6 +203,13 @@ export interface ClaimLogTable {
    * precision past 2^53.
    */
   id: Generated<string>;
+  /**
+   * Not a foreign key. An insert against a referencing column takes
+   * `FOR KEY SHARE` on the parent row, which would make the claim lock
+   * `endpoints` in the opposite order from a cascading delete -- measured at
+   * 20 deadlocks in 20 rounds. This is an append-only evidence log, so the
+   * row stays true after the endpoint is gone.
+   */
   endpoint_id: string;
   scheduled_at: Timestamp;
   worker_id: string;
