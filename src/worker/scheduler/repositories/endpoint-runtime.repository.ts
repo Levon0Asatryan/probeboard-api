@@ -247,14 +247,37 @@ export class EndpointRuntimeRepository {
     `;
   }
 
+  /**
+   * `statementTimeoutMs`, when given, bounds the `UPDATE` itself with
+   * `SET LOCAL statement_timeout` on the same connection, not just how long
+   * the caller waits for it. Without it, a write blocked on a row lock keeps
+   * running after a caller stops awaiting it -- shutdown's drain (§3.9) can
+   * report a slot "still running" and move on, and the write still commits
+   * whenever the lock clears, arbitrarily later. Bounding the statement
+   * itself is what makes "still running after the grace" actually mean
+   * "will not write," rather than only "we stopped watching." A cancelled
+   * statement surfaces as a rejection, which the caller's own D23 guard
+   * already treats as "lease left standing, reclaimed at expiry" -- the
+   * correct outcome either way.
+   */
   async release(
     endpointId: string,
     workerId: string,
     slot: string,
     executor: Kysely<Database> = this.db.kysely,
+    statementTimeoutMs?: number,
   ): Promise<number> {
-    const result = await this.releaseQuery(endpointId, workerId, slot).execute(executor);
-    return Number(result.numAffectedRows ?? 0n);
+    if (statementTimeoutMs === undefined) {
+      const result = await this.releaseQuery(endpointId, workerId, slot).execute(executor);
+      return Number(result.numAffectedRows ?? 0n);
+    }
+    return executor.transaction().execute(async (trx) => {
+      await sql`SET LOCAL statement_timeout = ${sql.lit(Math.trunc(statementTimeoutMs))}`.execute(
+        trx,
+      );
+      const result = await this.releaseQuery(endpointId, workerId, slot).execute(trx);
+      return Number(result.numAffectedRows ?? 0n);
+    });
   }
 
   /**
@@ -281,13 +304,24 @@ export class EndpointRuntimeRepository {
     `;
   }
 
+  /** Same `statementTimeoutMs` reasoning as `release` -- see its doc comment. */
   async abandon(
     endpointId: string,
     workerId: string,
     slot: string,
     executor: Kysely<Database> = this.db.kysely,
+    statementTimeoutMs?: number,
   ): Promise<number> {
-    const result = await this.abandonQuery(endpointId, workerId, slot).execute(executor);
-    return Number(result.numAffectedRows ?? 0n);
+    if (statementTimeoutMs === undefined) {
+      const result = await this.abandonQuery(endpointId, workerId, slot).execute(executor);
+      return Number(result.numAffectedRows ?? 0n);
+    }
+    return executor.transaction().execute(async (trx) => {
+      await sql`SET LOCAL statement_timeout = ${sql.lit(Math.trunc(statementTimeoutMs))}`.execute(
+        trx,
+      );
+      const result = await this.abandonQuery(endpointId, workerId, slot).execute(trx);
+      return Number(result.numAffectedRows ?? 0n);
+    });
   }
 }

@@ -158,6 +158,17 @@ then has a **separate** agent attack each finding before it is reported, and
 writes the same receipt. Use it before the first push of a PR that touches
 concurrency, a migration or a measurement; use this skill for a fix round.
 
+**A lens that mutates the tree runs alone, never alongside a lens that only
+reads it.** A concurrency lens proving a race by editing code (removing a
+guard, adding a scratch script, reproducing a deadlock) leaves the tree
+mid-mutation for however long that takes. A reading lens scheduled at the same
+time can observe that half-applied state and report a defect that is an
+artifact of the mutation, not of the change under review — #59 produced
+exactly this: a "BLOCKER" from the contract lens that did not survive rereading
+a clean tree. Sequence mutating lenses before or after the reading ones, never
+concurrently with them, and clean up every scratch file and stray process a
+mutating lens leaves before the next lens runs.
+
 ## After the review
 
 - Findings that hold up get fixed **before** the first push (`CLAUDE.md`, "The
