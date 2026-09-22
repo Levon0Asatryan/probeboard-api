@@ -21,6 +21,15 @@ defects; the loop around it is not.
   Fix-now means only: a security hole, data loss, a wrong result, or a broken
   build. Everything else gets a one-line reply saying it is deferred, and a
   follow-up row. Answer every thread either way.
+- **The cap limits what is fixed, not whether the head is reviewed.** The last
+  fix push still gets one confirmation round on the head SHA, asked for
+  explicitly and scoped to the commits since the previous round. Only the
+  fix-now categories are acted on; anything else is a follow-up row, so the
+  round cannot restart the loop. Without it a PR merges with its most recent —
+  and often its subtlest — commits seen by nobody but their author: #23's open
+  redirect shipped in exactly that position, and #61 sat there with the
+  shutdown deadline and the loader's statement budget unreviewed until the
+  round was asked for.
 - **Push back on a wrong finding, with evidence, instead of implementing it.**
   Check the premise first — a review that cites a limit, a default or a
   standard is asserting a fact, and facts are checkable. Two of Codex's
