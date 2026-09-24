@@ -84,7 +84,12 @@ export class RollupRepository {
 
       await sql`
         UPDATE rollup_state
-        SET    last_xid = ${last}::xid8, advanced_at = now()
+        SET    last_xid    = ${last}::xid8,
+               -- Only when the watermark moved: with a write transaction held open
+               -- the horizon cannot pass it, and refreshing this here would hide
+               -- that stall from the stale-watermark warning.
+               advanced_at = CASE WHEN last_xid IS DISTINCT FROM ${last}::xid8
+                                  THEN now() ELSE advanced_at END
         WHERE  name = 'probe_results'
       `.execute(trx);
       return { skipped: false, folded, lagMs: row.lag_ms };

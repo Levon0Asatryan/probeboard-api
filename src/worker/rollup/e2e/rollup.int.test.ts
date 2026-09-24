@@ -344,6 +344,33 @@ describe('batches are whole transactions', () => {
 });
 
 describe('the watermark', () => {
+  it('does not refresh advanced_at while an open write transaction pins the horizon', async () => {
+    const { endpointId } = await createEndpoint(pool, 'stall@example.com');
+    const at = async () =>
+      (
+        await pool.query<{ t: string }>(
+          `SELECT advanced_at::text AS t FROM rollup_state WHERE name = 'probe_results'`,
+        )
+      ).rows[0].t;
+    const open = new Client({ connectionString: testDatabaseUrl() });
+    await open.connect();
+    try {
+      await open.query('BEGIN');
+      await insertRawOn(open, { endpointId, startedAt: `${DAY}T10:00:00Z`, outcome: 'up' });
+      await repo.runOnce(5000); // moves up to the pinned horizon, once
+      const pinned = await at();
+      await repo.runOnce(5000);
+      await repo.runOnce(5000);
+      expect(await at()).toBe(pinned);
+      await open.query('COMMIT');
+    } finally {
+      await open.end();
+    }
+    const before = await at();
+    await repo.runOnce(5000); // the horizon is free: the watermark moves, and so does the timestamp
+    expect(await at()).not.toBe(before);
+  });
+
   it('advances on an idle pass, so the next pass does not re-scan the range', async () => {
     const before = await pool.query<{ last_xid: string }>(
       `SELECT last_xid::text FROM rollup_state WHERE name = 'probe_results'`,
