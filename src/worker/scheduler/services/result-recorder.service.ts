@@ -62,10 +62,17 @@ export class ResultRecorderService {
       if (attempt > 1 && budget().expired) break;
       try {
         return await this.db.kysely.transaction().execute(async (trx) => {
-          await sql`SET LOCAL statement_timeout = ${sql.lit(Math.max(1, Math.trunc(budget().timeoutMs)))}`.execute(
-            trx,
-          );
+          // `statement_timeout` applies to each statement on its own, so one
+          // SET LOCAL would give the release a fresh full timeout after the
+          // insert had spent part of the budget. Re-derive the remaining time
+          // before **each** statement (the same rule as the monitor loader).
+          const bound = () =>
+            sql`SET LOCAL statement_timeout = ${sql.lit(Math.max(1, Math.trunc(budget().timeoutMs)))}`.execute(
+              trx,
+            );
+          await bound();
           const inserted = await this.results.insert(row, trx);
+          await bound();
           const rel = await this.runtime
             .releaseQuery(fence.endpointId, fence.workerId, fence.slot)
             .execute(trx);

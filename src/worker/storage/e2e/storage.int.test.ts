@@ -322,6 +322,35 @@ describe('ResultRecorderService (real transaction)', () => {
     expect((await runtime(id)).leased_by).toBe('w1');
   });
 
+  it('bounds the release by the budget remaining AFTER the insert, not by the budget the insert saw', async () => {
+    const id = await leasedEndpoint();
+    const row = toResultRow(outcome(), {
+      endpointId: id,
+      slot: SLOT,
+      intervalS: 60,
+      workerId: 'w1',
+      attemptId: '00000000-0000-4000-8000-0000000000d2',
+    });
+    // The first statement is given 5 s; by the second, 150 ms remain. A single
+    // SET LOCAL would let the blocked release wait the full 5 s.
+    let calls = 0;
+    const shrinking = () => ({ timeoutMs: ++calls === 1 ? 5000 : 150, expired: false });
+    const blocker = new Client({ connectionString: testDatabaseUrl() });
+    await blocker.connect();
+    const started = Date.now();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(`SELECT 1 FROM endpoint_runtime WHERE endpoint_id = $1 FOR UPDATE`, [id]);
+      await expect(
+        recorder({ RESULT_WRITE_ATTEMPTS: '1' }).recordAndRelease(row, fence(id), shrinking),
+      ).rejects.toThrow(/statement timeout/);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await blocker.end();
+    }
+    expect(Date.now() - started).toBeLessThan(2500);
+  });
+
   it.each([
     ['DNS_NXDOMAIN', 'down'],
     ['DNS_FAILURE', 'down'],
