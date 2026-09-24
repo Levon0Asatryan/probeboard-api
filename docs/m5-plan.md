@@ -288,13 +288,18 @@ A worker tick every `ROLLUP_TICK_MS` (10 s, 07's table). One transaction:
 1. `SELECT last_xid FROM rollup_state WHERE name='probe_results' FOR UPDATE
 SKIP LOCKED`. No row → another worker holds it: return. Single-flight
    without an advisory lock, and a crashed holder releases at transaction end.
-2. `horizon := pg_snapshot_xmin(pg_current_snapshot())`. Every transaction with
-   an `xid8` below it has committed or aborted, so a row with `insert_xid <
-horizon` is final.
+2. `horizon := pg_snapshot_xmin(pg_current_snapshot())`, read **once** and
+   thereafter bound as a parameter, never re-evaluated: under `READ COMMITTED`
+   every statement takes a fresh snapshot, so a re-read mid-loop would see
+   later commits and could move past a transaction still open at step 2.
+   Every transaction with an `xid8` below it has committed or aborted, so a row
+   with `insert_xid < horizon` is final.
 3. Loop until `last_xid = horizon`: pick the batch's exclusive upper bound
    `upper` — the **(`ROLLUP_BATCH_ROWS` + 1)-th** distinct `insert_xid` at or
-   above `last_xid` (`OFFSET n LIMIT 1`), or `horizon` if fewer remain — then
-   fold every row with `last_xid ≤ insert_xid < upper` (§3.5) and set
+   above `last_xid` **and below `$horizon`** (`OFFSET n LIMIT 1`), or `$horizon` if
+   fewer remain — then
+   fold every row with `last_xid ≤ insert_xid < upper` (`upper ≤ $horizon` by
+   construction, §3.5) and set
    `last_xid := upper`. A batch therefore holds exactly `n` whole xids, so
    `ROLLUP_BATCH_ROWS = 1` still advances by one xid per pass; a transaction's
    rows are never split, and no xid arithmetic is needed (`xid8` has none,
@@ -424,14 +429,21 @@ against this one.
 - **Never averaged.** No function takes a percentile as input; `p95` exists
   only as an output of a merged histogram (`AGENTS.md`, Measurement).
 - `planWindow(from, to, now, retention)` — tiles `[from, to)` with `d1` for
-  whole UTC days and `h1` for whole hours at the edges. An edge hour older
+  whole UTC days, `h1` for whole hours, and `m1` for whole minutes, coarsest
+  first. **Both bounds must be minute-aligned at every age**: no stored bucket
+  is finer than a minute, so `[12:00:30, 12:01:30)` cannot be tiled and any
+  answer would include or omit part of a boundary minute. An edge hour older
   than `RETENTION_H1_DAYS` no longer has its h1 bucket, so a window with an
-  edge there must be **day-aligned**; one older than the m1 horizon must be at
-  least **hour-aligned**. Anything else is rejected with a typed error rather
+  edge there must be **day-aligned**; one older than the m1 horizon
+  (`RETENTION_M1_DAYS`) must be at least **hour-aligned**. Anything else is rejected with a typed error rather
   than silently rounded — never a plausible-looking partial result. (M8 decides
   how the UI aligns.)
-- `StatsRepository.windowStats(endpointId, from, to)` reads `probe_stats` only
-  (≤ 30 `d1` + ≤ 46 `h1` rows for 30 days) and returns counts, seconds,
+- `StatsRepository.windowStats(userId, endpointId, from, to)` reads
+  `probe_stats` only (≤ 30 `d1` + ≤ 46 `h1` rows for 30 days). **Ownership is
+  re-derived here**, not left to callers: `probe_stats` has no `user_id`, so the
+  query joins `endpoints` on `id = $endpoint AND user_id = $user` (the
+  denormalized column, `0004`), and a foreign or missing endpoint returns
+  not-found — never `403`, which would confirm the id exists (`AGENTS.md`) and returns counts, seconds,
   `avg`, `min`, `max`, and the merged histogram.
 
 ### 3.9 `claim_log` (M4 follow-up 2)
@@ -562,6 +574,7 @@ other or `api` (`architecture.test.ts`). The scheduler imports
 | Retention never blocks the write path (D14)                      | `DETACH CONCURRENTLY`                               | a held reader of the old partition, retention running, an insert into today's completes in < 1 s. Removal: plain `DROP` → the insert waits (measured 2.04 s)                                                                                              |
 | An interrupted detach recovers (§2.4.5)                          | `FINALIZE` first                                    | `lock_timeout` forced, then a clean run drops it. Removal: skip `FINALIZE` → partition stuck                                                                                                                                                              |
 | **A 30-day p95 needs no raw row** (NFR-8/9)                      | `windowStats` reads `probe_stats` only              | §8 acceptance row                                                                                                                                                                                                                                         |
+| Statistics reads are tenant-scoped                               | `windowStats` joins `endpoints` on `user_id`        | two users, one endpoint each: user B asking for A's endpoint gets not-found, identical to a random UUID. Removal: drop the `user_id` conjunct → B reads A's stats                                                                                         |
 | Percentiles are never averaged                                   | API shape                                           | no exported function takes a percentile; a lint-style test scans `core/stats` exports                                                                                                                                                                     |
 | No secret or body reaches a row                                  | `ProbeOutcome` has none; the columns list is closed | a test asserts the insert's column list against an allow-list                                                                                                                                                                                             |
 
@@ -575,7 +588,7 @@ Defenses that need no test because the type system carries them: `xid8`,
 Unit (no I/O): outcome mapping, all 16 classes; `bucketIndex` at every edge and
 ±1 (10, 11, 50, 51, 30000, 30001); `mergeHistograms`; `percentile` (empty,
 single value, one bucket, clamped `∞` bucket, p50/p95/p99, merge-then-percentile
-equals percentile-of-concatenation); `planWindow` (hour-aligned but not day-aligned beyond `RETENTION_H1_DAYS` → rejected; aligned, unaligned inside and
+equals percentile-of-concatenation); `planWindow` (a bound off the minute → rejected at every age; hour-aligned but not day-aligned beyond `RETENTION_H1_DAYS` → rejected; aligned, unaligned inside and
 beyond the m1 horizon, DST-free UTC edges); config `refine`s, each with a
 rejection case; `failure_class` and `probe_outcome` drift against the DB enum.
 
