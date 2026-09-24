@@ -28,6 +28,12 @@ export interface ClaimedSlot {
   scheduled_at: string;
   /** The slot after it, already written. Informational; nothing fences on it. */
   next_run_at: Date;
+  /**
+   * The interval the claim used to space `next_run_at`, post-update: the span
+   * this probe represents, and what M5 stores as `probe_results.interval_s`
+   * (docs/m5-plan.md D7).
+   */
+  scheduled_interval_s: number;
 }
 
 /**
@@ -199,13 +205,14 @@ export class EndpointRuntimeRepository {
         FROM   due
         JOIN   endpoints e ON e.id = due.endpoint_id
         WHERE  r.endpoint_id = due.endpoint_id
-        RETURNING r.endpoint_id, r.scheduled_at, r.next_run_at
+        RETURNING r.endpoint_id, r.scheduled_at, r.next_run_at, r.scheduled_interval_s
       ),
       logged AS (
         INSERT INTO claim_log (endpoint_id, scheduled_at, worker_id)
         SELECT endpoint_id, scheduled_at, ${workerId} FROM claimed
       )
-      SELECT endpoint_id, scheduled_at::text AS scheduled_at, next_run_at FROM claimed
+      SELECT endpoint_id, scheduled_at::text AS scheduled_at, next_run_at, scheduled_interval_s
+      FROM claimed
     `;
   }
 

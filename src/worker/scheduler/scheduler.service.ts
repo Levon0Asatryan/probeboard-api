@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
-import { probe, type ProbeDeps } from '../probing/index.js';
+import { probe, type ProbeDeps, type ProbeOutcome } from '../probing/index.js';
 import { createProbeDeps } from './probe-deps.factory.js';
 import {
   EndpointRuntimeRepository,
   type ClaimedSlot,
 } from './repositories/endpoint-runtime.repository.js';
+import { toResultRow } from '../storage/utils/outcome-mapping.js';
 import { MonitorLoaderService } from './services/monitor-loader.service.js';
 import { ProbePoolService } from './services/probe-pool.service.js';
+import { ResultRecorderService, type WriteBudget } from './services/result-recorder.service.js';
 
 /** `endpointId:scheduledAt` -- the pool's key, and what a claim, release or abandon all fence on. */
 export function slotKey(row: Pick<ClaimedSlot, 'endpoint_id' | 'scheduled_at'>): string {
@@ -59,6 +62,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private readonly repo: EndpointRuntimeRepository,
     private readonly pool: ProbePoolService,
     private readonly loader: MonitorLoaderService,
+    private readonly recorder: ResultRecorderService,
     @InjectPinoLogger(SchedulerService.name) private readonly logger: PinoLogger,
   ) {
     this.probeDeps = createProbeDeps(cfg);
@@ -179,6 +183,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       'attempt',
     );
 
+    // One per attempt, before the probe: a retry of the write reuses it, a
+    // different attempt never can (docs/m5-plan.md §3.2).
+    const attemptId = randomUUID();
     let outcome;
     try {
       outcome = await probe(loaded, this.probeDeps);
@@ -205,7 +212,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       'outcome',
     );
 
-    await this.guardedRelease(row);
+    await this.persistAndRelease(row, outcome, attemptId);
   }
 
   /**
@@ -264,45 +271,63 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Bounded by the time remaining to the shutdown deadline, not only during
-   * shutdown: a release blocked on a row lock for longer than that is a
-   * connection held indefinitely regardless of whether the process is
-   * stopping, and it is exactly the write §3.9 requires to stop mattering
-   * once a shutdown's grace has passed -- a statement still running when
-   * `ProbePoolService.drain` reports it "still running" must not be able to
-   * commit later, once the lock clears, or "still running" would have meant
-   * nothing. Recomputed at call time (`terminalWriteTimeoutMs`), not a flat
-   * constant, so a release starting near the end of the grace is not handed
-   * a fresh full grace period of its own (Codex round 2 on #61).
+   * `timeoutMs` as `terminalWriteTimeoutMs`, plus whether the shutdown grace
+   * has already passed -- the recorder starts no retry after that point.
    */
-  private async guardedRelease(row: ClaimedSlot): Promise<void> {
+  private terminalWriteBudget(): WriteBudget {
+    return {
+      timeoutMs: this.terminalWriteTimeoutMs(),
+      expired: this.shutdownDeadline !== undefined && Date.now() >= this.shutdownDeadline,
+    };
+  }
+
+  /**
+   * The terminal write for a probed slot: the result and the lease release in
+   * one transaction (docs/m5-plan.md §3.3), bounded by the time remaining to
+   * the shutdown deadline -- not only during shutdown: a write blocked on a
+   * row lock is a connection held indefinitely, and a statement still running
+   * when `ProbePoolService.drain` reports it "still running" must not be able
+   * to commit later. The timeout is recomputed per attempt
+   * (`terminalWriteTimeoutMs`), so a late attempt is not handed a fresh grace.
+   *
+   * A failure after `RESULT_WRITE_ATTEMPTS` (D23: it must not throw out of the
+   * recovery path) loses this observation. The lease is left standing and
+   * reclaimed at expiry, and the slot becomes a gap M6 reads as `UNKNOWN` --
+   * never as healthy. It is logged at `error`, because a lost result is not a
+   * routine condition: a missing partition lands here.
+   */
+  private async persistAndRelease(
+    row: ClaimedSlot,
+    outcome: ProbeOutcome,
+    attemptId: string,
+  ): Promise<void> {
     try {
-      const n = await this.repo.release(
-        row.endpoint_id,
-        this.cfg.WORKER_ID,
-        row.scheduled_at,
-        undefined,
-        this.terminalWriteTimeoutMs(),
+      const { released } = await this.recorder.recordAndRelease(
+        toResultRow(outcome, {
+          endpointId: row.endpoint_id,
+          slot: row.scheduled_at,
+          intervalS: row.scheduled_interval_s,
+          workerId: this.cfg.WORKER_ID,
+          attemptId,
+        }),
+        { endpointId: row.endpoint_id, workerId: this.cfg.WORKER_ID, slot: row.scheduled_at },
+        () => this.terminalWriteBudget(),
       );
-      if (n === 0) {
+      if (released === 0) {
         this.logger.warn(
           { endpointId: row.endpoint_id, scheduledAt: row.scheduled_at },
-          'release matched no row -- the lease was already lost',
+          'release matched no row -- the lease was already lost; the result was still stored',
         );
       }
     } catch (err) {
-      // D23: this write itself must not throw out of the recovery path.
-      // A failed release leaves the lease standing, bounded by
-      // SCHEDULER_LEASE_MS and reclaimed per §3.11 -- strictly better than
-      // losing the process.
       this.logger.error(
-        { err, endpointId: row.endpoint_id, scheduledAt: row.scheduled_at },
-        'release failed -- lease left standing, reclaimed at expiry',
+        { err, endpointId: row.endpoint_id, scheduledAt: row.scheduled_at, attemptId },
+        'result not persisted -- lease left standing, reclaimed at expiry; the slot is an UNKNOWN gap',
       );
     }
   }
 
-  /** Same `terminalWriteTimeoutMs` bound as `guardedRelease` -- see its doc comment. */
+  /** Same `terminalWriteTimeoutMs` bound as `persistAndRelease` -- see its doc comment. */
   private async guardedAbandon(row: ClaimedSlot): Promise<void> {
     try {
       const n = await this.repo.abandon(

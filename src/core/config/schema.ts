@@ -427,6 +427,29 @@ const scheduler = {
   SCHEDULER_ADOPT_JITTER_MAX_S: z.coerce.number().int().min(0).max(3600).default(60),
 };
 
+/** Result storage and partition maintenance (M5, docs/m5-plan.md §5). */
+const storage = {
+  // Daily partitions created ahead of need. A missing partition is a hard
+  // write error (no DEFAULT partition, ADR-0007), so this is the horizon the
+  // maintenance job must keep -- see the refine against the interval below.
+  PARTITION_AHEAD_DAYS: z.coerce.number().int().min(1).max(30).default(3),
+  // Monthly partitions (hourly aggregates) created ahead of need.
+  PARTITION_AHEAD_MONTHS: z.coerce.number().int().min(1).max(12).default(2),
+  // One day at most; see the refine against PARTITION_AHEAD_DAYS below.
+  STORAGE_MAINTENANCE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(86_400_000)
+    .default(3_600_000),
+  // Attempts at one result's write. It is idempotent by its key, so a retry
+  // cannot duplicate; exhausting them leaves the lease to lapse and the slot
+  // becomes an UNKNOWN gap, never a healthy one.
+  RESULT_WRITE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  // Base delay before a retry; attempt n waits n times this. 0 retries at once.
+  RESULT_WRITE_BACKOFF_MS: z.coerce.number().int().min(0).max(10_000).default(100),
+};
+
 const baseSchema = z.object({
   ...runtime,
   ...api,
@@ -436,6 +459,7 @@ const baseSchema = z.object({
   ...probing,
   ...registration,
   ...scheduler,
+  ...storage,
 });
 
 /**
@@ -540,6 +564,15 @@ export const configSchema = baseSchema
       'must be less than SCHEDULER_LEASE_MS, or a graceful stop can outlive the ' +
       'lease it is trying to release and a peer starts a second probe while ours ' +
       'is still draining',
+  })
+  // Two missed maintenance ticks must still leave a partition to write into.
+  // With one tick a day and the minimum horizon of one day, a single missed
+  // tick would let the horizon lapse and every insert would fail.
+  .refine((c) => c.PARTITION_AHEAD_DAYS * 86_400_000 > 2 * c.STORAGE_MAINTENANCE_INTERVAL_MS, {
+    path: ['PARTITION_AHEAD_DAYS'],
+    message:
+      'must exceed twice STORAGE_MAINTENANCE_INTERVAL_MS, or two missed maintenance ticks ' +
+      'leave no partition to write into and every result insert fails',
   })
   // NFR-2: a monitor due at interval T is probed with drift under 10% of T.
   // Two terms, not one: a row becomes due up to one tick before the next claim

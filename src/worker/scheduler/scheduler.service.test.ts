@@ -37,8 +37,22 @@ function fakeRepo() {
     adopt: vi.fn().mockResolvedValue(0),
     reconcile: vi.fn().mockResolvedValue(0),
     claim: vi.fn().mockResolvedValue([]),
-    release: vi.fn().mockResolvedValue(1),
     abandon: vi.fn().mockResolvedValue(1),
+  };
+}
+
+function fakeRecorder() {
+  return { recordAndRelease: vi.fn().mockResolvedValue({ inserted: 1, released: 1 }) };
+}
+
+function okOutcome() {
+  return {
+    monitorId: 'e1',
+    success: true,
+    startedAt: Date.now(),
+    timings: { totalMs: 12.4, ttfbMs: 8 },
+    truncated: false,
+    redirects: 0,
   };
 }
 
@@ -81,6 +95,7 @@ function row(over: Partial<ClaimedSlot> = {}): ClaimedSlot {
     endpoint_id: 'e1',
     scheduled_at: '2026-01-01 00:00:00+00',
     next_run_at: new Date('2026-01-01T00:01:00Z'),
+    scheduled_interval_s: 60,
     ...over,
   };
 }
@@ -88,17 +103,26 @@ function row(over: Partial<ClaimedSlot> = {}): ClaimedSlot {
 function makeService(
   overrides: {
     repo?: ReturnType<typeof fakeRepo>;
+    recorder?: ReturnType<typeof fakeRecorder>;
     pool?: ReturnType<typeof fakePool>;
     loader?: ReturnType<typeof fakeLoader>;
     logger?: ReturnType<typeof fakeLogger>;
   } = {},
 ) {
   const repo = overrides.repo ?? fakeRepo();
+  const recorder = overrides.recorder ?? fakeRecorder();
   const pool = overrides.pool ?? fakePool();
   const loader = overrides.loader ?? fakeLoader();
   const logger = overrides.logger ?? fakeLogger();
-  const svc = new SchedulerService(cfg, repo as never, pool as never, loader as never, logger);
-  return { svc, repo, pool, loader, logger };
+  const svc = new SchedulerService(
+    cfg,
+    repo as never,
+    pool as never,
+    loader as never,
+    recorder as never,
+    logger,
+  );
+  return { svc, repo, recorder, pool, loader, logger };
 }
 
 beforeEach(() => {
@@ -195,23 +219,31 @@ describe('SchedulerService: the tick', () => {
 });
 
 describe('SchedulerService: one claimed slot', () => {
-  it('loads, probes, and releases on a successful outcome', async () => {
-    probeMock.mockResolvedValue({ monitorId: 'e1', success: true, startedAt: Date.now() });
+  it('loads, probes, and persists the result with the release on a successful outcome', async () => {
+    probeMock.mockResolvedValue(okOutcome());
     const repo = fakeRepo();
     repo.claim.mockResolvedValueOnce([row()]);
     const pool = fakePool(1);
-    const { svc } = makeService({ repo, pool });
+    const { svc, recorder } = makeService({ repo, pool });
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(pool.started).toHaveLength(1);
     await pool.started[0].work;
-    expect(repo.release).toHaveBeenCalledWith(
-      'e1',
-      'worker-1',
-      row().scheduled_at,
-      undefined,
-      cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
-    );
+    expect(recorder.recordAndRelease).toHaveBeenCalledOnce();
+    const [resultRow, fence] = recorder.recordAndRelease.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(resultRow).toMatchObject({
+      endpoint_id: 'e1',
+      scheduled_at: row().scheduled_at,
+      interval_s: 60,
+      outcome: 'up',
+      total_ms: 12,
+      worker_id: 'worker-1',
+    });
+    expect(resultRow.attempt_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fence).toEqual({ endpointId: 'e1', workerId: 'worker-1', slot: row().scheduled_at });
     expect(repo.abandon).not.toHaveBeenCalled();
     await svc.stop();
   });
@@ -222,7 +254,7 @@ describe('SchedulerService: one claimed slot', () => {
     const pool = fakePool(1);
     const loader = fakeLoader();
     loader.load.mockRejectedValue(new Error('load boom'));
-    const { svc } = makeService({ repo, pool, loader });
+    const { svc, recorder } = makeService({ repo, pool, loader });
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await pool.started[0].work;
@@ -233,7 +265,7 @@ describe('SchedulerService: one claimed slot', () => {
       undefined,
       cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
     );
-    expect(repo.release).not.toHaveBeenCalled();
+    expect(recorder.recordAndRelease).not.toHaveBeenCalled();
     expect(probeMock).not.toHaveBeenCalled();
     await svc.stop();
   });
@@ -265,7 +297,7 @@ describe('SchedulerService: one claimed slot', () => {
     const repo = fakeRepo();
     repo.claim.mockResolvedValueOnce([row()]);
     const pool = fakePool(1);
-    const { svc } = makeService({ repo, pool });
+    const { svc, recorder } = makeService({ repo, pool });
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await pool.started[0].work;
@@ -276,26 +308,29 @@ describe('SchedulerService: one claimed slot', () => {
       undefined,
       cfg.SCHEDULER_SHUTDOWN_GRACE_MS,
     );
-    expect(repo.release).not.toHaveBeenCalled();
+    expect(recorder.recordAndRelease).not.toHaveBeenCalled();
     await svc.stop();
   });
 
-  it('D23: a rejecting release() does not escape runOne as an unhandled rejection', async () => {
-    probeMock.mockResolvedValue({ monitorId: 'e1', success: true, startedAt: Date.now() });
+  it('D23: a rejecting recordAndRelease() does not escape runOne as an unhandled rejection', async () => {
+    probeMock.mockResolvedValue(okOutcome());
     const repo = fakeRepo();
     repo.claim.mockResolvedValueOnce([row()]);
-    repo.release.mockRejectedValue(new Error('db down'));
+    const recorder = fakeRecorder();
+    recorder.recordAndRelease.mockRejectedValue(new Error('db down'));
     const pool = fakePool(1);
-    const { svc, logger } = makeService({ repo, pool });
+    const { svc, logger } = makeService({ repo, pool, recorder });
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await expect(pool.started[0].work).resolves.toBeUndefined();
-    // Specifically the inner guard's own message, not the outer dispatch
-    // backstop's ('runOne rejected -- a D23 violation') -- the backstop
-    // would also make `work` resolve, so asserting only that masks the
-    // inner guard being removed.
-    expect(logger.calls.some((c) => String(c.args[1]).includes('release failed'))).toBe(true);
+    // The inner guard's own message, not the dispatch backstop's -- the
+    // backstop would also make `work` resolve, so asserting only that masks
+    // the inner guard being removed. And it is an error: a lost result is not routine.
+    const lost = logger.calls.find((c) => String(c.args[1]).includes('result not persisted'));
+    expect(lost?.level).toBe('error');
     expect(logger.calls.some((c) => String(c.args[1]).includes('D23 violation'))).toBe(false);
+    // The lease is left standing: nothing else clears it.
+    expect(repo.abandon).not.toHaveBeenCalled();
     await svc.stop();
   });
 
@@ -315,17 +350,39 @@ describe('SchedulerService: one claimed slot', () => {
     await svc.stop();
   });
 
-  it('warns, but does not throw, when release matches zero rows', async () => {
-    probeMock.mockResolvedValue({ monitorId: 'e1', success: true, startedAt: Date.now() });
+  it('warns, but does not throw, when the release fence matches zero rows', async () => {
+    probeMock.mockResolvedValue(okOutcome());
     const repo = fakeRepo();
     repo.claim.mockResolvedValueOnce([row()]);
-    repo.release.mockResolvedValue(0);
+    const recorder = fakeRecorder();
+    recorder.recordAndRelease.mockResolvedValue({ inserted: 1, released: 0 });
     const pool = fakePool(1);
-    const { svc, logger } = makeService({ repo, pool });
+    const { svc, logger } = makeService({ repo, pool, recorder });
     svc.start();
     await vi.advanceTimersByTimeAsync(0);
     await pool.started[0].work;
     expect(logger.calls.some((c) => c.level === 'warn')).toBe(true);
+    await svc.stop();
+  });
+
+  it.each([
+    ['BLOCKED_BY_POLICY', 'unknown'],
+    ['UNKNOWN_ERROR', 'unknown'],
+    ['CONNECTION_REFUSED', 'down'],
+  ])('stores a %s failure as %s, with its class', async (failureClass, label) => {
+    probeMock.mockResolvedValue({ ...okOutcome(), success: false, failureClass, code: 'X' });
+    const repo = fakeRepo();
+    repo.claim.mockResolvedValueOnce([row()]);
+    const pool = fakePool(1);
+    const { svc, recorder } = makeService({ repo, pool });
+    svc.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await pool.started[0].work;
+    expect(recorder.recordAndRelease.mock.calls[0][0]).toMatchObject({
+      outcome: label,
+      failure_class: failureClass.toLowerCase(),
+      failure_code: 'X',
+    });
     await svc.stop();
   });
 });
@@ -399,7 +456,7 @@ describe('SchedulerService: stop', () => {
       const repo = fakeRepo();
       repo.claim.mockResolvedValueOnce([row()]);
       const pool = fakePool(1);
-      const { svc } = makeService({ repo, pool });
+      const { svc, recorder } = makeService({ repo, pool });
       svc.start();
       await vi.advanceTimersByTimeAsync(0); // claims, loads (fast), starts probe -- blocks there
 
@@ -408,15 +465,17 @@ describe('SchedulerService: stop', () => {
 
       // A large chunk of the grace elapses before the row's own pipeline
       // (independent of stop()'s own await chain, since pool.drain is faked
-      // here) finally settles its probe and reaches guardedRelease.
+      // here) finally settles its probe and reaches persistAndRelease.
       const elapsedBeforeRelease = cfg.SCHEDULER_SHUTDOWN_GRACE_MS - 1000;
       await vi.advanceTimersByTimeAsync(elapsedBeforeRelease);
-      resolveProbe({ monitorId: 'e1', success: true, startedAt: Date.now() });
+      resolveProbe(okOutcome());
       await vi.advanceTimersByTimeAsync(0);
       await pool.started[0].work;
 
-      expect(repo.release).toHaveBeenCalledOnce();
-      const timeoutPassed = repo.release.mock.calls[0][4] as number;
+      expect(recorder.recordAndRelease).toHaveBeenCalledOnce();
+      const timeoutPassed = (
+        recorder.recordAndRelease.mock.calls[0][2] as () => { timeoutMs: number }
+      )().timeoutMs;
       // Remaining time, not a fresh grace: close to 1000ms, nowhere near the
       // full SCHEDULER_SHUTDOWN_GRACE_MS.
       expect(timeoutPassed).toBeLessThan(1500);

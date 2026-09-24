@@ -14,6 +14,8 @@ import { EndpointRuntimeRepository } from '../repositories/endpoint-runtime.repo
 import { SchedulerService } from '../scheduler.service.js';
 import { MonitorLoaderService } from '../services/monitor-loader.service.js';
 import { ProbePoolService } from '../services/probe-pool.service.js';
+import { ResultRecorderService } from '../services/result-recorder.service.js';
+import { ProbeResultRepository } from '../../storage/repositories/probe-result.repository.js';
 
 /**
  * `SchedulerService` end to end: two live workers, real Postgres, real
@@ -73,7 +75,8 @@ function makeWorker(kysely: unknown, workerId: string, over: Record<string, stri
   const repo = new EndpointRuntimeRepository(dbLike);
   const pool = new ProbePoolService(cfg, fakeLogger());
   const loader = new MonitorLoaderService(dbLike, cfg);
-  const scheduler = new SchedulerService(cfg, repo, pool, loader, fakeLogger());
+  const recorder = new ResultRecorderService(dbLike, new ProbeResultRepository(dbLike), repo, cfg);
+  const scheduler = new SchedulerService(cfg, repo, pool, loader, recorder, fakeLogger());
   return { cfg, repo, pool, scheduler };
 }
 
@@ -219,6 +222,97 @@ describe('two workers: disjointness (NFR-3)', () => {
     expect(dupes).toEqual([]);
 
     expect(server.received.length).toBe(10);
+  }, 10_000);
+});
+
+describe('results (M5): every claimed slot yields one stored result', () => {
+  it('stores exactly one probe_results row per claim, keyed to the claimed slot, with the lease cleared in the same commit', async () => {
+    const server = await serve(respond('ok'));
+    const ids = await Promise.all(
+      Array.from({ length: 6 }, () => makeDueEndpoint(server.origin, { intervalS: 60 })),
+    );
+    const a = makeWorker(db, 'e2e-worker-a');
+    const b = makeWorker(db, 'e2e-worker-b');
+    a.scheduler.start();
+    b.scheduler.start();
+    try {
+      await waitUntil(
+        async () => {
+          const rows = await Promise.all(ids.map((id) => runtimeRow(id)));
+          return rows.every((r) => r.last_probe_at !== null);
+        },
+        5000,
+        'every endpoint probed and released',
+      );
+    } finally {
+      await Promise.all([a.scheduler.stop(), b.scheduler.stop()]);
+    }
+
+    // The claim <-> result join the plan's verification relies on, at
+    // microsecond fidelity: scheduled_at is compared as text, so a value
+    // round-tripped through a JS Date would not match.
+    const { rows } = await pg.query<{ endpoint_id: string; n: string; outcome: string }>(
+      `SELECT c.endpoint_id, count(r.*) AS n, min(r.outcome::text) AS outcome
+         FROM claim_log c
+         LEFT JOIN probe_results r
+                ON r.endpoint_id = c.endpoint_id AND r.scheduled_at = c.scheduled_at
+        WHERE c.endpoint_id = ANY($1)
+        GROUP BY c.endpoint_id, c.scheduled_at`,
+      [ids],
+    );
+    expect(rows).toHaveLength(6);
+    for (const r of rows) {
+      expect(r.n).toBe('1');
+      expect(r.outcome).toBe('up');
+    }
+
+    const stored = await pg.query<{
+      interval_s: number;
+      status_code: number;
+      worker_id: string;
+      ttfb_ms: number | null;
+    }>(
+      `SELECT interval_s, status_code, worker_id, ttfb_ms FROM probe_results WHERE endpoint_id = $1`,
+      [ids[0]],
+    );
+    expect(stored.rows).toHaveLength(1);
+    expect(stored.rows[0].interval_s).toBe(60);
+    expect(stored.rows[0].status_code).toBe(200);
+    expect(stored.rows[0].ttfb_ms).not.toBeNull();
+    // Cleared by the same transaction that stored the result.
+    const rt = await runtimeRow(ids[0]);
+    expect(rt.leased_by).toBeNull();
+    expect(rt.leased_until).toBeNull();
+  }, 10_000);
+});
+
+describe('results (M5): a stale slot still lands in a current partition (D20)', () => {
+  it('stores the result of a monitor resumed after days paused: the slot is old, started_at is now', async () => {
+    const server = await serve(respond('ok'));
+    // Paused for five days: its next_run_at is five days in the past, so the
+    // claim's scheduled_at is that stale slot. Partitioned on scheduled_at this
+    // would target a partition that does not exist; started_at is what files it.
+    const id = await makeDueEndpoint(server.origin, { dueInS: -5 * 86_400 });
+    const w = makeWorker(db, 'e2e-worker-resume');
+    w.scheduler.start();
+    try {
+      await waitUntil(
+        async () => (await runtimeRow(id)).last_probe_at !== null,
+        5000,
+        'resumed endpoint probed',
+      );
+    } finally {
+      await w.scheduler.stop();
+    }
+    const { rows } = await pg.query<{ stale_days: number; fresh: boolean }>(
+      `SELECT extract(day from now() - scheduled_at)::int AS stale_days,
+              started_at > now() - interval '1 minute' AS fresh
+         FROM probe_results WHERE endpoint_id = $1`,
+      [id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].stale_days).toBeGreaterThanOrEqual(4);
+    expect(rows[0].fresh).toBe(true);
   }, 10_000);
 });
 
