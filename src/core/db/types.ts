@@ -198,22 +198,103 @@ export interface EndpointRuntimeTable {
  */
 export interface ClaimLogTable {
   /**
-   * `bigserial`. Typed as a string because node-postgres returns `int8` as
-   * one -- typing it `number` is a review finding, and would silently lose
-   * precision past 2^53.
-   */
-  id: Generated<string>;
-  /**
    * Not a foreign key. An insert against a referencing column takes
    * `FOR KEY SHARE` on the parent row, which would make the claim lock
    * `endpoints` in the opposite order from a cascading delete -- measured at
    * 20 deadlocks in 20 rounds. This is an append-only evidence log, so the
-   * row stays true after the endpoint is gone.
+   * row stays true after the endpoint is gone. Partitioned by `claimed_at`
+   * (0008), so it has no `id`.
    */
   endpoint_id: string;
   scheduled_at: Timestamp;
   worker_id: string;
   claimed_at: CreatedAt;
+}
+
+export type ProbeOutcomeLabel = 'up' | 'degraded' | 'down' | 'unknown';
+
+/** The labels of the `failure_class` enum in 0001 -- lowercase. */
+export type FailureClassLabel =
+  | 'dns_nxdomain'
+  | 'dns_failure'
+  | 'connection_refused'
+  | 'connection_timeout'
+  | 'connection_reset'
+  | 'tls_expired'
+  | 'tls_untrusted'
+  | 'tls_hostname_mismatch'
+  | 'tls_handshake_failed'
+  | 'response_timeout'
+  | 'body_timeout'
+  | 'status_mismatch'
+  | 'assertion_failed'
+  | 'too_many_redirects'
+  | 'blocked_by_policy'
+  | 'unknown_error';
+
+/**
+ * One row per probe attempt, range-partitioned on `started_at` (0008,
+ * docs/m5-plan.md §3.1). Nothing here is a foreign key, and there is no
+ * default partition.
+ */
+export interface ProbeResultsTable {
+  endpoint_id: string;
+  /** The worker's wall clock at millisecond precision. The partition key. */
+  started_at: Timestamp;
+  /**
+   * The claimed slot. Bound as PostgreSQL's own text and cast back with
+   * `::timestamptz`, so microseconds survive (see `ClaimedSlot`).
+   */
+  scheduled_at: Timestamp;
+  /** Spacing to the next slot: the span this probe represents. */
+  interval_s: number;
+  outcome: ProbeOutcomeLabel;
+  failure_class: FailureClassLabel | null;
+  failure_code: string | null;
+  status_code: number | null;
+  total_ms: number;
+  /** `null` means the phase did not happen -- never `0`. */
+  dns_ms: number | null;
+  connect_ms: number | null;
+  tls_ms: number | null;
+  ttfb_ms: number | null;
+  transfer_ms: number | null;
+  redirects: number;
+  truncated: boolean;
+  cert_expires_at: Timestamp | null;
+  worker_id: string;
+  attempt_id: string;
+  /** `xid8`: node-postgres registers no parser for it, so it is text. */
+  insert_xid: Generated<string>;
+}
+
+export type StatGrain = 'm1' | 'h1' | 'd1';
+
+/** Aggregates. `bigint` columns are typed `string`: node-postgres returns `int8` as one. */
+export interface ProbeStatsTable {
+  endpoint_id: string;
+  granularity: StatGrain;
+  bucket_start: Timestamp;
+  count_up: Generated<number>;
+  count_down: Generated<number>;
+  count_degraded: Generated<number>;
+  count_unknown: Generated<number>;
+  count_maintenance: Generated<number>;
+  covered_seconds: Generated<number>;
+  up_seconds: Generated<number>;
+  degraded_seconds: Generated<number>;
+  sum_total_ms: Generated<string>;
+  min_total_ms: number | null;
+  max_total_ms: number | null;
+  sum_ttfb_ms: Generated<string>;
+  hist_total: Generated<number[]>;
+}
+
+/** Every probe_results row with `insert_xid < last_xid` has been folded. */
+export interface RollupStateTable {
+  name: string;
+  last_xid: string;
+  advanced_at: Generated<Date>;
 }
 
 export interface HeadersTable {
@@ -253,6 +334,9 @@ export interface Database {
   endpoints: EndpointsTable;
   endpoint_runtime: EndpointRuntimeTable;
   claim_log: ClaimLogTable;
+  probe_results: ProbeResultsTable;
+  probe_stats: ProbeStatsTable;
+  rollup_state: RollupStateTable;
   headers: HeadersTable;
   tags: TagsTable;
 }
