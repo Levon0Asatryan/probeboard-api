@@ -286,6 +286,36 @@ describe('results (M5): every claimed slot yields one stored result', () => {
   }, 10_000);
 });
 
+describe('results (M5): a stale slot still lands in a current partition (D20)', () => {
+  it('stores the result of a monitor resumed after days paused: the slot is old, started_at is now', async () => {
+    const server = await serve(respond('ok'));
+    // Paused for five days: its next_run_at is five days in the past, so the
+    // claim's scheduled_at is that stale slot. Partitioned on scheduled_at this
+    // would target a partition that does not exist; started_at is what files it.
+    const id = await makeDueEndpoint(server.origin, { dueInS: -5 * 86_400 });
+    const w = makeWorker(db, 'e2e-worker-resume');
+    w.scheduler.start();
+    try {
+      await waitUntil(
+        async () => (await runtimeRow(id)).last_probe_at !== null,
+        5000,
+        'resumed endpoint probed',
+      );
+    } finally {
+      await w.scheduler.stop();
+    }
+    const { rows } = await pg.query<{ stale_days: number; fresh: boolean }>(
+      `SELECT extract(day from now() - scheduled_at)::int AS stale_days,
+              started_at > now() - interval '1 minute' AS fresh
+         FROM probe_results WHERE endpoint_id = $1`,
+      [id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].stale_days).toBeGreaterThanOrEqual(4);
+    expect(rows[0].fresh).toBe(true);
+  }, 10_000);
+});
+
 describe('capacity (NFR-1), live', () => {
   it('never runs more than PROBE_CONCURRENCY probes at once', async () => {
     let inFlight = 0;

@@ -122,6 +122,13 @@ describe('schema (0008)', () => {
     );
   });
 
+  it('reuses the 0001 probe_outcome enum: its labels are the four the writer can produce', async () => {
+    const { rows } = await pool.query<{ enumlabel: string }>(
+      `SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid WHERE t.typname = 'probe_outcome'`,
+    );
+    expect(rows.map((r) => r.enumlabel).sort()).toEqual(['degraded', 'down', 'unknown', 'up']);
+  });
+
   it('rejects an insert with no partition rather than filing it somewhere', async () => {
     await expect(
       new ProbeResultRepository(dbLike).insert(

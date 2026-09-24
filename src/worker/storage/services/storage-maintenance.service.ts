@@ -48,8 +48,8 @@ export class StorageMaintenanceService implements OnModuleInit, OnModuleDestroy 
   async tick(now: Date = new Date()): Promise<void> {
     try {
       const { ran, created } = await this.partitions.ensure(now);
-      if (ran) this.logger.info({ created: created.length }, 'partitions ensured');
       const horizonDays = await this.partitions.horizonDays(now);
+      if (ran) this.logger.info({ created: created.length, horizonDays }, 'partitions ensured');
       if (horizonDays < 1) {
         this.logger.error(
           { horizonDays },
