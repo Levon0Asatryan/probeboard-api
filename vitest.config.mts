@@ -52,6 +52,12 @@ export default defineConfig({
         // against a real PostgreSQL, which CI runs as its own job. Unit tests
         // here would assert that we called a mock.
         'src/**/*.repository.ts',
+        // Partition DDL is database behaviour: the advisory lock, LIKE + ATTACH,
+        // and what two concurrent creators do to each other. Covered by
+        // partition.service.int.test.ts against a real PostgreSQL -- including
+        // the lock-held skip and the concurrent-callers case, each confirmed to
+        // fail when the lock was removed. Unit tests would mock the DDL away.
+        'src/worker/storage/services/partition.service.ts',
         // Counting rows inside a moving window is database behaviour, the same
         // as a repository. Covered by rate-limit.service.int.test.ts, which
         // exercises both limits, the interaction between them, and that the
