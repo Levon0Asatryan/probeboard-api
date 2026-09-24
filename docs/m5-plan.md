@@ -53,7 +53,7 @@ _a 30-day p95 is served from aggregates after the raw rows have been dropped._
 
 | #   | Where                                                                                      | Finding                                                                                                                                                                                                                                              | Resolution                                                                            |
 | --- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| C1  | Handoff / tracker: "partition on `started_at`" **and** "key `(endpoint_id, scheduled_at)`" | A unique key on a partitioned table must contain every partition column. Measured (§2.4.1): `PRIMARY KEY (endpoint_id, scheduled_at) … PARTITION BY RANGE (started_at)` is rejected. Both cannot hold.                                               | D1: partition on `started_at`, key is 07's plus `worker_id` (D2), slot is a column.   |
+| C1  | Handoff / tracker: "partition on `started_at`" **and** "key `(endpoint_id, scheduled_at)`" | A unique key on a partitioned table must contain every partition column. Measured (§2.4.1): `PRIMARY KEY (endpoint_id, scheduled_at) … PARTITION BY RANGE (started_at)` is rejected. Both cannot hold.                                               | D1: partition on `started_at`, key is 07's plus `attempt_id` (D2), slot is a column.  |
 | C2  | 07 §7.5 upsert snippet                                                                     | The first-insert `VALUES` carries `array_fill(0, …)` and only the `DO UPDATE` branch does `hist_total[$5] + 1`. The **first** probe of every bucket therefore never reaches the histogram. Measured (§2.4.2): after two upserts `h[3]` was 1, not 2. | D10: the fold inserts the computed histogram, not zeros.                              |
 | C3  | 07 "Idempotency": "watermark per endpoint"                                                 | Any watermark ordered by time skips a row committed late (§2.4.3, demonstrated). Per-endpoint does not fix it: a zombie worker (lease lapsed, probe returns late) writes slot _T1_ after the next worker committed _T2_.                             | D9: watermark on the inserting transaction's `xid8`, bounded by the snapshot horizon. |
 | C4  | 07 / ADR-0007: "`DROP PARTITION` — O(1), no vacuum"                                        | True of the drop; false of its locking. `DROP` and plain `DETACH` take `ACCESS EXCLUSIVE` on the **parent**: an insert into an unrelated partition waited 2.04 s behind them (§2.4.4). `DETACH … CONCURRENTLY` did not (0.07 s).                     | D14: detach concurrently, then drop. ADR-0007 needs the caveat (report).              |
@@ -178,8 +178,9 @@ CREATE TABLE probe_results (
     truncated       boolean       NOT NULL,
     cert_expires_at timestamptz,
     worker_id       text          NOT NULL,
+    attempt_id      uuid          NOT NULL,   -- one per probe attempt; reused only by retries of its write
     insert_xid      xid8          NOT NULL DEFAULT pg_current_xact_id(),
-    PRIMARY KEY (endpoint_id, started_at, worker_id)
+    PRIMARY KEY (endpoint_id, started_at, attempt_id)
 ) PARTITION BY RANGE (started_at);
 CREATE INDEX probe_results_insert_xid_idx ON probe_results (insert_xid);
 
@@ -228,16 +229,17 @@ as a parameter, and the index is `width_bucket(total_ms - 1, $edges) + 1`.
 
 ### 3.2 Keys
 
-`PRIMARY KEY (endpoint_id, started_at, worker_id)` is 07's natural key plus
-`worker_id`. `started_at` is a millisecond wall clock, so alone it can collide:
-two workers running one duplicated slot in the same millisecond, or a clock
-correction reusing a value, would make the second insert vanish under
-`DO NOTHING` — the very NFR-3 evidence this table must keep. A retry is one
-worker rewriting the **same** `started_at` (a fixed value in the outcome), so
-`ON CONFLICT (endpoint_id, started_at, worker_id) DO NOTHING` makes a retried
-write idempotent while a second worker's probe is still its own row. One
-worker cannot probe one endpoint twice concurrently (the lease), so the triple
-is unique per attempt. `scheduled_at` is stored as the database's own value (bound as
+`PRIMARY KEY (endpoint_id, started_at, attempt_id)` is 07's natural key plus
+a per-attempt id. `started_at` is a millisecond wall clock, so alone it can
+collide: two workers running one duplicated slot in the same millisecond, or a
+clock correction reusing a value on the **same** worker, would make the second
+insert vanish under `DO NOTHING` — the NFR-3 evidence this table must keep, and
+a lost observation. `worker_id` does not fix that (one worker, one id), so
+`runOne` generates `attempt_id = gen_random_uuid()` **once, before the probe**,
+and every retry of that attempt's write reuses it. `ON CONFLICT (endpoint_id,
+started_at, attempt_id) DO NOTHING` is therefore idempotent for retries and
+never collides across attempts.
+`scheduled_at` is stored as the database's own value (bound as
 text and cast back with `::timestamptz`, exactly like the release fence,
 `repository.ts:12-31`) and is **deliberately not unique**: two probes of one
 slot are an NFR-3 violation, which must be _recorded_ as two rows, not rejected
@@ -253,7 +255,7 @@ with `persistAndRelease`:
 BEGIN
   SET LOCAL statement_timeout = terminalWriteTimeoutMs()       -- existing bound
   INSERT INTO probe_results (…) VALUES (…)
-         ON CONFLICT (endpoint_id, started_at, worker_id) DO NOTHING
+         ON CONFLICT (endpoint_id, started_at, attempt_id) DO NOTHING
   UPDATE endpoint_runtime SET leased_until = NULL, leased_by = NULL,
          last_probe_at = now()
    WHERE endpoint_id = $e AND leased_by = $w AND scheduled_at = $slot::timestamptz
@@ -444,7 +446,12 @@ against this one.
   partition of that family (`min` over the partition names — a catalogue read,
   no scan). Retention can be raised after a shorter setting already dropped
   partitions, so a config-derived horizon would call a gone bucket available.
-  An edge hour older than h1's `retainedFrom` has no h1 bucket, so a window
+  **The lookup and the read are not one snapshot** — §3.7 may detach the oldest
+  partition between them, leaving a plan that names a bucket the parent query
+  can no longer read. So `windowStats` re-reads `retainedFrom` **after** the
+  aggregate query and, if it moved past the plan's oldest bucket, discards the
+  result and returns the typed rejection: a stale plan is never returned as an
+  answer. An edge hour older than h1's `retainedFrom` has no h1 bucket, so a window
   with an edge there must be **day-aligned**; one older than m1's must be at
   least **hour-aligned**. Anything else is rejected with a typed error rather
   than silently rounded — never a plausible-looking partial result. (M8 decides
@@ -489,8 +496,8 @@ is grepped and pinned in a test.
 
 | #   | Decision                                                                                                                                                                                                               | Why                                                                                                                                                                                                                                                                                                                                         |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Partition on `started_at`; key `(endpoint_id, started_at, worker_id)`; `scheduled_at` is a column                                                                                                                      | C1, §2.4.1. `started_at` is within a lease of now, so a write never targets an old, dropped partition — a resumed monitor's stale slot (D20) would, were `scheduled_at` the partition key. It is the worker's wall clock (M3 D37), so a worker skewed by more than the ahead horizon fails **loudly** (no partition) rather than mis-filing |
-| D2  | `ON CONFLICT (endpoint_id, started_at, worker_id) DO NOTHING`; slot not unique                                                                                                                                         | retry idempotency; a duplicate slot is evidence to record, not to reject — `worker_id` keeps a same-millisecond duplicate from another worker a separate row                                                                                                                                                                                |
+| D1  | Partition on `started_at`; key `(endpoint_id, started_at, attempt_id)`; `scheduled_at` is a column                                                                                                                     | C1, §2.4.1. `started_at` is within a lease of now, so a write never targets an old, dropped partition — a resumed monitor's stale slot (D20) would, were `scheduled_at` the partition key. It is the worker's wall clock (M3 D37), so a worker skewed by more than the ahead horizon fails **loudly** (no partition) rather than mis-filing |
+| D2  | `ON CONFLICT (endpoint_id, started_at, attempt_id) DO NOTHING`; slot not unique                                                                                                                                        | retry idempotency; a duplicate slot is evidence to record, not to reject — `attempt_id` (fixed per attempt, reused by its retries) keeps a same-millisecond or clock-corrected duplicate a separate row                                                                                                                                     |
 | D3  | Insert and release in one transaction; a zero-row fence still commits the insert                                                                                                                                       | §3.3                                                                                                                                                                                                                                                                                                                                        |
 | D4  | Retry the write up to `RESULT_WRITE_ATTEMPTS`; then error and leave the lease. No spool table                                                                                                                          | idempotent by key; a spool is machinery for a fleet. The gap becomes `UNKNOWN`, never healthy                                                                                                                                                                                                                                               |
 | D5  | Outcome mapping per §3.3; `degraded` is never written in M5                                                                                                                                                            | needs M6's latency threshold; the enum value exists so M6 needs no `ALTER TYPE`                                                                                                                                                                                                                                                             |
@@ -599,7 +606,7 @@ Defenses that need no test because the type system carries them: `xid8`,
 Unit (no I/O): outcome mapping, all 16 classes; `bucketIndex` at every edge and
 ±1 (10, 11, 50, 51, 30000, 30001); `mergeHistograms`; `percentile` (empty,
 single value, one bucket, clamped `∞` bucket, p50/p95/p99, merge-then-percentile
-equals percentile-of-concatenation); `planWindow` (a bound off the minute → rejected at every age; hour-aligned but not day-aligned beyond h1's `retainedFrom` → rejected, including after retention was raised over already-dropped partitions; aligned, unaligned inside and
+equals percentile-of-concatenation); `planWindow` (a bound off the minute → rejected at every age; a retention detach landing between the availability lookup and the read → typed rejection, not a partial answer; hour-aligned but not day-aligned beyond h1's `retainedFrom` → rejected, including after retention was raised over already-dropped partitions; aligned, unaligned inside and
 beyond the m1 horizon, DST-free UTC edges); config `refine`s, each with a
 rejection case; `failure_class` and `probe_outcome` drift against the DB enum.
 
