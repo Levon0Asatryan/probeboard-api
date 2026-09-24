@@ -1,13 +1,14 @@
 import type { PinoLogger } from 'nestjs-pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
-import { RollupService, ROLLUP_STALE_TICKS } from './rollup.service.js';
+import { RollupService } from './rollup.service.js';
 
 const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
   HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   ROLLUP_TICK_MS: '1000',
   ROLLUP_BATCH_ROWS: '77',
+  ROLLUP_STALE_TICKS: '10',
 });
 
 function fakeLogger() {
@@ -82,7 +83,11 @@ describe('RollupService', () => {
   });
 
   it('reports what it folded, and a stale watermark as a warning', async () => {
-    const stale = make({ skipped: false, folded: 3, lagMs: ROLLUP_STALE_TICKS * 1000 + 1 });
+    const stale = make({
+      skipped: false,
+      folded: 3,
+      lagMs: cfg.ROLLUP_STALE_TICKS * cfg.ROLLUP_TICK_MS + 1,
+    });
     await stale.svc.tick();
     expect(stale.logger.calls.find((c) => c.level === 'info')?.args[0]).toEqual({ folded: 3 });
     expect(stale.logger.calls.some((c) => c.level === 'warn')).toBe(true);

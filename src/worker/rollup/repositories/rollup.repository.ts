@@ -170,8 +170,9 @@ export class RollupRepository {
       m1 AS (${upsert(GRAINS[0])} RETURNING 1),
       h1 AS (${upsert(GRAINS[1])} RETURNING 1),
       d1 AS (${upsert(GRAINS[2])} RETURNING 1)
-      SELECT (SELECT count(*) FROM batch)::int AS folded,
-             (SELECT count(*) FROM m1) + (SELECT count(*) FROM h1) + (SELECT count(*) FROM d1) AS touched
+      SELECT (SELECT count(*) FROM batch)::int AS folded
+      FROM   (SELECT 1 FROM m1 UNION ALL SELECT 1 FROM h1 UNION ALL SELECT 1 FROM d1) forced
+      LIMIT  1
     `;
   }
 }

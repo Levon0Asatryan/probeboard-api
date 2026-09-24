@@ -4,9 +4,6 @@ import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { RollupRepository } from '../repositories/rollup.repository.js';
 
-/** Ticks of silence after which the watermark is reported as stale. */
-export const ROLLUP_STALE_TICKS = 10;
-
 /**
  * Folds stored results into the aggregates every `ROLLUP_TICK_MS`
  * (docs/m5-plan.md §3.4).
@@ -57,7 +54,7 @@ export class RollupService implements OnModuleInit, OnModuleDestroy {
       const pass = await this.repo.runOnce(this.cfg.ROLLUP_BATCH_ROWS);
       if (pass.skipped) return;
       if (pass.folded > 0) this.logger.info({ folded: pass.folded }, 'rollup folded results');
-      if (pass.lagMs > ROLLUP_STALE_TICKS * this.cfg.ROLLUP_TICK_MS) {
+      if (pass.lagMs > this.cfg.ROLLUP_STALE_TICKS * this.cfg.ROLLUP_TICK_MS) {
         this.logger.warn(
           { lagMs: Math.round(pass.lagMs) },
           'rollup watermark was stale before this pass -- no worker has folded for a while',

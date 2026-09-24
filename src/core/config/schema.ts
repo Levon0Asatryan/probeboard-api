@@ -454,6 +454,9 @@ const storage = {
   // Distinct inserting transactions folded per batch inside one rollup pass. A
   // batch is whole transactions, so rows are never split across two batches.
   ROLLUP_BATCH_ROWS: z.coerce.number().int().min(1).max(100_000).default(5000),
+  // Ticks without the watermark advancing before a pass reports it as stale: a
+  // diagnostic threshold, not a limit -- a rollup that is behind is lag, not loss.
+  ROLLUP_STALE_TICKS: z.coerce.number().int().min(1).max(1000).default(10),
 };
 
 const baseSchema = z.object({

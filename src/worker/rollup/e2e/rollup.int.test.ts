@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
+import { HISTOGRAM_EDGES_MS } from '../../../core/stats/constants.js';
 import { bucketIndex, emptyHistogram } from '../../../core/stats/histogram.js';
 import { connectTestDb, testDatabaseUrl, truncateAll } from '../../../testing/database.js';
 import {
@@ -193,6 +194,25 @@ describe('the fold', () => {
     });
     expect(m1.hist_total[bucketIndex(100)]).toBe(1);
     expect(m1.hist_total[bucketIndex(400)]).toBe(1);
+  });
+
+  it('buckets exactly as the TypeScript function does, at every edge and one either side', async () => {
+    const { endpointId } = await createEndpoint(pool, 'edges@example.com');
+    const values = HISTOGRAM_EDGES_MS.flatMap((e) => [e - 1, e, e + 1]).concat([1, 100_000]);
+    await insertRaw(
+      pool,
+      values.map((ms, i) => ({
+        endpointId,
+        startedAt: new Date(Date.parse(`${DAY}T00:00:00Z`) + i * 1000).toISOString(),
+        outcome: 'up' as const,
+        totalMs: ms,
+        ttfbMs: 1,
+      })),
+    );
+    await repo.runOnce(5000);
+    const expected = emptyHistogram();
+    for (const ms of values) expected[bucketIndex(ms)] += 1;
+    expect((await stats(endpointId, 'd1'))[0].hist_total).toEqual(expected);
   });
 
   it('counts a probe that reached no server, but keeps it out of latency', async () => {
