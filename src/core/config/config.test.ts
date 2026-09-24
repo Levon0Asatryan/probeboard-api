@@ -815,6 +815,8 @@ describe('storage bounds reject invalid values at boot', () => {
     ['STORAGE_MAINTENANCE_INTERVAL_MS', '86400001', 'Too big: expected number to be <=86400000'],
     ['RESULT_WRITE_ATTEMPTS', '0', 'Too small: expected number to be >=1'],
     ['RESULT_WRITE_ATTEMPTS', '11', 'Too big: expected number to be <=10'],
+    ['RESULT_WRITE_BACKOFF_MS', '-1', 'Too small: expected number to be >=0'],
+    ['RESULT_WRITE_BACKOFF_MS', '10001', 'Too big: expected number to be <=10000'],
   ])('rejects %s=%s', (key, value, message) => {
     // On the bound's own message: the horizon rule below names two of these
     // keys in its text, so a bare key match would pass with a bound deleted.
@@ -839,5 +841,6 @@ describe('storage bounds reject invalid values at boot', () => {
     expect(cfg.PARTITION_AHEAD_MONTHS).toBe(2);
     expect(cfg.STORAGE_MAINTENANCE_INTERVAL_MS).toBe(3_600_000);
     expect(cfg.RESULT_WRITE_ATTEMPTS).toBe(3);
+    expect(cfg.RESULT_WRITE_BACKOFF_MS).toBe(100);
   });
 });

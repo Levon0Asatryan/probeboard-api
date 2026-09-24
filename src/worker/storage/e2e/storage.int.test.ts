@@ -129,6 +129,35 @@ describe('schema (0008)', () => {
     expect(rows.map((r) => r.enumlabel).sort()).toEqual(['degraded', 'down', 'unknown', 'up']);
   });
 
+  it('the histogram CHECK rejects an array that is not exactly 20 buckets, and the default has 20', async () => {
+    const id = '00000000-0000-4000-8000-0000000000f1';
+    await expect(
+      pool.query(
+        `INSERT INTO probe_stats (endpoint_id, granularity, bucket_start, hist_total)
+         VALUES ($1, 'd1', '2026-09-21', array_fill(0, ARRAY[19]))`,
+        [id],
+      ),
+    ).rejects.toThrow(/check constraint/);
+    await pool.query(
+      `INSERT INTO probe_stats (endpoint_id, granularity, bucket_start) VALUES ($1, 'd1', '2026-09-21')`,
+      [id],
+    );
+    const { rows } = await pool.query<{ n: number }>(
+      `SELECT array_length(hist_total, 1) AS n FROM probe_stats WHERE endpoint_id = $1`,
+      [id],
+    );
+    expect(rows[0].n).toBe(20);
+  });
+
+  it('a result row cannot omit interval_s: no default stands in for a missing value', async () => {
+    await expect(
+      pool.query(
+        `INSERT INTO probe_results (endpoint_id, started_at, scheduled_at, outcome, total_ms, redirects, truncated, worker_id, attempt_id)
+         VALUES ('00000000-0000-4000-8000-0000000000f2', now(), now(), 'up', 1, 0, false, 'w', '00000000-0000-4000-8000-0000000000f3')`,
+      ),
+    ).rejects.toThrow(/null value in column "interval_s"/);
+  });
+
   it('rejects an insert with no partition rather than filing it somewhere', async () => {
     await expect(
       new ProbeResultRepository(dbLike).insert(

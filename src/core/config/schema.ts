@@ -446,6 +446,8 @@ const storage = {
   // cannot duplicate; exhausting them leaves the lease to lapse and the slot
   // becomes an UNKNOWN gap, never a healthy one.
   RESULT_WRITE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  // Base delay before a retry; attempt n waits n times this. 0 retries at once.
+  RESULT_WRITE_BACKOFF_MS: z.coerce.number().int().min(0).max(10_000).default(100),
 };
 
 const baseSchema = z.object({

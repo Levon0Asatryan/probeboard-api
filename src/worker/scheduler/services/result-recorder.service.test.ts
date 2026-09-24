@@ -6,6 +6,7 @@ const cfg = loadConfig({
   DATABASE_URL: 'postgres://u:p@localhost:5432/probeboard',
   HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
   RESULT_WRITE_ATTEMPTS: '3',
+  RESULT_WRITE_BACKOFF_MS: '1',
 });
 
 const fence = { endpointId: 'e1', workerId: 'w1', slot: 't' };

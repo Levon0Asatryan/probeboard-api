@@ -8,8 +8,6 @@ import { ProbeResultRepository } from '../../storage/repositories/probe-result.r
 import type { NewProbeResult } from '../../storage/utils/outcome-mapping.js';
 import { EndpointRuntimeRepository } from '../repositories/endpoint-runtime.repository.js';
 
-export const RESULT_RETRY_BACKOFF_MS = 100;
-
 export interface Fence {
   endpointId: string;
   workerId: string;
@@ -61,7 +59,7 @@ export class ResultRecorderService {
       } catch (err) {
         lastError = err;
         if (attempt < this.cfg.RESULT_WRITE_ATTEMPTS)
-          await delay(RESULT_RETRY_BACKOFF_MS * attempt);
+          await delay(this.cfg.RESULT_WRITE_BACKOFF_MS * attempt);
       }
     }
     throw lastError;

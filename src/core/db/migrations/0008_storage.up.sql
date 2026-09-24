@@ -53,6 +53,11 @@ CREATE TABLE probe_results (
 
 CREATE INDEX probe_results_insert_xid_idx ON probe_results (insert_xid);
 
+-- The `DEFAULT 0` on the counters and sums below are not limits: 0 is the
+-- identity of the additive fold (`col = s.col + EXCLUDED.col`), and the fold
+-- always supplies the initial values itself. Nothing here is a bound, an
+-- interval or a cap, so rule #1 (limits come from validated config) does not
+-- apply; the histogram default is the same zero vector.
 CREATE TABLE probe_stats (
     endpoint_id       uuid        NOT NULL,
     granularity       stat_grain  NOT NULL,
