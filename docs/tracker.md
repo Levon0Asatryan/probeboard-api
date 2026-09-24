@@ -4,8 +4,8 @@ Status of record for probeboard work. The orchestrator session updates it after
 validating a worker's report; workers read it and propose changes in their
 report rather than editing it, so two chats never edit it at once.
 
-Last updated: 2026-09-21, by the orchestrator, after validating M4 PR 2 (#59)
-and recording its deviations from the merged plan.
+Last updated: 2026-09-22, by the orchestrator, after validating the M4
+closeout. `main` is green at 75c261e.
 
 ## Now
 
@@ -18,14 +18,24 @@ and recording its deviations from the merged plan.
   Eight Codex rounds on #49 found seven real defects, three of them wrong
   results that would have reached the database — see
   [m3-verification.md](m3-verification.md).
-- **M4 — Scheduler is in progress.** The plan merged as #52. PR 1 was the
-  process work; **#59** (PR 2) carries `endpoint_runtime`, the claim statement,
-  reconcile and their configuration — CI 5/5 green on `7ca431e`, Codex round 1
-  answered and resolved, awaiting merge. PR 3 is the tick loop, lease release
-  and expiry, the exit test and compose `stop_grace_period`.
-  Its pre-push review found three defects before Codex saw the branch, two of
-  them deadlocks, and six tests that passed for the wrong reason — the first
-  evidence that the review-before-push ordering (#53, #57) pays for itself.
+- **M4 — Scheduler is done.** Three PRs: #52 (the plan), #59
+  (`endpoint_runtime`, the claim statement, reconcile and their
+  configuration), #61 (the tick, the pool, the loader and the wiring). `main`
+  is green at 75c261e. Evidence in [m4-verification.md](m4-verification.md):
+  5554 claims across five worker identities with zero duplicate
+  `(endpoint_id, scheduled_at)`, and a `SIGKILL`ed worker's slot reclaimed
+  35.9s later by the survivor, bounded by the below-lease regime exactly as D5
+  requires.
+  #59's pre-push review found three defects before Codex saw the branch, two
+  of them deadlocks, and six tests that passed for the wrong reason — the
+  review-before-push ordering (#53, #57) paid for itself in its first
+  milestone.
+- **Next:** M5 — Storage. Partitioned `probe_results`, atomic rollups,
+  retention by `DROP`, histogram percentiles; 30-day p95 served from
+  aggregates with the raw rows dropped (NFR-8, NFR-9). The scheduler now
+  produces a real stream of results to aggregate, and M4 left M5 three things
+  by name: `probe_results` keyed on `(endpoint_id, scheduled_at)`,
+  `claim_log`'s retention, and D2's paused-row re-measurement.
 - **Before the scheduler probes for real:** run
   `npm run audit:json-path-assertions` once against each deployed database
   (D48/D50/D51). Nothing persists a probe result until M5.
@@ -75,8 +85,8 @@ added between M1 and M2; it is not in the thesis acceptance criteria.
 | —         | Social login           | code done; F2–F5 open | [social-login-plan.md](social-login-plan.md) | stub only — F3 pending                   |
 | M2        | Registration           | done                  | [m2-plan.md](m2-plan.md)                     | [m2-verification.md](m2-verification.md) |
 | M3        | Probe executor         | done                  | [m3-plan.md](m3-plan.md)                     | [m3-verification.md](m3-verification.md) |
-| M4        | Scheduler              | in progress (PR 3)    | [m4-plan.md](m4-plan.md)                     | —                                        |
-| M5        | Storage                | not started           | —                                            | —                                        |
+| M4        | Scheduler              | done                  | [m4-plan.md](m4-plan.md)                     | [m4-verification.md](m4-verification.md) |
+| M5        | Storage                | next                  | —                                            | —                                        |
 | M6        | Incidents              | not started           | —                                            | —                                        |
 | M7        | Alerting               | not started           | —                                            | —                                        |
 | M8        | Statistics             | not started           | —                                            | —                                        |
@@ -187,7 +197,11 @@ Items found while validating, not yet scheduled.
 | #59            | D17's M6 columns are not in `endpoint_runtime` yet. M6 needs them; confirm the shape when M6 is planned, not before.                                                                                                                                                                                                                                                                                                                                                                                                   | decide  |
 | #59            | `reconcile` scans the whole fleet every tick. Fine at thesis scale, measured at 50,000 rows; revisit only if M8's load work says so.                                                                                                                                                                                                                                                                                                                                                                                   | decide  |
 | #59            | M5's `probe_results` key should be `(endpoint_id, scheduled_at)` — the claim already returns the slot as PostgreSQL text for exactly this.                                                                                                                                                                                                                                                                                                                                                                             | fix     |
-| #59            | Compose `stop_grace_period` is untouched; it belongs to M4 PR 3 with the exit test.                                                                                                                                                                                                                                                                                                                                                                                                                                    | fix     |
+| #61            | The above-lease reclaim regime (§3.11) is proved by the automated e2e suite only; the below-lease one was demonstrated live in containers. Demonstrate the above-lease case live before M10's evaluation chapter cites either.                                                                                                                                                                                                                                                                                         | fix     |
+| #61            | `SCHEDULER_LOAD_BUDGET_MS` overrun under real `DATABASE_POOL_MAX` contention is untested. Belongs to M10's load test.                                                                                                                                                                                                                                                                                                                                                                                                  | decide  |
+| #61            | No per-row shutdown sweep for a settled-but-failed release or abandon. Lease expiry (D5/D6) already bounds it identically to the crash path, so the gap is promptness, not correctness; a real fix needs the pool to track write outcome per row rather than promise settlement.                                                                                                                                                                                                                                       | decide  |
+| M4 process     | #61 reached its two-round cap with four fix commits on the head that no independent reviewer had seen. The cap limits what is fixed, not whether the head is reviewed — `CLAUDE.md` now requires one scoped confirmation round on the head SHA, acting only on fix-now findings.                                                                                                                                                                                                                                       | process |
+| M4 process     | A container revalidation ran against a stale `pgdata` volume and gave misleading claim counts, caught by the worker and redone with `docker compose down -v`. A milestone's evidence run starts from an empty volume.                                                                                                                                                                                                                                                                                                  | process |
 | #59 / Codex    | Narrowing `PROBE_ALLOWED_INTERVALS_S` does not re-validate `endpoints.interval_s` rows written under the wider set. `interval_s` is checked on write only (`endpoints.service.ts:44-49`) and carries no database constraint, by rule #1. Raising the entry floor 1→10 is one instance; narrowing `30,60` to `60` strands 30s rows identically. What should happen to an existing row — silently clamped, rejected, disabled, or surfaced to its owner — is a design decision. Decide when M5 touches endpoint storage. | decide  |
 | #59 / Codex    | Codex asked the claim to exclude rows whose `scheduled_interval_s` differs from the live interval. Deferred: reconcile now uses `SKIP LOCKED`, so that predicate makes a skipped row unclaimable and turns one early probe into an unprobed endpoint. Revisit if M5 gives reconcile a guaranteed-completion path.                                                                                                                                                                                                      | decide  |
 | M3 process     | A Docker socket at `~/.docker/run/docker.sock` was reported as a blocker twice before being diagnosed. An environment failure is diagnosed to its cause before it is reported as blocking.                                                                                                                                                                                                                                                                                                                             | process |
