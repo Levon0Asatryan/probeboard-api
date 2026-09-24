@@ -12,7 +12,7 @@ import {
 import { toResultRow } from '../storage/utils/outcome-mapping.js';
 import { MonitorLoaderService } from './services/monitor-loader.service.js';
 import { ProbePoolService } from './services/probe-pool.service.js';
-import { ResultRecorderService } from './services/result-recorder.service.js';
+import { ResultRecorderService, type WriteBudget } from './services/result-recorder.service.js';
 
 /** `endpointId:scheduledAt` -- the pool's key, and what a claim, release or abandon all fence on. */
 export function slotKey(row: Pick<ClaimedSlot, 'endpoint_id' | 'scheduled_at'>): string {
@@ -271,6 +271,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * `timeoutMs` as `terminalWriteTimeoutMs`, plus whether the shutdown grace
+   * has already passed -- the recorder starts no retry after that point.
+   */
+  private terminalWriteBudget(): WriteBudget {
+    return {
+      timeoutMs: this.terminalWriteTimeoutMs(),
+      expired: this.shutdownDeadline !== undefined && Date.now() >= this.shutdownDeadline,
+    };
+  }
+
+  /**
    * The terminal write for a probed slot: the result and the lease release in
    * one transaction (docs/m5-plan.md §3.3), bounded by the time remaining to
    * the shutdown deadline -- not only during shutdown: a write blocked on a
@@ -300,7 +311,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           attemptId,
         }),
         { endpointId: row.endpoint_id, workerId: this.cfg.WORKER_ID, slot: row.scheduled_at },
-        () => this.terminalWriteTimeoutMs(),
+        () => this.terminalWriteBudget(),
       );
       if (released === 0) {
         this.logger.warn(

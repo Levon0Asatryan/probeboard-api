@@ -8,6 +8,14 @@ import { ProbeResultRepository } from '../../storage/repositories/probe-result.r
 import type { NewProbeResult } from '../../storage/utils/outcome-mapping.js';
 import { EndpointRuntimeRepository } from '../repositories/endpoint-runtime.repository.js';
 
+/** What the caller still allows a terminal write: see `SchedulerService.terminalWriteBudget`. */
+export interface WriteBudget {
+  /** The bound for the next statement, and the longest a backoff may sleep. Never 0. */
+  timeoutMs: number;
+  /** The shutdown grace has passed: no further attempt may start. */
+  expired: boolean;
+}
+
 export interface Fence {
   endpointId: string;
   workerId: string;
@@ -34,20 +42,27 @@ export class ResultRecorderService {
 
   /**
    * Up to `RESULT_WRITE_ATTEMPTS` attempts, each with its own
-   * `statement_timeout` from `timeoutMs()` (recomputed, so a late attempt is
-   * not handed a fresh shutdown grace). Idempotent by the row's key. The last
+   * `statement_timeout` from `budget()` (recomputed, so a late attempt is not
+   * handed a fresh shutdown grace). Idempotent by the row's key. The last
    * failure is rethrown; the caller leaves the lease to lapse.
+   *
+   * A retry never outlives the shutdown deadline: each backoff is capped at the
+   * time remaining, and once the budget is `expired` no attempt starts -- after
+   * the grace `ProbePoolService.drain` has reported the slot "still running"
+   * and `main.ts` is about to close the database pool, so a later retry would
+   * run against a pool that is going away (docs/m4-plan.md §3.9).
    */
   async recordAndRelease(
     row: NewProbeResult,
     fence: Fence,
-    timeoutMs: () => number,
+    budget: () => WriteBudget,
   ): Promise<{ inserted: number; released: number }> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.cfg.RESULT_WRITE_ATTEMPTS; attempt++) {
+      if (attempt > 1 && budget().expired) break;
       try {
         return await this.db.kysely.transaction().execute(async (trx) => {
-          await sql`SET LOCAL statement_timeout = ${sql.lit(Math.max(1, Math.trunc(timeoutMs())))}`.execute(
+          await sql`SET LOCAL statement_timeout = ${sql.lit(Math.max(1, Math.trunc(budget().timeoutMs)))}`.execute(
             trx,
           );
           const inserted = await this.results.insert(row, trx);
@@ -58,8 +73,10 @@ export class ResultRecorderService {
         });
       } catch (err) {
         lastError = err;
-        if (attempt < this.cfg.RESULT_WRITE_ATTEMPTS)
-          await delay(this.cfg.RESULT_WRITE_BACKOFF_MS * attempt);
+        const left = budget();
+        if (attempt < this.cfg.RESULT_WRITE_ATTEMPTS && !left.expired) {
+          await delay(Math.min(this.cfg.RESULT_WRITE_BACKOFF_MS * attempt, left.timeoutMs));
+        }
       }
     }
     throw lastError;

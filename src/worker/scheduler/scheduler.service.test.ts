@@ -473,7 +473,9 @@ describe('SchedulerService: stop', () => {
       await pool.started[0].work;
 
       expect(recorder.recordAndRelease).toHaveBeenCalledOnce();
-      const timeoutPassed = (recorder.recordAndRelease.mock.calls[0][2] as () => number)();
+      const timeoutPassed = (
+        recorder.recordAndRelease.mock.calls[0][2] as () => { timeoutMs: number }
+      )().timeoutMs;
       // Remaining time, not a fresh grace: close to 1000ms, nowhere near the
       // full SCHEDULER_SHUTDOWN_GRACE_MS.
       expect(timeoutPassed).toBeLessThan(1500);

@@ -183,7 +183,10 @@ describe('ResultRecorderService (real transaction)', () => {
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a1',
     });
-    const res = await recorder().recordAndRelease(row, fence(id), () => 2000);
+    const res = await recorder().recordAndRelease(row, fence(id), () => ({
+      timeoutMs: 2000,
+      expired: false,
+    }));
     expect(res).toEqual({ inserted: 1, released: 1 });
 
     const stored = await pool.query<{
@@ -210,7 +213,10 @@ describe('ResultRecorderService (real transaction)', () => {
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a2',
     });
-    const res = await recorder().recordAndRelease(row, fence(id), () => 2000);
+    const res = await recorder().recordAndRelease(row, fence(id), () => ({
+      timeoutMs: 2000,
+      expired: false,
+    }));
     expect(res).toEqual({ inserted: 1, released: 0 });
     expect((await runtime(id)).leased_by).toBe('someone-else');
     const { rows } = await pool.query(`SELECT 1 FROM probe_results WHERE endpoint_id = $1`, [id]);
@@ -226,8 +232,14 @@ describe('ResultRecorderService (real transaction)', () => {
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a3',
     });
-    const first = await recorder().recordAndRelease(row, fence(id), () => 2000);
-    const second = await recorder().recordAndRelease(row, fence(id), () => 2000);
+    const first = await recorder().recordAndRelease(row, fence(id), () => ({
+      timeoutMs: 2000,
+      expired: false,
+    }));
+    const second = await recorder().recordAndRelease(row, fence(id), () => ({
+      timeoutMs: 2000,
+      expired: false,
+    }));
     expect(first.inserted).toBe(1);
     expect(second.inserted).toBe(0);
     const { rows } = await pool.query(`SELECT 1 FROM probe_results WHERE endpoint_id = $1`, [id]);
@@ -250,7 +262,7 @@ describe('ResultRecorderService (real transaction)', () => {
           attemptId,
         }),
         fence(id),
-        () => 2000,
+        () => ({ timeoutMs: 2000, expired: false }),
       );
     }
     const { rows } = await pool.query(`SELECT 1 FROM probe_results WHERE endpoint_id = $1`, [id]);
@@ -267,7 +279,10 @@ describe('ResultRecorderService (real transaction)', () => {
       attemptId: '00000000-0000-4000-8000-0000000000c1',
     });
     await expect(
-      recorder({ RESULT_WRITE_ATTEMPTS: '2' }).recordAndRelease(row, fence(id), () => 2000),
+      recorder({ RESULT_WRITE_ATTEMPTS: '2' }).recordAndRelease(row, fence(id), () => ({
+        timeoutMs: 2000,
+        expired: false,
+      })),
     ).rejects.toThrow(/no partition/);
     const rt = await runtime(id);
     expect(rt.leased_by).toBe('w1');
@@ -293,7 +308,10 @@ describe('ResultRecorderService (real transaction)', () => {
       await blocker.query('BEGIN');
       await blocker.query(`SELECT 1 FROM endpoint_runtime WHERE endpoint_id = $1 FOR UPDATE`, [id]);
       await expect(
-        recorder({ RESULT_WRITE_ATTEMPTS: '1' }).recordAndRelease(row, fence(id), () => 150),
+        recorder({ RESULT_WRITE_ATTEMPTS: '1' }).recordAndRelease(row, fence(id), () => ({
+          timeoutMs: 150,
+          expired: false,
+        })),
       ).rejects.toThrow(/statement timeout/);
     } finally {
       await blocker.query('ROLLBACK');
@@ -330,7 +348,7 @@ describe('ResultRecorderService (real transaction)', () => {
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000e1',
     });
-    await recorder().recordAndRelease(row, fence(id), () => 2000);
+    await recorder().recordAndRelease(row, fence(id), () => ({ timeoutMs: 2000, expired: false }));
     const { rows } = await pool.query<{
       outcome: string;
       failure_class: string;
