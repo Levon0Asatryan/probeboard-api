@@ -448,6 +448,12 @@ const storage = {
   RESULT_WRITE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
   // Base delay before a retry; attempt n waits n times this. 0 retries at once.
   RESULT_WRITE_BACKOFF_MS: z.coerce.number().int().min(0).max(10_000).default(100),
+  // How often the rollup folds new results into the aggregates (07's table).
+  // Bounded above: a delay past 2^31-1 ms would fire at once, not late.
+  ROLLUP_TICK_MS: z.coerce.number().int().min(100).max(600_000).default(10_000),
+  // Distinct inserting transactions folded per batch inside one rollup pass. A
+  // batch is whole transactions, so rows are never split across two batches.
+  ROLLUP_BATCH_ROWS: z.coerce.number().int().min(1).max(100_000).default(5000),
 };
 
 const baseSchema = z.object({
