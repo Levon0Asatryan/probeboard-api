@@ -804,3 +804,40 @@ describe('scheduler cross-field rules', () => {
     expect(cfg.SCHEDULER_TICK_MS + cfg.SCHEDULER_LOAD_BUDGET_MS).toBeLessThanOrEqual(1000);
   });
 });
+
+describe('storage bounds reject invalid values at boot', () => {
+  it.each([
+    ['PARTITION_AHEAD_DAYS', '0', 'Too small: expected number to be >=1'],
+    ['PARTITION_AHEAD_DAYS', '31', 'Too big: expected number to be <=30'],
+    ['PARTITION_AHEAD_MONTHS', '0', 'Too small: expected number to be >=1'],
+    ['PARTITION_AHEAD_MONTHS', '13', 'Too big: expected number to be <=12'],
+    ['STORAGE_MAINTENANCE_INTERVAL_MS', '999', 'Too small: expected number to be >=1000'],
+    ['STORAGE_MAINTENANCE_INTERVAL_MS', '86400001', 'Too big: expected number to be <=86400000'],
+    ['RESULT_WRITE_ATTEMPTS', '0', 'Too small: expected number to be >=1'],
+    ['RESULT_WRITE_ATTEMPTS', '11', 'Too big: expected number to be <=10'],
+  ])('rejects %s=%s', (key, value, message) => {
+    // On the bound's own message: the horizon rule below names two of these
+    // keys in its text, so a bare key match would pass with a bound deleted.
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(`${key}: ${message}`));
+  });
+
+  it('rejects a horizon two missed maintenance ticks would exhaust', () => {
+    // One day of partitions with a tick every day: a single missed tick and
+    // every insert fails.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        PARTITION_AHEAD_DAYS: '1',
+        STORAGE_MAINTENANCE_INTERVAL_MS: '86400000',
+      }),
+    ).toThrow(/PARTITION_AHEAD_DAYS: must exceed twice STORAGE_MAINTENANCE_INTERVAL_MS/);
+  });
+
+  it('accepts the defaults', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.PARTITION_AHEAD_DAYS).toBe(3);
+    expect(cfg.PARTITION_AHEAD_MONTHS).toBe(2);
+    expect(cfg.STORAGE_MAINTENANCE_INTERVAL_MS).toBe(3_600_000);
+    expect(cfg.RESULT_WRITE_ATTEMPTS).toBe(3);
+  });
+});
