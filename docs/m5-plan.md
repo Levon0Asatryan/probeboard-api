@@ -344,6 +344,15 @@ upsert, not _N_.
   max (they ignore `NULL`). No value is read into the worker and written back
   (`AGENTS.md`, Concurrency).
 
+**Seconds are attributed whole to the bucket holding `started_at`** (settled in
+PR 2; deferred from round 6 on the plan PR). A 300 s probe at 12:00:30 puts all
+300 s in the 12:00 m1 bucket; it is not split across the minutes it represents.
+Counts (`count_*`) are exact per bucket. The seconds columns are off by at most
+one interval (3600 s at `PROBE_ALLOWED_INTERVALS_S`' ceiling) at each edge of a
+window and converge as the window grows past it, so **time-weighted uptime is
+not offered for a window shorter than the longest allowed interval**; M8's
+windows (24 h and up) are far above it.
+
 m1, h1 and d1 are all derived from the **same batch**, never from each other,
 so no grain drifts from another. The merge is integer addition — associative
 and exact (ADR-0003).

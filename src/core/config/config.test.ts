@@ -817,6 +817,12 @@ describe('storage bounds reject invalid values at boot', () => {
     ['RESULT_WRITE_ATTEMPTS', '11', 'Too big: expected number to be <=10'],
     ['RESULT_WRITE_BACKOFF_MS', '-1', 'Too small: expected number to be >=0'],
     ['RESULT_WRITE_BACKOFF_MS', '10001', 'Too big: expected number to be <=10000'],
+    ['ROLLUP_TICK_MS', '99', 'Too small: expected number to be >=100'],
+    ['ROLLUP_TICK_MS', '600001', 'Too big: expected number to be <=600000'],
+    ['ROLLUP_BATCH_ROWS', '0', 'Too small: expected number to be >=1'],
+    ['ROLLUP_BATCH_ROWS', '100001', 'Too big: expected number to be <=100000'],
+    ['ROLLUP_STALE_TICKS', '0', 'Too small: expected number to be >=1'],
+    ['ROLLUP_STALE_TICKS', '1001', 'Too big: expected number to be <=1000'],
   ])('rejects %s=%s', (key, value, message) => {
     // On the bound's own message: the horizon rule below names two of these
     // keys in its text, so a bare key match would pass with a bound deleted.
@@ -842,5 +848,8 @@ describe('storage bounds reject invalid values at boot', () => {
     expect(cfg.STORAGE_MAINTENANCE_INTERVAL_MS).toBe(3_600_000);
     expect(cfg.RESULT_WRITE_ATTEMPTS).toBe(3);
     expect(cfg.RESULT_WRITE_BACKOFF_MS).toBe(100);
+    expect(cfg.ROLLUP_TICK_MS).toBe(10_000);
+    expect(cfg.ROLLUP_BATCH_ROWS).toBe(5000);
+    expect(cfg.ROLLUP_STALE_TICKS).toBe(10);
   });
 });
