@@ -69,3 +69,18 @@ export function addUtcMonths(at: Date, months: number): Date {
 export function addUtcDays(at: Date, days: number): Date {
   return new Date(at.getTime() + days * 86_400_000);
 }
+
+/** The UTC start of the period a partition suffix names, or `null` if it is not one. */
+export function periodFromSuffix(kind: PeriodKind, suffix: string): Date | null {
+  const pattern = kind === 'day' ? /^(\d{4})(\d{2})(\d{2})$/ : /^(\d{4})(\d{2})$/;
+  const m = pattern.exec(suffix);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = kind === 'day' ? Number(m[3]) : 1;
+  const start = new Date(Date.UTC(y, mo - 1, d));
+  // Reject a suffix Date.UTC would silently normalise (month 13, day 32).
+  return start.getUTCFullYear() === y && start.getUTCMonth() === mo - 1 && start.getUTCDate() === d
+    ? start
+    : null;
+}

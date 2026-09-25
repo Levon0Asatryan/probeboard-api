@@ -30,10 +30,16 @@ function fakePartitions() {
   };
 }
 
-function make(partitions = fakePartitions()) {
+function fakeRetention() {
+  return {
+    run: vi.fn().mockResolvedValue({ skipped: false, dropped: [], blocked: [], deferred: [] }),
+  };
+}
+
+function make(partitions = fakePartitions(), retention = fakeRetention()) {
   const logger = fakeLogger();
-  const svc = new StorageMaintenanceService(partitions as never, cfg, logger);
-  return { svc, partitions, logger };
+  const svc = new StorageMaintenanceService(partitions as never, retention as never, cfg, logger);
+  return { svc, partitions, retention, logger };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -80,6 +86,46 @@ describe('StorageMaintenanceService', () => {
   it('is quiet about a healthy horizon and about a pass another worker already ran', async () => {
     const { svc, partitions, logger } = make();
     partitions.ensure.mockResolvedValue({ ran: false, created: [] });
+    await svc.tick();
+    expect(logger.calls.filter((c) => c.level === 'error')).toEqual([]);
+  });
+
+  it('runs retention after partition creation on every tick', async () => {
+    const { svc, retention } = make();
+    await svc.tick(new Date('2026-09-24T00:00:00Z'));
+    expect(retention.run).toHaveBeenCalledWith(new Date('2026-09-24T00:00:00Z'));
+  });
+
+  it('still runs retention when partition creation failed, and still creates when retention fails', async () => {
+    const a = make();
+    a.partitions.ensure.mockRejectedValueOnce(new Error('ddl'));
+    await a.svc.tick();
+    expect(a.retention.run).toHaveBeenCalledOnce();
+
+    const b = make();
+    b.retention.run.mockRejectedValueOnce(new Error('drop'));
+    await expect(b.svc.tick()).resolves.toBeUndefined();
+    expect(b.partitions.ensure).toHaveBeenCalledOnce();
+    expect(b.logger.calls.some((c) => c.level === 'error')).toBe(true);
+  });
+
+  it('reports a partition the guard refused to drop at error, naming it', async () => {
+    const { svc, retention, logger } = make();
+    retention.run.mockResolvedValue({
+      skipped: false,
+      dropped: [],
+      blocked: [{ partition: 'probe_results_p20260101', reason: 'unfolded rows' }],
+      deferred: [],
+    });
+    await svc.tick();
+    const e = logger.calls.find((c) => c.level === 'error');
+    expect(e?.args[0]).toEqual({ partition: 'probe_results_p20260101' });
+    expect(String(e?.args[1])).toMatch(/refused to drop: unfolded rows/);
+  });
+
+  it('says nothing when another worker held the retention lock', async () => {
+    const { svc, retention, logger } = make();
+    retention.run.mockResolvedValue({ skipped: true, dropped: [], blocked: [], deferred: [] });
     await svc.tick();
     expect(logger.calls.filter((c) => c.level === 'error')).toEqual([]);
   });
