@@ -63,6 +63,10 @@ describe('classifyError', () => {
     ['ECONNREFUSED', 'CONNECTION_REFUSED'],
     ['UND_ERR_CONNECT_TIMEOUT', 'CONNECTION_TIMEOUT'],
     ['ETIMEDOUT', 'CONNECTION_TIMEOUT'],
+    // Not in §3.4's column: the path saying the host cannot be reached, which
+    // is §3.4's CONNECTION_TIMEOUT meaning delivered actively (#72, defect 2).
+    ['EHOSTUNREACH', 'CONNECTION_TIMEOUT'],
+    ['ENETUNREACH', 'CONNECTION_TIMEOUT'],
     ['ECONNRESET', 'CONNECTION_RESET'],
     ['EPIPE', 'CONNECTION_RESET'],
     ['CERT_HAS_EXPIRED', 'TLS_EXPIRED'],

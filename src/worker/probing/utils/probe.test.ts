@@ -6,6 +6,7 @@
  * cannot produce: `resolver` for DNS answers, `clock` for a clock that
  * misbehaves, and `dispatcherFactory` for a transport that never connects.
  */
+import net from 'node:net';
 import { Agent, type Dispatcher } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SsrfGuardConfig } from '../../../core/ssrf/host-validator.js';
@@ -683,6 +684,31 @@ describe('probe, real resolver failures under the guard', () => {
   });
 });
 
+/**
+ * An address this machine refuses to route to, and the code it refuses with.
+ * Fails the test rather than falling back: a machine that routes every
+ * candidate would otherwise time out, which also reads CONNECTION_TIMEOUT
+ * and would prove nothing about the mapping.
+ */
+async function unreachableTarget(): Promise<{ address: string; code: string }> {
+  for (const address of ['100::1', '255.255.255.255', '0.0.0.1']) {
+    const code = await new Promise<string | undefined>((resolve) => {
+      const socket = net.connect({ host: address, port: 8080, timeout: 1000 });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(undefined);
+      });
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(undefined);
+      });
+      socket.once('error', (error: NodeJS.ErrnoException) => resolve(error.code));
+    });
+    if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') return { address, code };
+  }
+  throw new Error('no candidate address is refused as unreachable on this machine');
+}
+
 describe('probe, transport failures', () => {
   it('classifies a refused connection from the real wrapped error (D34)', async () => {
     // fetch() wraps transport errors in a TypeError whose own code is
@@ -697,6 +723,37 @@ describe('probe, transport failures', () => {
     expect(outcome).toMatchObject({ success: false, failureClass: 'CONNECTION_REFUSED' });
     // D22: total_ms exists for a failure that never reached a response.
     expect(outcome.timings.totalMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('classifies a real unreachable host as CONNECTION_TIMEOUT, keeping the code (#72)', async () => {
+    // The kernel's own answer, not a synthetic error: an address this host
+    // has no route to fails at connect with EHOSTUNREACH or ENETUNREACH
+    // straight away. Which one depends on the kernel -- 100::1 measured
+    // EHOSTUNREACH on macOS and ENETUNREACH on Linux -- so the target is
+    // whichever candidate this machine refuses promptly, found first with a
+    // bare socket.
+    const target = await unreachableTarget();
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com:8080/' }),
+      deps({
+        ssrf: GUARD_ON,
+        resolver: {
+          resolve4: () => Promise.resolve([ROUTABLE]),
+          resolve6: () => Promise.resolve([]),
+        },
+        dispatcherFactory: (options) =>
+          new Agent({ connect: createConnector({ ...options, address: target.address }) }),
+      }),
+    );
+
+    // The code as well as the class: a deadline firing mid-connect is also
+    // CONNECTION_TIMEOUT, but carries no code, so this cannot pass through
+    // the abort path by accident.
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'CONNECTION_TIMEOUT',
+      code: target.code,
+    });
   });
 
   it('classifies a real mid-response reset as CONNECTION_RESET', async () => {

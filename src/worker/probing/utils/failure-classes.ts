@@ -53,6 +53,18 @@ const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   ECONNREFUSED: 'CONNECTION_REFUSED',
   UND_ERR_CONNECT_TIMEOUT: 'CONNECTION_TIMEOUT',
   ETIMEDOUT: 'CONNECTION_TIMEOUT',
+  // Beyond §3.4's column: the kernel's answer when something on the path
+  // *says* the host cannot be reached instead of silently dropping the SYN --
+  // an ICMP host/net unreachable, an administratively-prohibited reject, or a
+  // local ARP that got no reply. §3.4's CONNECTION_TIMEOUT meaning is exactly
+  // that, "firewall or dead host"; only the delivery differs, and a firewall
+  // configured to REJECT rather than DROP must not change the class. Not
+  // CONNECTION_REFUSED, whose meaning is the opposite ("host up, nothing
+  // listening"). Which of the two codes arrives depends on the kernel and its
+  // routes, not on the target: the same address measured EHOSTUNREACH on
+  // macOS and ENETUNREACH on Linux, so both must mean the same thing here.
+  EHOSTUNREACH: 'CONNECTION_TIMEOUT',
+  ENETUNREACH: 'CONNECTION_TIMEOUT',
   ECONNRESET: 'CONNECTION_RESET',
   EPIPE: 'CONNECTION_RESET',
   // undici's own wrapper for "the socket closed when we did not expect it".
