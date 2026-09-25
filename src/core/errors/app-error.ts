@@ -43,3 +43,15 @@ export class QuotaExceededError extends AppError {
     super('QUOTA_EXCEEDED', message, 409, details);
   }
 }
+
+/**
+ * A rate limit refused the request. Carries how long to wait, which the HTTP
+ * layer sends as `Retry-After` (RFC 9110 §10.2.3) -- without it a client
+ * refused with 429 can only guess, and guessing short burns the next attempt
+ * too (#72).
+ */
+export class RateLimitedError extends AppError {
+  constructor(readonly retryAfterSeconds: number) {
+    super('RATE_LIMITED', 'too many attempts, try again later', 429);
+  }
+}

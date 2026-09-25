@@ -4,7 +4,7 @@ import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
 import type { Database } from '../../core/db/types.js';
-import { AppError, ValidationError } from '../../core/errors/app-error.js';
+import { AppError, RateLimitedError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/repositories/user.repository.js';
 import { PasswordService } from './services/password.service.js';
 import { AuthRateLimitService } from './services/rate-limit.service.js';
@@ -25,12 +25,6 @@ export interface AuthenticatedUser {
 export class InvalidCredentialsError extends AppError {
   constructor() {
     super('INVALID_CREDENTIALS', 'email or password is incorrect', 401);
-  }
-}
-
-export class RateLimitedError extends AppError {
-  constructor(readonly retryAfterSeconds: number) {
-    super('RATE_LIMITED', 'too many attempts, try again later', 429);
   }
 }
 

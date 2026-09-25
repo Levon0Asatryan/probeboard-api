@@ -323,6 +323,25 @@ describe('a database outage (#72, D3)', () => {
   });
 });
 
+describe('rate limiting (#72)', () => {
+  it('declares Retry-After on every 429', () => {
+    const paths = buildOpenApiDocument().paths as Record<
+      string,
+      Record<string, { responses: Record<string, { headers?: Record<string, unknown> }> }>
+    >;
+    let seen = 0;
+    for (const [path, ops] of Object.entries(paths)) {
+      for (const [method, op] of Object.entries(ops)) {
+        const refused = op.responses['429'];
+        if (refused === undefined) continue;
+        seen += 1;
+        expect(refused.headers, `${method} ${path}`).toHaveProperty('Retry-After');
+      }
+    }
+    expect(seen).toBeGreaterThan(5);
+  });
+});
+
 describe('the error contract', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;

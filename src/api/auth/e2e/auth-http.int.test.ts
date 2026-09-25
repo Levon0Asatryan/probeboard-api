@@ -68,6 +68,7 @@ interface Res {
   body: unknown;
   cookie?: string;
   setCookieRaw?: string;
+  retryAfter?: string;
 }
 
 async function call(
@@ -91,6 +92,7 @@ async function call(
     body: text ? (JSON.parse(text) as unknown) : undefined,
     setCookieRaw: raw,
     cookie: raw ? raw.split(';')[0] : undefined,
+    retryAfter: res.headers.get('retry-after') ?? undefined,
   };
 }
 
@@ -389,6 +391,9 @@ describe('A-6: rate limiting through HTTP', () => {
     const res = await login('victim@example.com', 'correct horse battery');
     expect(res.status).toBe(429);
     expect(res.body).toMatchObject({ code: 'RATE_LIMITED' });
+    // How long to wait: the whole window, after which every attempt that led
+    // here has aged out (#72). AUTH_WINDOW_MS is the default 15 minutes.
+    expect(res.retryAfter).toBe('900');
   });
 
   it('a forged X-Forwarded-For does not buy a fresh limit', async () => {

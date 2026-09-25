@@ -1,4 +1,4 @@
-import { AppError } from './app-error.js';
+import { AppError, RateLimitedError } from './app-error.js';
 import { isDatabaseUnavailable } from './database-unavailable.js';
 import { describeError } from './describe.js';
 
@@ -15,6 +15,8 @@ export interface MappedError {
   logDetail: string;
   /** 5xx means we broke; 4xx means the caller did. Only the former is our bug. */
   isServerFault: boolean;
+  /** Response headers the status needs, e.g. `Retry-After` on a 429. */
+  headers?: Record<string, string>;
 }
 
 /** Messages for statuses raised by the framework rather than by our code. */
@@ -65,6 +67,9 @@ export function toErrorResponse(err: unknown): MappedError {
       },
       logDetail: describeError(err),
       isServerFault: err.status >= 500,
+      ...(err instanceof RateLimitedError
+        ? { headers: { 'Retry-After': String(err.retryAfterSeconds) } }
+        : {}),
     };
   }
 

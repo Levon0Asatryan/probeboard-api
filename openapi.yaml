@@ -932,6 +932,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -991,6 +997,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -1025,6 +1037,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -1077,6 +1095,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -1175,6 +1199,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -1220,6 +1250,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (RFC 9110 §10.2.3).
+              schema:
+                type: integer
+                minimum: 1
         "503":
           description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:

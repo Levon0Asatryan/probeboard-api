@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AppError, NotFoundError, QuotaExceededError, ValidationError } from './app-error.js';
+import {
+  AppError,
+  NotFoundError,
+  QuotaExceededError,
+  RateLimitedError,
+  ValidationError,
+} from './app-error.js';
 import { toErrorResponse } from './http-mapping.js';
 
 describe('toErrorResponse', () => {
@@ -47,6 +53,16 @@ describe('toErrorResponse', () => {
       status: 500,
       body: { code: 'INTERNAL_ERROR' },
     });
+  });
+
+  it('tells a rate-limited client how long to wait (#72)', () => {
+    const m = toErrorResponse(new RateLimitedError(900));
+    expect(m.status).toBe(429);
+    expect(m.headers).toEqual({ 'Retry-After': '900' });
+  });
+
+  it('adds no header to an ordinary error', () => {
+    expect(toErrorResponse(new NotFoundError('monitor')).headers).toBeUndefined();
   });
 
   it('falls back for a status it does not know', () => {
