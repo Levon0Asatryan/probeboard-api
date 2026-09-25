@@ -42,28 +42,58 @@ export interface TestDnsServer {
   port: number;
   /** Queries received, so a test can prove the resolver really asked. */
   queries: () => number;
+  /** Socket errors after startup, which would otherwise go unseen. */
+  errors: () => Error[];
   close: () => Promise<void>;
 }
 
-/** `mode` answers A queries; `aaaaMode` answers AAAA, defaulting to the same. */
+/**
+ * `mode` answers A queries; `aaaaMode` answers AAAA, defaulting to the same.
+ * `port` is 0 (any free port) unless a test needs a specific one.
+ */
 export async function startDnsServer(
   mode: DnsFailureMode,
   aaaaMode: DnsFailureMode = mode,
+  options: { port?: number } = {},
 ): Promise<TestDnsServer> {
   const socket = dgram.createSocket('udp4');
   let received = 0;
 
+  // Attached before `bind`: a socket's 'error' with no listener is an
+  // uncaught exception, which would take the whole Vitest worker down rather
+  // than fail the one test whose server could not start. A bind failure
+  // rejects the start; anything later is kept for a failing test to read.
+  const errors: Error[] = [];
+  let rejectStart: ((error: Error) => void) | undefined;
+  socket.on('error', (error) => {
+    if (rejectStart) rejectStart(error);
+    else errors.push(error);
+  });
+
   socket.on('message', (query, peer) => {
     received += 1;
     const answer = respond(query, qtypeOf(query) === 28 ? aaaaMode : mode);
-    if (answer !== undefined) socket.send(answer, peer.port, peer.address);
+    if (answer === undefined) return;
+    // A failed send is recorded rather than thrown: the resolver on the
+    // other end has already given up, and what it reported is what the test
+    // asserts on.
+    socket.send(answer, peer.port, peer.address, (error) => {
+      if (error) errors.push(error);
+    });
   });
 
-  await new Promise<void>((resolve) => socket.bind(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    rejectStart = reject;
+    socket.bind(options.port ?? 0, '127.0.0.1', () => {
+      rejectStart = undefined;
+      resolve();
+    });
+  });
 
   return {
     port: socket.address().port,
     queries: () => received,
+    errors: () => [...errors],
     close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
   };
 }
