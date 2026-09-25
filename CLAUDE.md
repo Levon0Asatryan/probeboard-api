@@ -214,7 +214,12 @@ Applies to every chat, with or without a handoff prompt. The report
    container. A `--rm` flag on every one-off `docker run` prevents most of it.
    Remove scratch volumes and images the task created; leave
    `probeboard-postgres-1` and `probeboard_pgdata`, which the integration
-   suite uses. Say in the report what was running and that it is stopped.
+   suite uses. The one exception is an evidence run, which starts from
+   `docker-compose down -v` so stale rows cannot leak into its numbers — M5's
+   first attempt reported misleading claim counts from exactly that. The
+   volume holds only test data, so wiping it is safe; say in the report that
+   it was recreated empty. Say in the report what was running and that it is
+   stopped.
 6. At milestone end, `docs/mN-verification.md`: what was executed and what it
    produced, including defects found by running it.
 7. Report back in the format in `docs/handoff-template.md`. Say plainly what
