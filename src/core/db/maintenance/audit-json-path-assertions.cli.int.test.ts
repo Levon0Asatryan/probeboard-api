@@ -251,35 +251,19 @@ describe('audit-json-path-assertions CLI', () => {
     expect(await readAssertions(endpointId)).toEqual([BODY]);
   }, 60_000);
 
-  // SKIPPED DELIBERATELY, and not as tidying-up: this is a reproduction of a
-  // defect that is still in `main`, kept executable so the fix can be proved
-  // when it lands. `AGENTS.md` flags `.skip`, so the reason is stated here
-  // rather than left for a reviewer to infer.
-  //
-  // It fails today, and the failure is the evidence: D69 shipped
-  // `stream.destroy()` as the way to release a stalled write, and that does
-  // not work. A write already blocked on a full pipe is not released by it,
-  // so the CLI never exits and this test dies on its timeout. Measured
-  // directly -- a child writing ~1 MB to a pipe nobody reads, then applying
-  // each strategy:
+  // D69's reproduction, skipped on `main` until the fix it waited for landed
+  // (tracker #49). A write blocked on a full pipe is released by nothing in
+  // the stream API -- measured, a child writing ~1 MB to a pipe nobody reads:
   //
   //     none            HUNG
-  //     destroy()       HUNG     <- what D69 ships
+  //     destroy()       HUNG     <- what D69 first shipped
   //     unref()         HUNG
-  //     process.exit()  exited after 1041ms
+  //     process.exit()  exited
   //
-  // so the real fix is the bounded exit Codex suggested, taken after the
-  // diagnostic has been awaited (which keeps D68's flush guarantee intact).
-  // Deferred rather than fix-now: the audit is an operator-run script and the
-  // hang happens *after* the rollback, so no data is lost and no request path
-  // is affected. Tracked as an M3 follow-up.
-  //
-  // Un-skip when that bounded exit lands; it should then pass unchanged.
-  //
-  // Caveat on the matrix: measured on Node v24.20.0, and this project pins
-  // Node 22. That re-run has not been done, so the numbers above are strong
-  // evidence rather than settled fact -- the same gap D40 records.
-  it.skip('exits instead of hanging when stdout stalls with a full pipe', async () => {
+  // on Node 24 and on the pinned Node 22 alike. So the CLI now exits
+  // explicitly once its outcome is settled and reported, and this passes
+  // unchanged from the reproduction that was committed skipped.
+  it('exits instead of hanging when stdout stalls with a full pipe', async () => {
     // Deterministic, not timed: a pipe holds at most 64 KiB, so seeding far
     // more output than that guarantees the writer blocks, whatever the exact
     // capacity.
@@ -304,8 +288,7 @@ describe('audit-json-path-assertions CLI', () => {
     // somehow completed would leave none.
     const remaining = await countUnsupportedRows();
     expect(remaining).toBeGreaterThan(0);
-    // Shorter than the other cases on purpose: while this reproduces an
-    // unfixed hang, an accidental un-skip should fail quickly rather than
-    // stall a suite for a minute and a half.
+    // Shorter than the other cases: a regression to the hang should fail
+    // quickly rather than stall the suite for a minute and a half.
   }, 30_000);
 });
