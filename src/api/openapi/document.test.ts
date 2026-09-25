@@ -262,6 +262,48 @@ describe('the tag filter parameter', () => {
   });
 });
 
+describe('statuses reachable before the handler runs (#72, defect 4)', () => {
+  // Each of these is answered by something shared -- a pipe on the path
+  // parameter, the JSON body limit -- rather than by the controller, which is
+  // why six operations shipped without them. Stated as a rule over the whole
+  // document, so a new route carrying one of these parameters or a body is
+  // held to it without anyone listing it here.
+  interface Operation {
+    requestBody?: unknown;
+    responses: Record<string, unknown>;
+  }
+  const operations = (): [string, string, Operation][] => {
+    const paths = buildOpenApiDocument().paths as Record<string, Record<string, Operation>>;
+    return Object.entries(paths).flatMap(([path, ops]) =>
+      Object.entries(ops).map(([method, op]): [string, string, Operation] => [path, method, op]),
+    );
+  };
+
+  it('documents 400 on every operation with an {id}, which ParseUUIDPipe refuses when malformed', () => {
+    const withId = operations().filter(([path]) => path.includes('{id}'));
+    expect(withId.length).toBeGreaterThanOrEqual(10);
+    for (const [path, method, op] of withId) {
+      expect(op.responses, `${method} ${path}`).toHaveProperty('400');
+    }
+  });
+
+  it('documents 413 on every operation that takes a body, which the body limit can refuse', () => {
+    const withBody = operations().filter(([, , op]) => op.requestBody !== undefined);
+    expect(withBody.length).toBeGreaterThanOrEqual(7);
+    for (const [path, method, op] of withBody) {
+      expect(op.responses, `${method} ${path}`).toHaveProperty('413');
+    }
+  });
+
+  it('documents 404 on every operation with a {provider}, which the provider pipe refuses', () => {
+    const withProvider = operations().filter(([path]) => path.includes('{provider}'));
+    expect(withProvider.length).toBeGreaterThanOrEqual(4);
+    for (const [path, method, op] of withProvider) {
+      expect(op.responses, `${method} ${path}`).toHaveProperty('404');
+    }
+  });
+});
+
 describe('the error contract', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;
