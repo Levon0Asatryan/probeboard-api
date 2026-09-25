@@ -10,13 +10,13 @@ Date: 2026-09-25, 09:10–09:47 UTC · `main` at `cf1454b` · PostgreSQL 17
 
 ## Summary
 
-**103 checks: 90 pass, 5 fail, 8 gaps.**
+**104 checks: 90 pass, 5 fail, 9 gaps.**
 
 | Part                           | Checks | Pass | Fail | Gap |
 | ------------------------------ | -----: | ---: | ---: | --: |
 | A — one continuous journey     |     19 |   17 |    0 |   2 |
 | B — accounts and sessions (M1) |     11 |   11 |    0 |   0 |
-| B — social login               |      7 |    5 |    1 |   1 |
+| B — social login               |      8 |    5 |    1 |   2 |
 | B — registration (M2)          |     13 |   10 |    2 |   1 |
 | B — probing (M3)               |     21 |   16 |    2 |   3 |
 | B — scheduler (M4)             |      6 |    6 |    0 |   0 |
@@ -50,8 +50,10 @@ confirmed as they stand: no HTTP route for statistics (NFR-9's user half);
 endpoint deletion (B-6); real Google and GitHub unverified (F2–F5); a
 `fetch`-blocked port records `unknown` (M3 D73). Two are new: the stored row
 cannot say **which** assertion failed (C-3, D-4), and the endpoint list carries
-no current status or latest response time (FR-10). One could not be exercised
-live: the connect-time SSRF pin inside a single probe.
+no current status or latest response time (FR-10). Two could not be
+exercised here: the connect-time SSRF pin inside a single probe, and Google's
+`/start` redirect, which needs a discovery document the overlay's resolver
+cannot fetch.
 
 **No merged verification record is contradicted.** Two findings bear on
 merged documents: M3's plan (D14) maps a resolver error to `DNS_FAILURE` only
@@ -193,15 +195,16 @@ URLs are constructor defaults, injectable only in tests), so the compose stack
 cannot reach the local stub. Every provider-free path went over HTTP; the round
 trip went through its suite.
 
-| #    | Requirement                                 | How                                                                                                                               | Evidence                                                                                                                                                                                                                                                                                                                                                 | Result |
-| ---- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| SL-1 | `start` builds the redirect                 | `GET /v1/auth/oauth/github/start`, `/google/start`                                                                                | GitHub → `302 https://github.com/login/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A3000%2Fv1%2Fauth%2Foauth%2Fgithub%2Fcallback&…&state=…&code_challenge=…&code_challenge_method=S256`. Google → `502 OAUTH_PROVIDER_ERROR`: the overlay's resolver cannot resolve `accounts.google.com` for discovery — the harness, and the failure is clean | PASS   |
-| SL-2 | unknown provider                            | `/v1/auth/oauth/bitbucket/start`, `DELETE /v1/auth/oauth/bitbucket`                                                               | `404 {"code":"NOT_FOUND","message":"route not found"}`                                                                                                                                                                                                                                                                                                   | PASS   |
-| SL-3 | callback refusals                           | no cookie; `/start`'s real cookie with a wrong state; `?error=access_denied`; a well-formed UUID never issued                     | each `302 http://127.0.0.1:5173/login?error=OAUTH_STATE_INVALID`                                                                                                                                                                                                                                                                                         | PASS   |
-| SL-4 | callback with a malformed cookie            | `Cookie: pb_oauth=forged-value-123` (and `not-a-uuid`, `abc%20def`; GitHub too)                                                   | **`500 {"code":"INTERNAL_ERROR"}`**; log `cause: "22P02: invalid input syntax for type uuid"` — [defect 3](#3-a-malformed-oauth-state-cookie-answers-500)                                                                                                                                                                                                | FAIL   |
-| SL-5 | link, identities, unlink without a provider | —                                                                                                                                 | `link` without a session `401`; `identities` → `[]`; unlink never-linked `404 identity not found`; unlink without a session `401`                                                                                                                                                                                                                        | PASS   |
-| SL-6 | the round trip against the local stub       | **suite**: `oauth-signin`, `oauth-linking`, `passwordless-account` `.int.test.ts` against a throwaway database on the same server | 3 files, **38 tests passed** (Node 24 on this machine)                                                                                                                                                                                                                                                                                                   | PASS   |
-| SL-7 | real Google and GitHub                      | —                                                                                                                                 | not attempted: F2–F5 open in the tracker                                                                                                                                                                                                                                                                                                                 | GAP    |
+| #     | Requirement                                 | How                                                                                                                               | Evidence                                                                                                                                                                                           | Result |
+| ----- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| SL-1a | `start` builds the redirect (GitHub)        | `GET /v1/auth/oauth/github/start`                                                                                                 | `302 https://github.com/login/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A3000%2Fv1%2Fauth%2Foauth%2Fgithub%2Fcallback&…&state=…&code_challenge=…&code_challenge_method=S256`            | PASS   |
+| SL-1b | `start` builds the redirect (Google)        | `GET /v1/auth/oauth/google/start`                                                                                                 | `502 OAUTH_PROVIDER_ERROR`, a clean failure: Google's redirect needs its discovery document, and the overlay's resolver cannot resolve `accounts.google.com`. The redirect itself was not observed | GAP    |
+| SL-2  | unknown provider                            | `/v1/auth/oauth/bitbucket/start`, `DELETE /v1/auth/oauth/bitbucket`                                                               | `404 {"code":"NOT_FOUND","message":"route not found"}`                                                                                                                                             | PASS   |
+| SL-3  | callback refusals                           | no cookie; `/start`'s real cookie with a wrong state; `?error=access_denied`; a well-formed UUID never issued                     | each `302 http://127.0.0.1:5173/login?error=OAUTH_STATE_INVALID`                                                                                                                                   | PASS   |
+| SL-4  | callback with a malformed cookie            | `Cookie: pb_oauth=forged-value-123` (and `not-a-uuid`, `abc%20def`; GitHub too)                                                   | **`500 {"code":"INTERNAL_ERROR"}`**; log `cause: "22P02: invalid input syntax for type uuid"` — [defect 3](#3-a-malformed-oauth-state-cookie-answers-500)                                          | FAIL   |
+| SL-5  | link, identities, unlink without a provider | —                                                                                                                                 | `link` without a session `401`; `identities` → `[]`; unlink never-linked `404 identity not found`; unlink without a session `401`                                                                  | PASS   |
+| SL-6  | the round trip against the local stub       | **suite**: `oauth-signin`, `oauth-linking`, `passwordless-account` `.int.test.ts` against a throwaway database on the same server | 3 files, **38 tests passed** — locally on Node 24, and in CI on Node 22.23.2 at this record's head (`Integration tests` job: `oauth-linking` 12, `oauth-signin` 20, `passwordless-account` 6)      | PASS   |
+| SL-7  | real Google and GitHub                      | —                                                                                                                                 | not attempted: F2–F5 open in the tracker                                                                                                                                                           | GAP    |
 
 ### Registration (M2)
 
@@ -347,6 +350,8 @@ Notes from this part, none of them failures:
 
 - **Real Google and GitHub** (F2–F5), deliberately.
 - **The connect-time SSRF pin inside one probe** (M3-21).
+- **Google's `/start` redirect** (SL-1b): the overlay's resolver cannot
+  resolve Google's discovery document.
 - **The 500-monitor load test** (NFR-6, NFR-7) — M10's.
 - **Retention under a long-running reader**, re-measured — M5's record has it.
 - **`SCHEDULER_LOAD_BUDGET_MS` overrunning under pool contention** — M10's.
@@ -355,7 +360,6 @@ Notes from this part, none of them failures:
 - **Probe rows for the TEST-NET-1 endpoint**: its guard-off results are
   evidenced from the worker's `outcome` log lines, because they were read
   after the volume was removed.
-- **Node 22 for the suite**: SL-6 ran on Node 24; every container ran Node 22.
 
 ## Defects
 
