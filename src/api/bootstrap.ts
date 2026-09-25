@@ -1,8 +1,7 @@
-import type { INestApplication } from '@nestjs/common';
+import { type INestApplication, NotFoundException } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { AppConfig } from '../core/config/index.js';
-import { NotFoundError } from '../core/errors/app-error.js';
 import { toErrorResponse } from '../core/errors/http-mapping.js';
 import { ErrorFilter } from './common/filters/error.filter.js';
 import { HEALTH_PATHS } from './health/constants.js';
@@ -70,12 +69,20 @@ export function configureApp(app: NestExpressApplication, cfg: AppConfig): INest
  * paths uncovered, or be excluded from it by a wildcard that also excludes
  * every real route. Middleware registered after `init()` sits behind Nest's
  * router and sees only what the router did not match.
+ *
+ * Since `@nestjs/platform-express` 12.0.2 the router answers an unmatched path
+ * *inside* its own scope itself, by raising `NotFoundException` through the
+ * global exception filter -- so this middleware now only ever sees paths the
+ * router never claimed, which with a global prefix means everything outside
+ * it. Both paths must answer the same thing, so this maps the same exception
+ * Nest raises rather than a message of its own: a client that mistypes
+ * `/v1/montiors` and one that mistypes `/montiors` get identical JSON.
  */
 export async function registerNotFoundFallback(app: NestExpressApplication): Promise<void> {
   // init() mounts Nest's router; anything registered after it runs later.
   await app.init();
 
-  const { status, body } = toErrorResponse(new NotFoundError('route'));
+  const { status, body } = toErrorResponse(new NotFoundException());
 
   app.use((_req: unknown, res: { status: (n: number) => { json: (b: unknown) => void } }) => {
     res.status(status).json(body);

@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { Controller, Get, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { getLoggerToken } from 'nestjs-pino';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../core/config/index.js';
 import { ErrorFilter } from '../common/filters/error.filter.js';
@@ -28,7 +29,15 @@ class MonitorsController {
 
 @Module({
   controllers: [MonitorsController],
-  providers: [{ provide: ErrorFilter, useValue: { catch: () => undefined } }],
+  providers: [
+    ErrorFilter,
+    // The real filter, with only its logger stubbed. Nest answers an unmatched
+    // route by raising NotFoundException through the global filter, so a
+    // harness whose filter cannot respond leaves the request hanging and can
+    // only ever prove that nothing threw -- which is what it did until
+    // @nestjs/platform-express 12.0.2 made the not-found path go through here.
+    { provide: getLoggerToken(ErrorFilter.name), useValue: { warn: () => {}, error: () => {} } },
+  ],
 })
 class HarnessModule {}
 
