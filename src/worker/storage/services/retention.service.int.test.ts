@@ -338,8 +338,10 @@ describe('losing the lock session mid-pass (#68)', () => {
       await waitForLockOn(secondWorker, 'probe_results_p20200101');
 
       const killed = await blocker.query<{ ok: boolean }>(
-        `SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity
-          WHERE application_name = $1 AND query ILIKE '%pg_try_advisory_lock%'`,
+        `SELECT pg_terminate_backend(a.pid) AS ok FROM pg_stat_activity a
+          WHERE a.application_name = $1
+            AND EXISTS (SELECT 1 FROM pg_locks l
+                         WHERE l.pid = a.pid AND l.locktype = 'advisory' AND l.granted)`,
         [RETENTION_APPLICATION_NAME],
       );
       expect(killed.rows).toEqual([{ ok: true }]);
@@ -361,6 +363,65 @@ describe('losing the lock session mid-pass (#68)', () => {
       await blocker.query('ROLLBACK').catch(() => undefined);
       await blocker.end();
       await secondWorker.end();
+    }
+  });
+
+  it('runs its DDL on the lock-owning session, so a session killed mid-DETACH takes the DETACH with it', async () => {
+    // The window a check-then-act leaves: the session dies after the check,
+    // and DDL already on another connection carries on without the lock.
+    // Here the session is killed while its DETACH is waiting on a reader --
+    // the moment the DDL is in flight.
+    const reader = new Client({ connectionString: testDatabaseUrl() });
+    const observer = new Client({ connectionString: testDatabaseUrl() });
+    await reader.connect();
+    await observer.connect();
+    try {
+      await reader.query('BEGIN');
+      await reader.query('SELECT count(*) FROM probe_results_p20200104');
+      const run = retention({ MAINTENANCE_LOCK_TIMEOUT_MS: '10000' })
+        .run(NOW)
+        .then(
+          (r) => ({ ok: true as const, r }),
+          (err: unknown) => ({ ok: false as const, err }),
+        );
+
+      // Barrier: the DETACH is waiting, on the very backend that holds the
+      // advisory lock.
+      const deadline = Date.now() + 5000;
+      let detacher: number | undefined;
+      while (detacher === undefined) {
+        const { rows } = await observer.query<{ pid: number; holds: boolean }>(
+          `SELECT a.pid, EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid = a.pid
+                                   AND l.locktype = 'advisory' AND l.granted) AS holds
+             FROM pg_stat_activity a
+            WHERE a.wait_event_type = 'Lock' AND a.query ILIKE 'ALTER TABLE%DETACH PARTITION%'`,
+        );
+        if (rows.length > 0) {
+          expect(rows[0].holds).toBe(true);
+          detacher = rows[0].pid;
+        } else if (Date.now() > deadline) {
+          throw new Error('the detach never started waiting');
+        } else {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
+
+      await observer.query('SELECT pg_terminate_backend($1)', [detacher]);
+      const outcome = await run;
+      await reader.query('COMMIT');
+
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.err).toBeInstanceOf(RetentionLockLostError);
+      // The DETACH died with its session: the partition was not detached,
+      // however long the reader went on to hold it.
+      const still = await pool.query(
+        `SELECT 1 FROM pg_inherits WHERE inhrelid = 'probe_results_p20200104'::regclass`,
+      );
+      expect(still.rows).toHaveLength(1);
+    } finally {
+      await reader.query('ROLLBACK').catch(() => undefined);
+      await reader.end();
+      await observer.end();
     }
   });
 });

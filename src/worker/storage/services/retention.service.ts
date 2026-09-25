@@ -5,6 +5,7 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
+import { isDatabaseUnavailable } from '../../../core/errors/database-unavailable.js';
 import { describeError } from '../../../core/errors/describe.js';
 import {
   PARTITION_FAMILIES,
@@ -37,8 +38,22 @@ export class RetentionLockLostError extends Error {
   }
 }
 
-/** Throws `RetentionLockLostError` unless the lock session is still alive. */
-type LockCheck = () => Promise<void>;
+/**
+ * The session that holds the retention lock, and the only connection
+ * retention DDL runs on.
+ *
+ * Binding the two is what makes single-flight hold (#68). A check that the
+ * session is alive, followed by DDL on another connection, leaves a window:
+ * the session can die between the check and the statement, PostgreSQL
+ * releases the lock, and a second worker starts a pass while this one's DDL
+ * is still running. A statement *on* the session cannot outlive it -- if the
+ * session dies first the statement is never run, and if it dies mid-statement
+ * PostgreSQL aborts the statement with it.
+ */
+interface LockSession {
+  /** Runs one statement; a lost session fails it with `RetentionLockLostError`. */
+  run(statement: string): Promise<void>;
+}
 
 export const RETENTION_APPLICATION_NAME = 'probeboard-retention';
 const RETENTION_LOCK_KEY = 'probeboard:retention';
@@ -127,16 +142,23 @@ export class RetentionService {
     lock.on('end', () => {
       lost ??= 'the connection ended';
     });
-    const held: LockCheck = async () => {
-      if (lost === undefined) {
-        // The event only arrives once the socket reports it; a round trip on
-        // the lock's own connection proves the session is alive *now*, right
-        // before the statement it licenses.
-        await lock.query('SELECT 1').catch((err: unknown) => {
-          lost ??= describeError(err);
-        });
-      }
-      if (lost !== undefined) throw new RetentionLockLostError(lost);
+    const session: LockSession = {
+      run: async (statement) => {
+        if (lost !== undefined) throw new RetentionLockLostError(lost);
+        try {
+          await lock.query(statement);
+        } catch (err) {
+          // Which of the rejection and the 'error' event arrives first is
+          // pg's business, so the rejection is read on its own as well: a
+          // terminated backend (57P01) or a dead client means the session,
+          // and the lock with it, is gone.
+          if (lost !== undefined || isDatabaseUnavailable(err)) {
+            lost ??= describeError(err);
+            throw new RetentionLockLostError(lost);
+          }
+          throw err;
+        }
+      },
     };
 
     try {
@@ -147,7 +169,12 @@ export class RetentionService {
       );
       const result: RetentionResult = { skipped: false, dropped: [], blocked: [], deferred: [] };
       if (!got.rows[0]?.ok) return { ...result, skipped: true };
-      for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result, held);
+      // For every DDL statement below, all of which run on this session. The
+      // session is never returned anywhere, so the setting dies with it.
+      await session.run(
+        `SET lock_timeout = ${String(Math.trunc(this.cfg.MAINTENANCE_LOCK_TIMEOUT_MS))}`,
+      );
+      for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result, session);
       return result;
     } finally {
       await this.close(lock, 'retention lock');
@@ -174,25 +201,26 @@ export class RetentionService {
   }
 
   /**
-   * Every DDL statement is preceded by `held()`: a pass whose lock session
-   * has died stops before its next detach or drop rather than running on
-   * beside the second worker that may now hold the lock. Reads are not
-   * checked -- a duplicate read changes nothing.
+   * Reads go through the pool; every detach and drop goes through `session`,
+   * so none of them can run once the lock is gone. A duplicate read changes
+   * nothing.
    */
   private async runFamily(
     family: PartitionFamily,
     now: Date,
     result: RetentionResult,
-    held: LockCheck,
+    session: LockSession,
   ): Promise<void> {
     const cutoff = now.getTime() - this.daysFor(family.parent) * 86_400_000;
     const guard = this.guardFor(family.parent);
 
     // 1. Recover an interrupted detach: the partition already passed its guard.
     for (const name of await this.pendingDetaches(family.parent)) {
-      await held();
-      if (await this.detach(family.parent, name, 'FINALIZE')) await this.drop(name, result, held);
-      else result.deferred.push(name);
+      if (await this.detach(session, family.parent, name, 'FINALIZE')) {
+        await this.drop(session, name, result);
+      } else {
+        result.deferred.push(name);
+      }
     }
 
     // 2. Expired live partitions, oldest first.
@@ -202,16 +230,17 @@ export class RetentionService {
         result.blocked.push({ partition: p.name, reason: blocked });
         continue;
       }
-      await held();
-      if (await this.detach(family.parent, p.name, 'CONCURRENTLY')) {
-        await this.drop(p.name, result, held);
+      if (await this.detach(session, family.parent, p.name, 'CONCURRENTLY')) {
+        await this.drop(session, p.name, result);
       } else {
         result.deferred.push(p.name);
       }
     }
 
     // 3. A detached leftover from a crash between detach and drop.
-    for (const name of await this.leftovers(family, cutoff)) await this.drop(name, result, held);
+    for (const name of await this.leftovers(family, cutoff)) {
+      await this.drop(session, name, result);
+    }
   }
 
   private async pendingDetaches(parent: string): Promise<string[]> {
@@ -294,41 +323,37 @@ export class RetentionService {
   }
 
   /**
-   * One statement on a **dedicated, non-pooled** connection with `lock_timeout` set
-   * on it: `DETACH ... CONCURRENTLY` cannot run inside a transaction block, and a
-   * multi-statement simple query is one (plan §2.4.6). The connection is closed
-   * afterwards, never returned to the pool, so a failure while cleaning up cannot
-   * hand another caller a session that still carries this `lock_timeout`. A
-   * timeout leaves the partition pending; the next tick's `FINALIZE` completes it
-   * (§2.4.5).
+   * One statement on the lock-owning session, with the `lock_timeout` `run()`
+   * set on it. `DETACH ... CONCURRENTLY` cannot run inside a transaction
+   * block, and a multi-statement simple query is one (plan §2.4.6); the
+   * session is never in one, which is also why it holds no snapshot for the
+   * detach to wait behind. A timeout leaves the partition pending; the next
+   * tick's `FINALIZE` completes it (§2.4.5). A lost session is not a timeout:
+   * it ends the pass rather than being deferred.
    */
   private async detach(
+    session: LockSession,
     parent: string,
     name: string,
     mode: 'CONCURRENTLY' | 'FINALIZE',
   ): Promise<boolean> {
-    const client = this.dedicatedClient();
     try {
-      await client.connect();
-      await client.query(`SET lock_timeout = ${Math.trunc(this.cfg.MAINTENANCE_LOCK_TIMEOUT_MS)}`);
-      await client.query(
+      await session.run(
         `ALTER TABLE ${quoteIdent(parent)} DETACH PARTITION ${quoteIdent(name)} ${mode}`,
       );
       return true;
     } catch (err) {
+      if (err instanceof RetentionLockLostError) throw err;
       this.logger.warn(
         { err, partition: name, mode },
         'retention detach did not finish; it stays pending and is retried next tick',
       );
       return false;
-    } finally {
-      await this.close(client, `detach ${name}`);
     }
   }
 
-  private async drop(name: string, result: RetentionResult, held: LockCheck): Promise<void> {
-    await held();
-    await sql`DROP TABLE IF EXISTS ${sql.id(name)}`.execute(this.db.kysely);
+  private async drop(session: LockSession, name: string, result: RetentionResult): Promise<void> {
+    await session.run(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
     result.dropped.push(name);
   }
 }
