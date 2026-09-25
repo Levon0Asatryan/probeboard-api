@@ -4,8 +4,8 @@ Status of record for probeboard work. The orchestrator session updates it after
 validating a worker's report; workers read it and propose changes in their
 report rather than editing it, so two chats never edit it at once.
 
-Last updated: 2026-09-22, by the orchestrator, after validating the M4
-closeout. `main` is green at 75c261e.
+Last updated: 2026-09-25, by the orchestrator, after validating the M5
+closeout. `main` is green at 55c9311.
 
 ## Now
 
@@ -30,12 +30,29 @@ closeout. `main` is green at 75c261e.
   of them deadlocks, and six tests that passed for the wrong reason — the
   review-before-push ordering (#53, #57) paid for itself in its first
   milestone.
-- **Next:** M5 — Storage. Partitioned `probe_results`, atomic rollups,
-  retention by `DROP`, histogram percentiles; 30-day p95 served from
-  aggregates with the raw rows dropped (NFR-8, NFR-9). The scheduler now
-  produces a real stream of results to aggregate, and M4 left M5 three things
-  by name: `probe_results` keyed on `(endpoint_id, scheduled_at)`,
-  `claim_log`'s retention, and D2's paused-row re-measurement.
+- **M5 — Storage is done.** Four PRs: #65 (the plan), #66 (partitioned
+  `probe_results`, result and lease release in one commit), #67 (the rollup,
+  `core/stats` and the tenant-scoped read path), #68 (retention and the
+  verification record). `main` is green at 55c9311. Evidence in
+  [m5-verification.md](m5-verification.md), and the exit test is the strongest
+  the project has produced: the 30-day p95 is read **by a database role with no
+  `SELECT` on `probe_results`** — so NFR-9 cannot be satisfied by accident —
+  from 30 aggregate rows against 43,200 raw, and stays deep-equal after
+  retention drops 33 raw partitions. Retention by `DETACH CONCURRENTLY` plus
+  `DROP` moved 720,000 rows in 81ms writing 41KB of WAL, against `DELETE`'s
+  152ms, 40.4MB of WAL and a 1,057ms `VACUUM` that recovered nothing until it
+  ran — the 980× WAL difference is the thesis's argument for the design.
+  Investigation on PostgreSQL 17.11 corrected the plan in four places before
+  any of it shipped, including this handoff's own instruction: a unique
+  `(endpoint_id, scheduled_at)` is impossible on a table partitioned by
+  `started_at`, because PostgreSQL requires the partition key inside every
+  unique constraint.
+- **Next:** M6 — Incidents. The state machine, hysteresis, an honest
+  `opened_at`, the `UNKNOWN` sweep and maintenance windows; an endpoint goes
+  down and an incident opens after three, closes after two (FR-24…27,
+  D-1…D-7). M5 left it two things by name: `degraded` is never written yet
+  because it needs M6's latency threshold, and an endpoint on a `fetch`-blocked
+  port records `unknown_error` for ever, which uptime excludes.
 - **Before the scheduler probes for real:** run
   `npm run audit:json-path-assertions` once against each deployed database
   (D48/D50/D51). Nothing persists a probe result until M5.
@@ -86,8 +103,8 @@ added between M1 and M2; it is not in the thesis acceptance criteria.
 | M2        | Registration           | done                  | [m2-plan.md](m2-plan.md)                     | [m2-verification.md](m2-verification.md) |
 | M3        | Probe executor         | done                  | [m3-plan.md](m3-plan.md)                     | [m3-verification.md](m3-verification.md) |
 | M4        | Scheduler              | done                  | [m4-plan.md](m4-plan.md)                     | [m4-verification.md](m4-verification.md) |
-| M5        | Storage                | next                  | —                                            | —                                        |
-| M6        | Incidents              | not started           | —                                            | —                                        |
+| M5        | Storage                | done                  | [m5-plan.md](m5-plan.md)                     | [m5-verification.md](m5-verification.md) |
+| M6        | Incidents              | next                  | —                                            | —                                        |
 | M7        | Alerting               | not started           | —                                            | —                                        |
 | M8        | Statistics             | not started           | —                                            | —                                        |
 | M9        | Web (`probeboard-web`) | not started           | —                                            | —                                        |
@@ -192,11 +209,16 @@ Items found while validating, not yet scheduled.
 | M3 process     | Three of seven Codex defects on #49 were wrong results in failure classification that a green suite missed, because it fed synthetic error objects. `CLAUDE.md` now requires a real-transport row per class.                                                                                                                                                                                                                                                                                                           | process |
 | M3 process     | Two tests passed for the wrong reason and only the removal proof caught it. `CLAUDE.md` now applies the removal proof to every new test, not only to guards.                                                                                                                                                                                                                                                                                                                                                           | process |
 | M3 process     | Hostile self-review found one defect to Codex's seven, and missed three plain deviations from sentences in the plan. `CLAUDE.md` now makes re-review walk the plan's normative sentences.                                                                                                                                                                                                                                                                                                                              | process |
-| #59            | D2's paused-row re-measurement: a row paused and resumed keeps the slot computed before the pause. Decide whether resume re-measures or inherits.                                                                                                                                                                                                                                                                                                                                                                      | decide  |
-| #59            | `claim_log` has no retention policy. It exists for disjointness evidence; size it or prune it in M5.                                                                                                                                                                                                                                                                                                                                                                                                                   | fix     |
 | #59            | D17's M6 columns are not in `endpoint_runtime` yet. M6 needs them; confirm the shape when M6 is planned, not before.                                                                                                                                                                                                                                                                                                                                                                                                   | decide  |
 | #59            | `reconcile` scans the whole fleet every tick. Fine at thesis scale, measured at 50,000 rows; revisit only if M8's load work says so.                                                                                                                                                                                                                                                                                                                                                                                   | decide  |
-| #59            | M5's `probe_results` key should be `(endpoint_id, scheduled_at)` — the claim already returns the slot as PostgreSQL text for exactly this.                                                                                                                                                                                                                                                                                                                                                                             | fix     |
+| #68            | If retention's advisory-lock session dies mid-pass, a second worker can start a duplicate pass: the lock is released but the no-op listener never tells `run()`. Deferred on #68 with the thread left open — every drop stays behind the guard, so a duplicate pass cannot lose data. Surface the session loss and stop further retention DDL.                                                                                                                                                                         | fix     |
+| #68            | `retainedFrom` assumes partitions are contiguous. True while retention only ever drops the oldest, so it is an invariant to state and test rather than a bug to fix today.                                                                                                                                                                                                                                                                                                                                             | decide  |
+| #68            | Seconds columns are attributed whole to the bucket holding `started_at`, so time-weighted uptime is not offered for windows shorter than the longest allowed interval (m5-plan §3.5).                                                                                                                                                                                                                                                                                                                                  | decide  |
+| #68            | `probe_stats` orphans survive endpoint deletion — h1 rows until retention reaches them, d1 rows for ever.                                                                                                                                                                                                                                                                                                                                                                                                              | decide  |
+| #68            | Interpolated p95 is up to 11–14% off where the histogram bucket is wide. Finer edges against ADR-0003's fixed, mergeable format is a decision to take before M10 cites the numbers.                                                                                                                                                                                                                                                                                                                                    | decide  |
+| M5 / M6        | An endpoint whose URL uses a port `fetch` blocks (port 1, for example) records `unknown_error` for ever, and uptime excludes it, so a permanently misconfigured monitor is invisible rather than down. Decide in M6 whether the save-time check rejects those ports.                                                                                                                                                                                                                                                   | decide  |
+| M5 process     | This machine stalls intermittently: two test runs froze for 47–153s and cleared on rerun. Check CI for the same signature before treating it as local.                                                                                                                                                                                                                                                                                                                                                                 | process |
+| M5 process     | The verification record's own follow-up table and the worker's report listed different subsets of the follow-ups. The tracker holds the union; the record's table is not the source of record.                                                                                                                                                                                                                                                                                                                         | process |
 | #61            | The above-lease reclaim regime (§3.11) is proved by the automated e2e suite only; the below-lease one was demonstrated live in containers. Demonstrate the above-lease case live before M10's evaluation chapter cites either.                                                                                                                                                                                                                                                                                         | fix     |
 | #61            | `SCHEDULER_LOAD_BUDGET_MS` overrun under real `DATABASE_POOL_MAX` contention is untested. Belongs to M10's load test.                                                                                                                                                                                                                                                                                                                                                                                                  | decide  |
 | #61            | No per-row shutdown sweep for a settled-but-failed release or abandon. Lease expiry (D5/D6) already bounds it identically to the crash path, so the gap is promptness, not correctness; a real fix needs the pool to track write outcome per row rather than promise settlement.                                                                                                                                                                                                                                       | decide  |
