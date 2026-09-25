@@ -457,6 +457,19 @@ const storage = {
   // Ticks without the watermark advancing before a pass reports it as stale: a
   // diagnostic threshold, not a limit -- a rollup that is behind is lag, not loss.
   ROLLUP_STALE_TICKS: z.coerce.number().int().min(1).max(1000).default(10),
+  // How long raw results are kept before their daily partition is dropped
+  // (NFR-8). At least two days, and (refine below) longer than lease plus
+  // shutdown grace: a probe that started that long ago cannot still be writing.
+  RETENTION_RAW_DAYS: z.coerce.number().int().min(2).max(3650).default(7),
+  // Minute and hour aggregates are retention-bound too: at a 60 s interval an
+  // m1 row per probe is as many rows as raw. Never shorter than raw (refine).
+  RETENTION_M1_DAYS: z.coerce.number().int().min(2).max(3650).default(7),
+  RETENTION_H1_DAYS: z.coerce.number().int().min(2).max(3650).default(400),
+  // claim_log is disjointness evidence for the thesis, not state: a few days.
+  RETENTION_CLAIM_LOG_DAYS: z.coerce.number().int().min(1).max(3650).default(3),
+  // lock_timeout for the retention detach: how long it may wait behind a reader
+  // of the partition before giving up and retrying next tick.
+  MAINTENANCE_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(2000),
 };
 
 const baseSchema = z.object({
@@ -573,6 +586,27 @@ export const configSchema = baseSchema
       'must be less than SCHEDULER_LEASE_MS, or a graceful stop can outlive the ' +
       'lease it is trying to release and a peer starts a second probe while ours ' +
       'is still draining',
+  })
+  // A raw partition is dropped once it is older than the retention; a probe that
+  // started before then must be unable to still be writing, or the drop could
+  // race a late insert (docs/m5-plan.md §3.7 step 2).
+  .refine(
+    (c) => c.RETENTION_RAW_DAYS * 86_400_000 > c.SCHEDULER_LEASE_MS + c.SCHEDULER_SHUTDOWN_GRACE_MS,
+    {
+      path: ['RETENTION_RAW_DAYS'],
+      message:
+        'must exceed SCHEDULER_LEASE_MS + SCHEDULER_SHUTDOWN_GRACE_MS, or a drop can race a late result write',
+    },
+  )
+  // The aggregates must outlive the raw rows they summarise: otherwise a raw row
+  // still awaiting its fold could find its stats partition already gone.
+  .refine((c) => c.RETENTION_M1_DAYS >= c.RETENTION_RAW_DAYS, {
+    path: ['RETENTION_M1_DAYS'],
+    message: 'must be at least RETENTION_RAW_DAYS, or aggregates are dropped before their raw rows',
+  })
+  .refine((c) => c.RETENTION_H1_DAYS >= c.RETENTION_RAW_DAYS, {
+    path: ['RETENTION_H1_DAYS'],
+    message: 'must be at least RETENTION_RAW_DAYS, or aggregates are dropped before their raw rows',
   })
   // Two missed maintenance ticks must still leave a partition to write into.
   // With one tick a day and the minimum horizon of one day, a single missed

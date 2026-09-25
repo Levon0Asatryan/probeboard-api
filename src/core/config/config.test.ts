@@ -823,6 +823,13 @@ describe('storage bounds reject invalid values at boot', () => {
     ['ROLLUP_BATCH_ROWS', '100001', 'Too big: expected number to be <=100000'],
     ['ROLLUP_STALE_TICKS', '0', 'Too small: expected number to be >=1'],
     ['ROLLUP_STALE_TICKS', '1001', 'Too big: expected number to be <=1000'],
+    ['RETENTION_RAW_DAYS', '1', 'Too small: expected number to be >=2'],
+    ['RETENTION_RAW_DAYS', '3651', 'Too big: expected number to be <=3650'],
+    ['RETENTION_M1_DAYS', '1', 'Too small: expected number to be >=2'],
+    ['RETENTION_H1_DAYS', '3651', 'Too big: expected number to be <=3650'],
+    ['RETENTION_CLAIM_LOG_DAYS', '0', 'Too small: expected number to be >=1'],
+    ['MAINTENANCE_LOCK_TIMEOUT_MS', '99', 'Too small: expected number to be >=100'],
+    ['MAINTENANCE_LOCK_TIMEOUT_MS', '60001', 'Too big: expected number to be <=60000'],
   ])('rejects %s=%s', (key, value, message) => {
     // On the bound's own message: the horizon rule below names two of these
     // keys in its text, so a bare key match would pass with a bound deleted.
@@ -851,5 +858,40 @@ describe('storage bounds reject invalid values at boot', () => {
     expect(cfg.ROLLUP_TICK_MS).toBe(10_000);
     expect(cfg.ROLLUP_BATCH_ROWS).toBe(5000);
     expect(cfg.ROLLUP_STALE_TICKS).toBe(10);
+    expect(cfg.RETENTION_RAW_DAYS).toBe(7);
+    expect(cfg.RETENTION_M1_DAYS).toBe(7);
+    expect(cfg.RETENTION_H1_DAYS).toBe(400);
+    expect(cfg.RETENTION_CLAIM_LOG_DAYS).toBe(3);
+    expect(cfg.MAINTENANCE_LOCK_TIMEOUT_MS).toBe(2000);
+  });
+
+  it('rejects aggregate retention shorter than raw retention', () => {
+    expect(() =>
+      loadConfig({ ...valid, RETENTION_RAW_DAYS: '30', RETENTION_M1_DAYS: '7' }),
+    ).toThrow(/RETENTION_M1_DAYS: must be at least RETENTION_RAW_DAYS/);
+    expect(() =>
+      loadConfig({ ...valid, RETENTION_RAW_DAYS: '30', RETENTION_H1_DAYS: '7' }),
+    ).toThrow(/RETENTION_H1_DAYS: must be at least RETENTION_RAW_DAYS/);
+    // Equal is allowed: the drop guard, not the margin, protects a lagging rollup.
+    expect(
+      loadConfig({
+        ...valid,
+        RETENTION_RAW_DAYS: '7',
+        RETENTION_M1_DAYS: '7',
+        RETENTION_H1_DAYS: '7',
+      }).RETENTION_RAW_DAYS,
+    ).toBe(7);
+  });
+
+  it('rejects raw retention that a lease could outlive', () => {
+    // 2 days = 172,800,000 ms; a lease of 200,000,000 ms would outlast it.
+    expect(() =>
+      loadConfig({
+        ...valid,
+        RETENTION_RAW_DAYS: '2',
+        SCHEDULER_LEASE_MS: '200000000',
+        SCHEDULER_SHUTDOWN_GRACE_MS: '35000',
+      }),
+    ).toThrow(/RETENTION_RAW_DAYS: must exceed SCHEDULER_LEASE_MS/);
   });
 });
