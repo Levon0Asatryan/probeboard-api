@@ -18,6 +18,21 @@ export function oauthCookieName(cfg: Pick<AppConfig, 'COOKIE_SECURE'>): string {
 }
 
 /**
+ * Whether a presented cookie value can be a pending authorization's id.
+ *
+ * The id is a `uuid` column, and the cookie is attacker-controlled: handed to
+ * the lookup unchecked, `forged` reaches PostgreSQL, fails its own way
+ * (`22P02`) and answers `500` instead of the documented redirect (#72,
+ * defect 3). A value of the wrong shape cannot name a row, so it is refused
+ * here exactly as a missing cookie is. The canonical 8-4-4-4-12 hex form only:
+ * `gen_random_uuid()` issues nothing else, and PostgreSQL's looser input forms
+ * (braces, no hyphens) are not ours to accept.
+ */
+export function looksLikeOauthCookie(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/**
  * How the pending-authorization cookie is set.
  *
  * `sameSite: 'lax'` is not the usual CSRF-hardening default here, it is a

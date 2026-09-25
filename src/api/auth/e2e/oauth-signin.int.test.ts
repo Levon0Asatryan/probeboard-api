@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -311,6 +312,55 @@ describe('the state cookie is required and single-use', () => {
     expect(real.location).toBe(`${WEB_BASE_URL}/`);
     expect(real.cookies[SESSION_COOKIE]).toBeDefined();
   });
+});
+
+describe('malformed callback input never reaches the database (#72, defect 3)', () => {
+  // A cookie or state PostgreSQL cannot hold used to reach the lookup, fail
+  // there (22P02 for the uuid, 22021 for a NUL in text) and answer 500. Every
+  // one of them must take the same redirect a missing cookie does.
+  const REFUSED = `${WEB_BASE_URL}/login?error=OAUTH_STATE_INVALID`;
+
+  it.each(['google', 'github'] as const)(
+    'refuses a non-uuid state cookie on the %s callback with the documented 302',
+    async (provider) => {
+      for (const value of ['forged', 'forged-value-123', 'abc%20def']) {
+        const callback = await get(`/auth/oauth/${provider}/callback?code=x&state=y`, {
+          cookie: `${OAUTH_COOKIE}=${value}`,
+        });
+
+        expect(callback.status, value).toBe(302);
+        expect(callback.location, value).toBe(REFUSED);
+      }
+    },
+  );
+
+  it.each(['google', 'github'] as const)(
+    'refuses a well-formed uuid that names no row on the %s callback',
+    async (provider) => {
+      // The control: this shape reaches the lookup and simply matches
+      // nothing, so it must land on the same redirect as the malformed ones.
+      const callback = await get(`/auth/oauth/${provider}/callback?code=x&state=y`, {
+        cookie: `${OAUTH_COOKIE}=${randomUUID()}`,
+      });
+
+      expect(callback.status).toBe(302);
+      expect(callback.location).toBe(REFUSED);
+    },
+  );
+
+  it.each(['google', 'github'] as const)(
+    'refuses a state carrying a NUL byte on the %s callback, with a real flow cookie',
+    async (provider) => {
+      const start = await get(`/auth/oauth/${provider}/start`);
+
+      const callback = await get(`/auth/oauth/${provider}/callback?code=x&state=a%00b`, {
+        cookie: cookieHeader(start.cookies, OAUTH_COOKIE),
+      });
+
+      expect(callback.status).toBe(302);
+      expect(callback.location).toBe(REFUSED);
+    },
+  );
 });
 
 describe('returnTo', () => {

@@ -55,3 +55,17 @@ export function classifyProviderFailure(
   }
   return 'exchange_failed';
 }
+
+/**
+ * Whether a callback's `state` can be one we issued.
+ *
+ * `randomState()` is 32 random bytes, base64url -- nothing outside that
+ * alphabet can match a pending row, and some of it cannot even be compared:
+ * a NUL byte (`state=a%00b`) reaches the `text` column and PostgreSQL rejects
+ * it with `22021`, a `500` where the contract promises a redirect. Checked for
+ * the alphabet, not the length, so the library changing its length does not
+ * refuse every sign-in.
+ */
+export function looksLikeState(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
+}
