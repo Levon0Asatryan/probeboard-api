@@ -68,7 +68,6 @@ export class StorageMaintenanceService implements OnModuleInit, OnModuleDestroy 
   private async retain(now: Date): Promise<void> {
     try {
       const r = await this.retention.run(now);
-      if (r.skipped) return;
       if (r.dropped.length > 0) {
         this.logger.info({ dropped: r.dropped }, 'retention dropped partitions');
       }
