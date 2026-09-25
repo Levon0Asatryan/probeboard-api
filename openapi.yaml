@@ -932,6 +932,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/login:
     post:
       tags:
@@ -985,6 +991,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/me:
     get:
       tags:
@@ -1009,6 +1021,12 @@ paths:
         "413": *a2
         "429": &a4
           description: Too many requests from this address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
             application/json:
               schema:
@@ -1059,6 +1077,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/logout:
     post:
       tags:
@@ -1077,6 +1101,12 @@ paths:
         "401": *a3
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/logout-all:
     post:
       tags:
@@ -1096,6 +1126,12 @@ paths:
         "401": *a3
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/oauth/{provider}/start:
     get:
       tags:
@@ -1139,6 +1175,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/oauth/{provider}/callback:
     get:
       tags:
@@ -1174,6 +1216,12 @@ paths:
         "413": *a2
         "429":
           description: Too many attempts from this address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
           content:
             application/json:
               schema:
@@ -1216,6 +1264,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/oauth/{provider}:
     delete:
       tags:
@@ -1250,6 +1304,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/auth/identities:
     get:
       tags:
@@ -1269,6 +1329,12 @@ paths:
         "401": *a3
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/services:
     post:
       tags:
@@ -1307,6 +1373,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     get:
       tags:
         - services
@@ -1358,6 +1430,12 @@ paths:
         "401": *a3
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/services/{id}:
     get:
       tags:
@@ -1394,6 +1472,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     patch:
       tags:
         - services
@@ -1436,6 +1520,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - services
@@ -1457,6 +1547,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/services/{id}/endpoints:
     get:
       tags:
@@ -1492,6 +1588,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       tags:
         - endpoints
@@ -1534,6 +1636,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/endpoints:
     get:
       tags:
@@ -1562,6 +1670,12 @@ paths:
         "401": *a3
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/endpoints/{id}:
     get:
       tags:
@@ -1587,6 +1701,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     patch:
       tags:
         - endpoints
@@ -1629,6 +1749,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - endpoints
@@ -1649,6 +1775,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/endpoints/{id}/pause:
     post:
       tags:
@@ -1675,6 +1807,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/endpoints/{id}/resume:
     post:
       tags:
@@ -1700,5 +1838,11 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413": *a2
         "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 security:
   - sessionCookie: []

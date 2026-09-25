@@ -307,6 +307,22 @@ describe('statuses reachable before the handler runs (#72, defect 4)', () => {
   });
 });
 
+describe('a database outage (#72, D3)', () => {
+  it('documents 503 on every /v1 operation, each of which reads or writes PostgreSQL', () => {
+    const paths = buildOpenApiDocument().paths as Record<
+      string,
+      Record<string, { responses: Record<string, unknown> }>
+    >;
+    const versioned = Object.entries(paths).filter(([path]) => path.startsWith('/v1/'));
+    expect(versioned.length).toBeGreaterThan(10);
+    for (const [path, ops] of versioned) {
+      for (const [method, op] of Object.entries(ops)) {
+        expect(op.responses, `${method} ${path}`).toHaveProperty('503');
+      }
+    }
+  });
+});
+
 describe('the error contract', () => {
   const doc = buildOpenApiDocument();
   const schemas = (doc.components as { schemas: Record<string, Record<string, unknown>> }).schemas;

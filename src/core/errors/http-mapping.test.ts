@@ -32,6 +32,23 @@ describe('toErrorResponse', () => {
     expect(toErrorResponse({ status: 413, response: {} }).body.code).toBe('PAYLOAD_TOO_LARGE');
   });
 
+  it('answers 503, not 500, when the database cannot be reached (#72, D3)', () => {
+    const down = Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), { code: 'ENOTFOUND' });
+    const m = toErrorResponse(down);
+    expect(m.status).toBe(503);
+    // The same body /readyz answers with.
+    expect(m.body).toEqual({ code: 'DATABASE_UNAVAILABLE', message: 'database is not reachable' });
+    expect(m.logDetail).toContain('ENOTFOUND');
+  });
+
+  it('keeps a query the database rejected a 500', () => {
+    const bug = Object.assign(new Error('relation "x" does not exist'), { code: '42P01' });
+    expect(toErrorResponse(bug)).toMatchObject({
+      status: 500,
+      body: { code: 'INTERNAL_ERROR' },
+    });
+  });
+
   it('falls back for a status it does not know', () => {
     const m = toErrorResponse({ status: 418, response: 'teapot' });
     expect(m.status).toBe(418);

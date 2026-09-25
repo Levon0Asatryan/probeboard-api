@@ -240,7 +240,7 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
 
-  return withBodyParser({
+  return withSharedResponses({
     openapi: '3.0.3',
     info: {
       title: 'probeboard API',
@@ -1157,4 +1157,36 @@ function withBodyParser(doc: Record<string, unknown>): Record<string, unknown> {
     }
   }
   return doc;
+}
+
+/**
+ * Adds `503` to every `/v1` operation (#72, D3).
+ *
+ * Every one of them reads or writes PostgreSQL -- the unauthenticated ones
+ * too, through the rate limiter and the pending-authorization row -- and the
+ * error filter answers `503 DATABASE_UNAVAILABLE` whenever the database cannot
+ * be reached. Applied here rather than written into each operation because it
+ * is a property of the shared layer, like the body limit, and a route added
+ * later has it without anyone remembering to.
+ */
+function withDatabaseUnavailable(doc: Record<string, unknown>): Record<string, unknown> {
+  const paths = doc.paths as Record<
+    string,
+    Record<string, { responses?: Record<string, unknown> }>
+  >;
+  for (const [path, operations] of Object.entries(paths)) {
+    if (!path.startsWith(`/${API_VERSION_PREFIX}/`)) continue;
+    for (const operation of Object.values(operations)) {
+      operation.responses ??= {};
+      operation.responses['503'] ??= errorResponse(
+        'The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`.',
+      );
+    }
+  }
+  return doc;
+}
+
+/** Both, applied to the finished document. */
+function withSharedResponses(doc: Record<string, unknown>): Record<string, unknown> {
+  return withDatabaseUnavailable(withBodyParser(doc));
 }
