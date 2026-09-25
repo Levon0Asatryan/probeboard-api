@@ -44,7 +44,7 @@ Date: 2026-09-25, 09:10–09:47 UTC · `main` at `cf1454b` · PostgreSQL 17
    equal to the interval is accepted, and thresholds and methods are wider —
    _low_.
 
-**What is missing** — eight gaps. Five were known before the run and are
+**What is missing** — nine gaps. Five were known before the run and are
 confirmed as they stand: no HTTP route for statistics (NFR-9's user half);
 `degraded` and `count_maintenance` never written (M6); probe history survives
 endpoint deletion (B-6); real Google and GitHub unverified (F2–F5); a
