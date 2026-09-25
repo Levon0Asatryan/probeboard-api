@@ -74,7 +74,11 @@ export class AuthService {
     // the victim's correct password is refused for the whole window. It would
     // also make repeated registration behave differently for an address that
     // exists, which is the distinction A-1 exists to remove.
-    const verdict = await this.limiter.admit(ip, undefined);
+    //
+    // And on registration's own per-address budget, not login's: sharing one
+    // let a room of registrations behind one NAT lock that address out of
+    // login (#72).
+    const verdict = await this.limiter.admitRegistration(ip);
     if (!verdict.allowed) throw new RateLimitedError(verdict.retryAfterSeconds);
 
     const hash = await this.passwords.hash(password);

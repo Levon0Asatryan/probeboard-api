@@ -55,7 +55,8 @@ export interface SessionsTable {
   revoked_at: Timestamp | null;
 }
 
-export type AuthAttemptScope = 'ip' | 'email';
+/** 'register' is registration's own per-address counter, apart from login's 'ip' (0009). */
+export type AuthAttemptScope = 'ip' | 'email' | 'register';
 
 export interface AuthAttemptsTable {
   id: Generated<number>;

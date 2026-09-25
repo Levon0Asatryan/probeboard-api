@@ -89,6 +89,10 @@ const auth = {
     .default(15 * 60_000),
   AUTH_MAX_PER_IP: z.coerce.number().int().min(1).default(20),
   AUTH_MAX_FAILURES_PER_EMAIL: z.coerce.number().int().min(1).default(5),
+  // Registrations per address per AUTH_WINDOW_MS, counted apart from
+  // AUTH_MAX_PER_IP: sharing one budget let a room of people registering
+  // behind one NAT lock that address out of login (#72).
+  AUTH_MAX_REGISTRATIONS_PER_IP: z.coerce.number().int().min(1).max(10_000).default(20),
   AUTH_ATTEMPT_RETENTION_MS: z.coerce
     .number()
     .int()

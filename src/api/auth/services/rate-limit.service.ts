@@ -70,6 +70,34 @@ export class AuthRateLimitService {
     };
   }
 
+  /**
+   * Admits a registration, on its own per-address budget.
+   *
+   * By address only, never by account (see `AuthService.register`), and on a
+   * counter of its own: drawing on login's per-address budget meant twenty
+   * registrations from one address -- a room of people behind one NAT --
+   * locked that address out of login for the whole window (#72).
+   */
+  async admitRegistration(ip: string, now: Date = new Date()): Promise<RateLimitVerdict> {
+    const result = await this.attempts.reserve(
+      ip,
+      undefined,
+      {
+        since: new Date(now.getTime() - this.cfg.AUTH_WINDOW_MS),
+        maxPerIp: this.cfg.AUTH_MAX_REGISTRATIONS_PER_IP,
+        maxFailuresPerEmail: this.cfg.AUTH_MAX_FAILURES_PER_EMAIL,
+        ipScope: 'register',
+      },
+      now,
+    );
+
+    return {
+      allowed: result.allowed,
+      scope: result.scope,
+      retryAfterSeconds: result.allowed ? 0 : Math.ceil(this.cfg.AUTH_WINDOW_MS / 1000),
+    };
+  }
+
   /** Records that an admitted attempt succeeded. */
   async succeeded(ip: string, email: string | undefined, now: Date = new Date()): Promise<void> {
     await this.attempts.markSucceeded(
