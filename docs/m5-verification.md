@@ -184,8 +184,17 @@ blocked partitions not reported; acceptance — rollup skipped.
   M6, not an M5 defect.
 - **Codex's findings**: 14 on the plan (12 fixed, one pushed back with the code as evidence,
   one deferred), 2 on #66 (a backoff outliving the shutdown grace; a per-statement
-  `statement_timeout` applied once), 1 on #67 (a stale-watermark diagnostic that could not
-  fire). Each fixed one has a removal-proved test.
+  `statement_timeout` applied once), 1 on #67 (a stale-watermark diagnostic that could not fire), 2 on #68 (a swallowed
+  cleanup that could pool a session still holding the lock; then a pool-of-one deadlock in my fix
+  for it). Each fixed one has a removal-proved test.
+- **A lock holder in a transaction blocked every `DETACH … CONCURRENTLY`.** While fixing a
+  Codex finding I moved retention's advisory lock into an idle transaction; the integration
+  test then showed **all ten expired partitions deferred and none dropped**. The idle
+  transaction keeps a snapshot (`backend_xmin`), and a concurrent detach waits for every older
+  snapshot. The lock is now session-level on a dedicated connection that is closed when the
+  pass ends: no transaction, no unlock step, no pooled session to leak into. The same fix had
+  first reserved a pool connection and then waited for a second, which deadlocks at
+  `DATABASE_POOL_MAX=1` (Codex, #68). Both regressions have a test proved by reverting to them.
 - **Defects in my own verification, caught by re-running it:** a removal proof that
   mutated a doc comment instead of the SQL (the mutation "passed"); `timeout(1)` absent on
   macOS, so seven "failures" were `command not found`; a read-path test that could not fail
@@ -197,16 +206,16 @@ blocked partitions not reported; acceptance — rollup skipped.
 
 ## Deviations from the merged plan
 
-| Plan                                        | Deviation                                                                                                                                 | Why                                                                                                                |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| §3.1 key                                    | `PRIMARY KEY (endpoint_id, started_at, attempt_id)`; the plan's `(endpoint_id, started_at, worker_id)` was itself replaced in review      | a same-millisecond duplicate, or a clock-corrected one on one worker, would otherwise be discarded by `DO NOTHING` |
-| §3.8 `planWindow(from, to, now, retention)` | `planWindow(from, to, retainedFrom)`; availability read from the live partitions, re-checked after the read                               | retention can be raised over partitions already dropped, and can detach between lookup and read                    |
-| §5 config                                   | Added `ROLLUP_STALE_TICKS`, `RESULT_WRITE_BACKOFF_MS`; the plan's table did not list them                                                 | a literal where config belongs (rule #1)                                                                           |
-| §3.4                                        | `advanced_at` moves only when the watermark does                                                                                          | otherwise a pinned horizon hides a stall from the warning                                                          |
-| §3.7                                        | Retention is single-flight across workers by a session advisory lock                                                                      | two workers must not race a detach and a drop of one partition                                                     |
-| §3.3                                        | The write's `statement_timeout` is re-derived before each of the two statements                                                           | it applies per statement                                                                                           |
-| §3.5                                        | The fold's outer `SELECT` reads the three grain CTEs to force them, with `LIMIT 1`                                                        | unused column removed; data-modifying CTEs run regardless                                                          |
-| §8                                          | The tenant/statistics read tests live under `worker/rollup/e2e/`, and the acceptance test is in a year earlier than every other partition | `core` may not import `worker`, even in a test; retention drops anything older than its cutoff                     |
+| Plan                                        | Deviation                                                                                                                                                       | Why                                                                                                                |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| §3.1 key                                    | `PRIMARY KEY (endpoint_id, started_at, attempt_id)`; the plan's `(endpoint_id, started_at, worker_id)` was itself replaced in review                            | a same-millisecond duplicate, or a clock-corrected one on one worker, would otherwise be discarded by `DO NOTHING` |
+| §3.8 `planWindow(from, to, now, retention)` | `planWindow(from, to, retainedFrom)`; availability read from the live partitions, re-checked after the read                                                     | retention can be raised over partitions already dropped, and can detach between lookup and read                    |
+| §5 config                                   | Added `ROLLUP_STALE_TICKS`, `RESULT_WRITE_BACKOFF_MS`; the plan's table did not list them                                                                       | a literal where config belongs (rule #1)                                                                           |
+| §3.4                                        | `advanced_at` moves only when the watermark does                                                                                                                | otherwise a pinned horizon hides a stall from the warning                                                          |
+| §3.7                                        | Retention is single-flight across workers by a session advisory lock on a dedicated, non-pooled connection, and the detach runs on its own throwaway connection | two workers must not race a detach and a drop of one partition                                                     |
+| §3.3                                        | The write's `statement_timeout` is re-derived before each of the two statements                                                                                 | it applies per statement                                                                                           |
+| §3.5                                        | The fold's outer `SELECT` reads the three grain CTEs to force them, with `LIMIT 1`                                                                              | unused column removed; data-modifying CTEs run regardless                                                          |
+| §8                                          | The tenant/statistics read tests live under `worker/rollup/e2e/`, and the acceptance test is in a year earlier than every other partition                       | `core` may not import `worker`, even in a test; retention drops anything older than its cutoff                     |
 
 ## Not verified
 
