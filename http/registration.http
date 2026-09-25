@@ -83,7 +83,9 @@ Content-Type: application/json
 ###
 # @name rejectLoopback
 # 400 ADDRESS_NOT_ALLOWED -- a private/loopback/link-local/metadata address,
-# literal or resolved, at save time (docs/m2-plan.md §5.1, §6).
+# literal or resolved, at save time (docs/m2-plan.md §5.1, §6). No `details`:
+# the refused address goes to the log, never the response, or saving a URL
+# would tell anyone what an internal name resolves to (#72, C-7).
 POST {{baseUrl}}/v1/services
 Content-Type: application/json
 

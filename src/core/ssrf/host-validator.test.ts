@@ -12,6 +12,7 @@ vi.mock('node:dns', () => ({
 }));
 
 const { assertSaveableUrl, SsrfValidationError } = await import('./host-validator.js');
+const { toErrorResponse } = await import('../errors/http-mapping.js');
 
 const enotfound = Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
 
@@ -274,6 +275,26 @@ describe('DNS-resolved hostnames', () => {
       expect(JSON.stringify(e.details ?? null)).not.toContain('SERVFAIL');
       expect(e.cause).toBe(dnsError);
     }
+  });
+
+  it('keeps the resolved private address out of the response and puts it in the log (#72, C-7)', async () => {
+    // A name answering privately: with the address in `details`, the save
+    // endpoint told any signed-in user what an internal name resolves to.
+    resolve4.mockResolvedValue(['172.30.0.10']);
+    resolve6.mockRejectedValue(enotfound);
+
+    const err: unknown = await assertSaveableUrl('http://db.internal.example/', cfg).catch(
+      (e: unknown) => e,
+    );
+
+    const mapped = toErrorResponse(err);
+    expect(mapped.body).toEqual({
+      code: 'ADDRESS_NOT_ALLOWED',
+      message: 'resolves to a disallowed address',
+    });
+    expect(JSON.stringify(mapped.body)).not.toContain('172.30.0.10');
+    // Still recorded where an operator can see it.
+    expect(mapped.logDetail).toContain('172.30.0.10');
   });
 
   it('does not silently accept a hostname whose only working family errored unexpectedly', async () => {

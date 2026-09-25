@@ -261,6 +261,9 @@ describe('SSRF guard on save', () => {
     });
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ code: 'ADDRESS_NOT_ALLOWED' });
+    // C-7: the refusal names no address. For a literal the address is the
+    // caller's own, but the same response carries a name's resolved address.
+    expect(res.body).not.toHaveProperty('details');
   });
 
   it('re-validates baseUrl on PATCH even if only the name changes', async () => {

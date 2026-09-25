@@ -142,14 +142,6 @@ const errorSchema = {
             count: { type: 'integer' },
           },
         },
-        {
-          type: 'object',
-          description: 'ADDRESS_NOT_ALLOWED: the disallowed address a hostname resolved to (§5.1).',
-          required: ['address'],
-          properties: {
-            address: { type: 'string' },
-          },
-        },
       ],
     },
   },
