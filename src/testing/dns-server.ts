@@ -42,8 +42,10 @@ export interface TestDnsServer {
   port: number;
   /** Queries received, so a test can prove the resolver really asked. */
   queries: () => number;
-  /** Socket errors after startup, which would otherwise go unseen. */
+  /** Socket errors after startup; `close()` rejects with them. */
   errors: () => Error[];
+  /** The UDP socket itself, for a test that needs to inject a fault. */
+  socket: dgram.Socket;
   close: () => Promise<void>;
 }
 
@@ -94,7 +96,17 @@ export async function startDnsServer(
     port: socket.address().port,
     queries: () => received,
     errors: () => [...errors],
-    close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
+    socket,
+    // Rejects with anything the socket reported after startup, so a test's
+    // cleanup surfaces a server that broke mid-test instead of the test
+    // passing on whatever the resolver made of the silence.
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        socket.close(() => {
+          if (errors.length === 0) resolve();
+          else reject(new AggregateError(errors, 'the test DNS server hit socket errors'));
+        });
+      }),
   };
 }
 

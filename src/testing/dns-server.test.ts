@@ -15,4 +15,19 @@ describe('startDnsServer', () => {
       await first.close();
     }
   });
+
+  it('surfaces a socket error from after startup when it is closed', async () => {
+    // A fault mid-test would otherwise only change what the resolver saw --
+    // silence, which reads as ETIMEOUT -- and a test could pass on that.
+    const server = await startDnsServer('servfail');
+    server.socket.emit('error', new Error('late fault'));
+
+    expect(server.errors().map((e) => e.message)).toEqual(['late fault']);
+    await expect(server.close()).rejects.toThrow(/socket errors/);
+  });
+
+  it('closes cleanly when nothing went wrong', async () => {
+    const server = await startDnsServer('servfail');
+    await expect(server.close()).resolves.toBeUndefined();
+  });
 });
