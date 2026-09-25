@@ -859,6 +859,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Ok"
+        "413": &a1
+          description: Body larger than the configured limit (64 kB by default).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /readyz:
     get:
       tags:
@@ -874,6 +880,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Readiness"
+        "413": *a1
         "503":
           description: "The database is not reachable. Code: `DATABASE_UNAVAILABLE`."
           content:
@@ -985,13 +992,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CurrentUser"
-        "401": &a1
+        "401": &a2
           description: No session cookie, or one that is expired, revoked or unknown.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": &a2
+        "413": *a1
+        "429": &a3
           description: Too many requests from this address.
           content:
             application/json:
@@ -1057,8 +1065,9 @@ paths:
               description: The same cookie with an expiry in the past.
               schema:
                 type: string
-        "401": *a1
-        "429": *a2
+        "401": *a2
+        "413": *a1
+        "429": *a3
   /v1/auth/logout-all:
     post:
       tags:
@@ -1074,8 +1083,9 @@ paths:
               description: The same cookie with an expiry in the past.
               schema:
                 type: string
-        "401": *a1
-        "429": *a2
+        "401": *a2
+        "413": *a1
+        "429": *a3
   /v1/auth/oauth/{provider}/start:
     get:
       tags:
@@ -1111,6 +1121,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "413": *a1
         "429":
           description: Too many attempts from this address.
           content:
@@ -1148,6 +1159,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "413": *a1
         "429":
           description: Too many attempts from this address.
           content:
@@ -1182,14 +1194,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OAuthLinkResponse"
-        "401": *a1
+        "401": *a2
         "404":
           description: Unknown or unconfigured provider.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/auth/oauth/{provider}:
     delete:
       tags:
@@ -1208,7 +1221,7 @@ paths:
       responses:
         "204":
           description: Removed.
-        "401": *a1
+        "401": *a2
         "404":
           description: No identity for this provider on this account.
           content:
@@ -1221,7 +1234,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/auth/identities:
     get:
       tags:
@@ -1237,8 +1251,9 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/OAuthIdentity"
-        "401": *a1
-        "429": *a2
+        "401": *a2
+        "413": *a1
+        "429": *a3
   /v1/services:
     post:
       tags:
@@ -1268,20 +1283,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "409":
           description: "`CONFLICT`: a service already exists at this base URL (explicit form only). `QUOTA_EXCEEDED`: the endpoint quota is reached (implicit form only)."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "413": &a4
-          description: Body larger than the configured limit (64 kB by default).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
     get:
       tags:
         - services
@@ -1330,8 +1340,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
-        "429": *a2
+        "401": *a2
+        "413": *a1
+        "429": *a3
   /v1/services/{id}:
     get:
       tags:
@@ -1339,7 +1350,7 @@ paths:
       operationId: getService
       summary: Fetch a service
       parameters:
-        - &a3
+        - &a4
           name: id
           in: path
           required: true
@@ -1359,14 +1370,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or it belongs to someone else -- indistinguishable.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
     patch:
       tags:
         - services
@@ -1374,7 +1386,7 @@ paths:
       summary: Update a service
       description: Every field optional; only what is present is changed. `headers`/`tags`, if present, fully replace the existing set (docs/m2-plan.md §5.4) -- a secret entry with no `value` keeps its current ciphertext. `baseUrl`, if present, is re-validated by the SSRF guard even if unchanged (D10).
       parameters:
-        - *a3
+        - *a4
       requestBody:
         required: true
         content:
@@ -1394,7 +1406,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
@@ -1407,8 +1419,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "413": *a4
-        "429": *a2
+        "413": *a1
+        "429": *a3
     delete:
       tags:
         - services
@@ -1416,19 +1428,20 @@ paths:
       summary: Delete a service
       description: Cascades to its endpoints, headers and tags. Unconditional hard delete (D9).
       parameters:
-        - *a3
+        - *a4
       responses:
         "204":
           description: Deleted.
         "400": *a5
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/services/{id}/endpoints:
     get:
       tags:
@@ -1436,7 +1449,7 @@ paths:
       operationId: listServiceEndpoints
       summary: A service's endpoints
       parameters:
-        - *a3
+        - *a4
         - *a6
         - *a7
         - *a8
@@ -1455,14 +1468,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
     post:
       tags:
         - endpoints
@@ -1470,7 +1484,7 @@ paths:
       summary: Add an endpoint to a service
       description: "Quota-checked (§5.3: locks the user row, counts, then inserts, inside one transaction -- closes the check-then-act race a separate COUNT would leave open). The joined base URL + path is re-validated by the SSRF guard (D10)."
       parameters:
-        - *a3
+        - *a4
       requestBody:
         required: true
         content:
@@ -1490,7 +1504,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "404":
           description: Service not found, or owned by someone else.
           content:
@@ -1503,8 +1517,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "413": *a4
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/endpoints:
     get:
       tags:
@@ -1530,8 +1544,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
-        "429": *a2
+        "401": *a2
+        "413": *a1
+        "429": *a3
   /v1/endpoints/{id}:
     get:
       tags:
@@ -1539,7 +1554,7 @@ paths:
       operationId: getEndpoint
       summary: Fetch an endpoint
       parameters:
-        - *a3
+        - *a4
       responses:
         "200":
           description: The endpoint, with its own headers and the merged effective set.
@@ -1548,14 +1563,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/Endpoint"
         "400": *a5
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
     patch:
       tags:
         - endpoints
@@ -1563,7 +1579,7 @@ paths:
       summary: Update an endpoint
       description: Every field optional. The joined base URL + path is re-validated by the SSRF guard unconditionally, even when neither changed (D10).
       parameters:
-        - *a3
+        - *a4
       requestBody:
         required: true
         content:
@@ -1583,7 +1599,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
@@ -1596,27 +1612,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "413": *a4
-        "429": *a2
+        "413": *a1
+        "429": *a3
     delete:
       tags:
         - endpoints
       operationId: deleteEndpoint
       summary: Delete an endpoint
       parameters:
-        - *a3
+        - *a4
       responses:
         "204":
           description: Deleted.
         "400": *a5
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/endpoints/{id}/pause:
     post:
       tags:
@@ -1625,7 +1642,7 @@ paths:
       summary: Set enabled = false
       description: Inert until M4's scheduler reads `enabled` (FR-9).
       parameters:
-        - *a3
+        - *a4
       responses:
         "200":
           description: Paused.
@@ -1634,14 +1651,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/Endpoint"
         "400": *a5
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
   /v1/endpoints/{id}/resume:
     post:
       tags:
@@ -1649,7 +1667,7 @@ paths:
       operationId: resumeEndpoint
       summary: Set enabled = true
       parameters:
-        - *a3
+        - *a4
       responses:
         "200":
           description: Resumed.
@@ -1658,13 +1676,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/Endpoint"
         "400": *a5
-        "401": *a1
+        "401": *a2
         "404":
           description: Not found, or owned by someone else.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "429": *a2
+        "413": *a1
+        "429": *a3
 security:
   - sessionCookie: []

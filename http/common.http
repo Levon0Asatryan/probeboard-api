@@ -77,9 +77,9 @@ Content-Type: application/json
 #   curl -s -w '%{http_code}\n' -X POST http://127.0.0.1:3000/v1/auth/login \
 #     -H 'content-type: application/json' --data-binary @/tmp/big.json
 #
-# The same limit applies to every route that takes a body -- the registration
-# routes (POST/PATCH services and endpoints) answer the same 413, before the
-# session guard runs.
+# The parser runs before routing, so every route answers the same 413 for an
+# oversized JSON body -- the registration routes, and GET /healthz or
+# POST /v1/auth/logout too -- before the session guard runs.
 
 ###
 # @name malformedPathId

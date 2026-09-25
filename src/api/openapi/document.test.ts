@@ -269,7 +269,6 @@ describe('statuses reachable before the handler runs (#72, defect 4)', () => {
   // document, so a new route carrying one of these parameters or a body is
   // held to it without anyone listing it here.
   interface Operation {
-    requestBody?: unknown;
     responses: Record<string, unknown>;
   }
   const operations = (): [string, string, Operation][] => {
@@ -287,10 +286,13 @@ describe('statuses reachable before the handler runs (#72, defect 4)', () => {
     }
   });
 
-  it('documents 413 on every operation that takes a body, which the body limit can refuse', () => {
-    const withBody = operations().filter(([, , op]) => op.requestBody !== undefined);
-    expect(withBody.length).toBeGreaterThanOrEqual(7);
-    for (const [path, method, op] of withBody) {
+  it('documents 413 on every operation, because the body parser runs before routing', () => {
+    // Not only the ones with a documented body: the parser is global, and an
+    // oversized JSON body sent to GET /healthz or POST /v1/auth/logout is
+    // refused with 413 too (Codex on #75, measured).
+    const all = operations();
+    expect(all.length).toBeGreaterThanOrEqual(20);
+    for (const [path, method, op] of all) {
       expect(op.responses, `${method} ${path}`).toHaveProperty('413');
     }
   });

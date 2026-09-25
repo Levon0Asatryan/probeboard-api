@@ -212,7 +212,13 @@ const tagParam = {
  */
 const badIdResponse = errorResponse('`BAD_REQUEST`: the `id` in the path is not a UUID.');
 
-/** The shared JSON body limit, which every operation taking a body can hit. */
+/**
+ * The shared JSON body limit. The parser is registered for the whole app
+ * (`bootstrap.ts`) and runs before routing, so it can answer this on *any*
+ * operation that is sent an oversized JSON body -- measured on `GET /healthz`,
+ * `GET /v1/services` and `POST /v1/auth/logout` alike -- not only on the ones
+ * that document a body.
+ */
 const tooLargeResponse = errorResponse('Body larger than the configured limit (64 kB by default).');
 
 const authErrors = {
@@ -231,7 +237,7 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
 
-  return {
+  return withBodyLimit({
     openapi: '3.0.3',
     info: {
       title: 'probeboard API',
@@ -1122,5 +1128,25 @@ export function buildOpenApiDocument(
       },
     },
     security: [{ sessionCookie: [] }],
-  };
+  });
+}
+
+/**
+ * Adds the body limit's `413` to every operation that does not already
+ * describe it (#72 defect 4, Codex on #75). A property of the shared parser,
+ * not of any one route, so it is applied here rather than remembered route by
+ * route: a route added later has it too.
+ */
+function withBodyLimit(doc: Record<string, unknown>): Record<string, unknown> {
+  const paths = doc.paths as Record<
+    string,
+    Record<string, { responses?: Record<string, unknown> }>
+  >;
+  for (const operations of Object.values(paths)) {
+    for (const operation of Object.values(operations)) {
+      operation.responses ??= {};
+      operation.responses['413'] ??= tooLargeResponse;
+    }
+  }
+  return doc;
 }
