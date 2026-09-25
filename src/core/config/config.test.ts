@@ -649,6 +649,13 @@ describe('scheduler bounds reject invalid values at boot', () => {
     ['PROBE_MAX_TIMEOUT_MS', '300001', 'Too big: expected number to be <=300000'],
     ['PROBE_DEFAULT_TIMEOUT_MS', '300001', 'Too big: expected number to be <=300000'],
     ['SCHEDULER_SHUTDOWN_GRACE_MS', '600001', 'Too big: expected number to be <=600000'],
+    ['SCHEDULER_ERROR_LOG_MAX_INTERVAL_MS', '999', 'Too small: expected number to be >=1000'],
+    ['SCHEDULER_ERROR_LOG_MAX_INTERVAL_MS', '3600001', 'Too big: expected number to be <=3600000'],
+    [
+      'SCHEDULER_ERROR_LOG_MAX_INTERVAL_MS',
+      '1000.5',
+      'Invalid input: expected int, received number',
+    ],
   ])('rejects %s=%s', (key, value, message) => {
     // Matching on the key name alone is not enough, and that is not a
     // hypothetical: the cross-field rules added in this same change *name the
