@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { PinoLogger } from 'nestjs-pino';
-import { Client } from 'pg';
+import { Client, Pool } from 'pg';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
+import { createDb } from '../../../core/db/utils/kysely.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { connectTestDb, testDatabaseUrl, truncateAll } from '../../../testing/database.js';
 import { dropPartitionsOfYear, insertRaw } from '../../../testing/storage-fixtures.js';
@@ -234,6 +235,24 @@ describe('a reader holding the partition', () => {
       [RETENTION_APPLICATION_NAME],
     );
     expect(rows).toEqual([]);
+  });
+});
+
+describe('the connection pool', () => {
+  it('completes with a pool of ONE connection: retention reserves none while it waits', async () => {
+    const tiny = new Pool({ connectionString: testDatabaseUrl(), max: 1 });
+    tiny.on('error', () => undefined);
+    try {
+      const svc = new RetentionService({ kysely: createDb(tiny) } as never, config(), logger);
+      // Before the fix this held the only connection and waited for a second one.
+      const r = await Promise.race([
+        svc.run(NOW),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('deadlocked')), 8000)),
+      ]);
+      expect(r.dropped).toContain('probe_results_p20200101');
+    } finally {
+      await tiny.end();
+    }
   });
 });
 

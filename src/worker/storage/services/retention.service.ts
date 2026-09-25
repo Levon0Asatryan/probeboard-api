@@ -25,6 +25,7 @@ export interface RetentionResult {
 type Guard = 'raw' | 'stats' | 'none';
 
 export const RETENTION_APPLICATION_NAME = 'probeboard-retention';
+const RETENTION_LOCK_KEY = 'probeboard:retention';
 
 /** Identifiers here are `parent_pYYYYMMDD` names already validated by `periodFromSuffix`. */
 function quoteIdent(name: string): string {
@@ -82,21 +83,54 @@ export class RetentionService {
   }
 
   /**
-   * Single-flight across workers by a **transaction-level** advisory lock, held
-   * by an otherwise idle transaction for the whole pass. There is nothing to
-   * unlock and nothing to leak: commit, rollback or a dead connection all release
-   * it, so no cleanup step can fail and leave a pooled session still holding it.
-   * Two workers must not race a detach and a drop of the same partition.
+   * Single-flight across workers by a **session-level** advisory lock taken on a
+   * **dedicated, non-pooled** connection that lives exactly as long as the pass.
+   * There is no unlock step to fail: closing the connection ends the session and
+   * releases the lock, and the connection is never returned to a pool, so nothing
+   * can be handed on still holding it. Two workers must not race a detach and a
+   * drop of the same partition.
+   *
+   * Two things this deliberately is not:
+   *  - a pooled connection or transaction -- with `DATABASE_POOL_MAX=1` that would
+   *    reserve the only connection and then wait for a second for the queries below;
+   *  - a transaction of any kind -- an idle-in-transaction holder keeps a snapshot
+   *    (`backend_xmin`), and `DETACH ... CONCURRENTLY` waits for every older
+   *    snapshot, so every detach would block behind the lock holder until its
+   *    `lock_timeout` (found by running it: all ten partitions deferred, none dropped).
    */
   async run(now: Date = new Date()): Promise<RetentionResult> {
-    return this.db.kysely.transaction().execute(async (lockTx) => {
-      const got = await sql<{ ok: boolean }>`
-        SELECT pg_try_advisory_xact_lock(hashtext('probeboard:retention')) AS ok
-      `.execute(lockTx);
+    const lock = this.dedicatedClient();
+    try {
+      await lock.connect();
+      const got = await lock.query<{ ok: boolean }>(
+        'SELECT pg_try_advisory_lock(hashtext($1)) AS ok',
+        [RETENTION_LOCK_KEY],
+      );
       const result: RetentionResult = { skipped: false, dropped: [], blocked: [], deferred: [] };
       if (!got.rows[0]?.ok) return { ...result, skipped: true };
       for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result);
       return result;
+    } finally {
+      await this.close(lock, 'retention lock');
+    }
+  }
+
+  private dedicatedClient(): Client {
+    const client = new Client({
+      connectionString: this.cfg.DATABASE_URL,
+      connectionTimeoutMillis: 5000,
+      application_name: RETENTION_APPLICATION_NAME,
+    });
+    // An idle connection's 'error' event is fatal in Node unless listened for; the
+    // statement's own rejection is what callers report.
+    client.on('error', () => undefined);
+    return client;
+  }
+
+  private async close(client: Client, what: string): Promise<void> {
+    await client.end().catch((err: unknown) => {
+      // The socket is closed either way; this is only worth a line.
+      this.logger.warn({ err, what }, 'closing a dedicated retention connection failed');
     });
   }
 
@@ -222,14 +256,7 @@ export class RetentionService {
     name: string,
     mode: 'CONCURRENTLY' | 'FINALIZE',
   ): Promise<boolean> {
-    const client = new Client({
-      connectionString: this.cfg.DATABASE_URL,
-      connectionTimeoutMillis: 5000,
-      application_name: RETENTION_APPLICATION_NAME,
-    });
-    // An idle connection's 'error' event is fatal in Node unless listened for; the
-    // statement's own rejection is what this method reports.
-    client.on('error', () => undefined);
+    const client = this.dedicatedClient();
     try {
       await client.connect();
       await client.query(`SET lock_timeout = ${Math.trunc(this.cfg.MAINTENANCE_LOCK_TIMEOUT_MS)}`);
@@ -244,10 +271,7 @@ export class RetentionService {
       );
       return false;
     } finally {
-      await client.end().catch((err: unknown) => {
-        // The socket is closed either way; this is only worth a line.
-        this.logger.warn({ err, partition: name }, 'closing the retention connection failed');
-      });
+      await this.close(client, `detach ${name}`);
     }
   }
 
