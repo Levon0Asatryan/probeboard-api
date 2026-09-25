@@ -21,6 +21,12 @@ import {
   type Handler,
   type TestServer,
 } from '../../../testing/probe-server.js';
+import {
+  resolverFor,
+  startDnsServer,
+  type DnsFailureMode,
+  type TestDnsServer,
+} from '../../../testing/dns-server.js';
 import { trustFixtureCa } from '../../../testing/tls-fixtures.js';
 import { createConnector, type PinnedConnectOptions } from './pinned-connect.js';
 import { probe, type EndpointProbeConfig, type ProbeDeps } from './probe.js';
@@ -586,6 +592,94 @@ describe('probe, SSRF guard', () => {
     // The first hop really was reached -- otherwise this would pass for the
     // wrong reason, which is exactly what it did before ROUTABLE existed.
     expect(server.received).toHaveLength(1);
+  });
+});
+
+/**
+ * The guard against a real resolver (#72, defect 1).
+ *
+ * Everything above hands the guard a resolver that rejects with a code the
+ * test chose, which is how `EAI_AGAIN` came to be the only code mapped: it was
+ * the code the tests used, and c-ares -- the resolver the guard actually runs
+ * -- never produces it. Here a real `dns.promises.Resolver` asks a real name
+ * server that fails on purpose, so each row is a code c-ares raised itself,
+ * carried through `assertSaveableUrl`'s `resolveAll` and the guard's
+ * classification exactly as in production.
+ */
+describe('probe, real resolver failures under the guard', () => {
+  const servers: TestDnsServer[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+  });
+
+  async function probeAgainst(mode: DnsFailureMode, aaaaMode: DnsFailureMode = mode) {
+    const dnsServer = await startDnsServer(mode, aaaaMode);
+    servers.push(dnsServer);
+    const dispatcherFactory = vi.fn(realDispatcher);
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com/' }),
+      deps({ ssrf: GUARD_ON, resolver: resolverFor(dnsServer.port), dispatcherFactory }),
+    );
+    // The resolver really asked, and nothing was dialled: otherwise a row
+    // could pass for a reason other than the answer it names.
+    expect(dnsServer.queries()).toBeGreaterThan(0);
+    expect(dispatcherFactory).not.toHaveBeenCalled();
+    return outcome;
+  }
+
+  it.each([
+    ['servfail', 'ESERVFAIL'],
+    ['refused', 'EREFUSED'],
+    ['notimp', 'ENOTIMP'],
+    ['formerr', 'EFORMERR'],
+    ['garbage', 'EBADRESP'],
+    ['silent', 'ETIMEOUT'],
+  ] as const)('reports a %s name server as DNS_FAILURE, keeping %s', async (mode, code) => {
+    const outcome = await probeAgainst(mode);
+
+    expect(outcome).toMatchObject({ success: false, failureClass: 'DNS_FAILURE', code });
+  });
+
+  it('reports an unreachable name server as DNS_FAILURE, not CONNECTION_REFUSED', async () => {
+    // c-ares says ECONNREFUSED when it cannot reach the *resolver*. The
+    // transport table maps the same spelling to the endpoint refusing, and
+    // reading it there would report a dead name server as the endpoint's
+    // process being down.
+    const closed = await startDnsServer('servfail');
+    const port = closed.port;
+    await closed.close();
+    const dispatcherFactory = vi.fn(realDispatcher);
+
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com/' }),
+      deps({ ssrf: GUARD_ON, resolver: resolverFor(port), dispatcherFactory }),
+    );
+
+    expect(outcome).toMatchObject({ failureClass: 'DNS_FAILURE', code: 'ECONNREFUSED' });
+    expect(dispatcherFactory).not.toHaveBeenCalled();
+  });
+
+  it('still reports a name that does not exist as DNS_NXDOMAIN', async () => {
+    // NXDOMAIN on both families folds into "no addresses" inside core/ssrf,
+    // so the guard rejects with no cause at all: the clean negative.
+    expect(await probeAgainst('nxdomain')).toMatchObject({
+      failureClass: 'DNS_NXDOMAIN',
+      code: 'URL_UNRESOLVABLE',
+    });
+    expect(await probeAgainst('nodata')).toMatchObject({
+      failureClass: 'DNS_NXDOMAIN',
+      code: 'URL_UNRESOLVABLE',
+    });
+  });
+
+  it('reports a failing family as DNS_FAILURE even when the other has no record', async () => {
+    // A only: NXDOMAIN, a definitive negative. AAAA: SERVFAIL, which says
+    // nothing about what the name holds. The failure is what the user needs
+    // to hear about.
+    expect(await probeAgainst('nxdomain', 'servfail')).toMatchObject({
+      failureClass: 'DNS_FAILURE',
+      code: 'ESERVFAIL',
+    });
   });
 });
 

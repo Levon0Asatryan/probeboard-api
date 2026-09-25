@@ -15,7 +15,7 @@
  * to check" when the truth was "their name server is broken".
  */
 import { SsrfValidationError } from '../../../core/ssrf/host-validator.js';
-import type { Classification } from './failure-classes.js';
+import { classifyResolverCode, type Classification } from './failure-classes.js';
 
 /**
  * What `core/ssrf` attached, if anything.
@@ -53,11 +53,14 @@ function causeOf(error: SsrfValidationError): Cause {
  *   whether the per-family code was `ENOTFOUND` or `ENODATA`, which is a
  *   small information loss inside `core/ssrf` worth naming rather than
  *   silently working around (§9).
- * - A `cause` — the resolver itself failed. `EAI_AGAIN` is the taxonomy's
- *   `DNS_FAILURE` signal; anything else (`SERVFAIL`, a timeout, `EREFUSED`)
- *   is reported as `UNKNOWN_ERROR` with the raw code retained, because
- *   architecture §7.4 forbids coercing an unrecognised signal into a
- *   plausible-looking class.
+ * - A `cause` with a code — the resolver failed and said how. The guard
+ *   resolves through c-ares, so the code is one of Node's `dns` constants
+ *   (`ESERVFAIL`, `ETIMEOUT`, `EREFUSED`, ...), read by
+ *   `classifyResolverCode`: its documented failures are `DNS_FAILURE`, and a
+ *   code it does not document stays `UNKNOWN_ERROR` with the code retained.
+ *   An earlier version mapped only `EAI_AGAIN`, a `getaddrinfo` code c-ares
+ *   never produces, so every real resolver failure -- `SERVFAIL` included --
+ *   was stored as `unknown` and excluded from uptime (#72, defect 1).
  */
 export function classifyGuardRejection(error: SsrfValidationError): Classification {
   switch (error.code) {
@@ -78,8 +81,7 @@ export function classifyGuardRejection(error: SsrfValidationError): Classificati
       // more plausible-looking answer.
       if (cause.kind === 'absent') return { failureClass: 'DNS_NXDOMAIN', code: error.code };
       if (cause.kind === 'unreadable') return { failureClass: 'UNKNOWN_ERROR', code: error.code };
-      if (cause.code === 'EAI_AGAIN') return { failureClass: 'DNS_FAILURE', code: cause.code };
-      return { failureClass: 'UNKNOWN_ERROR', code: cause.code };
+      return { failureClass: classifyResolverCode(cause.code), code: cause.code };
     }
 
     default:

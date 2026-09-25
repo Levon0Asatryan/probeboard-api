@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyAbort,
   classifyError,
+  classifyResolverCode,
   isAbortError,
   transportCode,
   type FailureClass,
@@ -102,6 +103,38 @@ describe('classifyError', () => {
     const parent = { code: 'ECONNREFUSED' };
     const child = Object.create(parent) as object;
     expect(classifyError(child)).toEqual({ failureClass: 'UNKNOWN_ERROR' });
+  });
+});
+
+describe('classifyResolverCode', () => {
+  // Node's dns error-code list, the rows a failing resolver can produce. Each
+  // is also driven through a real c-ares resolver in probe.test.ts.
+  const rows: readonly [string, FailureClass][] = [
+    ['ENOTFOUND', 'DNS_NXDOMAIN'],
+    ['ENODATA', 'DNS_NXDOMAIN'],
+    ['ESERVFAIL', 'DNS_FAILURE'],
+    ['EREFUSED', 'DNS_FAILURE'],
+    ['ETIMEOUT', 'DNS_FAILURE'],
+    ['ECONNREFUSED', 'DNS_FAILURE'],
+    ['EBADRESP', 'DNS_FAILURE'],
+    ['ENOTIMP', 'DNS_FAILURE'],
+    ['EFORMERR', 'DNS_FAILURE'],
+    ['EAI_AGAIN', 'DNS_FAILURE'],
+  ];
+
+  it.each(rows)('classifies %s as %s', (code, expected) => {
+    expect(classifyResolverCode(code)).toBe(expected);
+  });
+
+  it('does not read the resolver vocabulary through the transport table', () => {
+    // The collision the second table exists for: the same code, two meanings.
+    expect(classifyResolverCode('ECONNREFUSED')).toBe('DNS_FAILURE');
+    expect(classifyError(wrapped('ECONNREFUSED')).failureClass).toBe('CONNECTION_REFUSED');
+  });
+
+  it('leaves an undocumented or inherited code UNKNOWN_ERROR', () => {
+    expect(classifyResolverCode('ECANCELLED')).toBe('UNKNOWN_ERROR');
+    expect(classifyResolverCode('toString')).toBe('UNKNOWN_ERROR');
   });
 });
 

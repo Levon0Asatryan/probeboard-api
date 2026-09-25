@@ -42,7 +42,11 @@ export interface Classification {
   code?: string;
 }
 
-/** `03-api-health.md` §3.4, verbatim. */
+/**
+ * `03-api-health.md` §3.4's signal column, plus the rows marked "beyond
+ * §3.4" -- each a code measured arriving from a real transport with the same
+ * operational meaning as the class it maps to.
+ */
 const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   ENOTFOUND: 'DNS_NXDOMAIN',
   EAI_AGAIN: 'DNS_FAILURE',
@@ -76,6 +80,70 @@ const SIGNAL_TO_CLASS: Readonly<Record<string, FailureClass>> = {
   UND_ERR_HEADERS_TIMEOUT: 'RESPONSE_TIMEOUT',
   UND_ERR_BODY_TIMEOUT: 'BODY_TIMEOUT',
 };
+
+/**
+ * The resolver's own error codes, for the guard path.
+ *
+ * A second vocabulary, not a second copy of the one above. `SIGNAL_TO_CLASS`
+ * reads what undici's connect raises, and with the guard off that resolves
+ * through `dns.lookup` -- `getaddrinfo`, whose failures are `ENOTFOUND` and
+ * `EAI_AGAIN`. The guard resolves with `resolve4`/`resolve6` instead, which
+ * is c-ares, and c-ares reports Node's `dns` error constants
+ * (https://nodejs.org/docs/latest-v22.x/api/dns.html#error-codes). It never
+ * produces `EAI_AGAIN`, so reading its codes through the table above sent
+ * every real resolver failure to UNKNOWN_ERROR -- a DNS outage excluded from
+ * uptime, and under D-7 unable to open an incident.
+ *
+ * The two tables also cannot be merged, because they collide: c-ares'
+ * `ECONNREFUSED` is "could not contact DNS servers" -- the *resolver*
+ * refused -- while the transport's `ECONNREFUSED` is the endpoint refusing.
+ * Read through the table above, a dead name server would report the
+ * endpoint's process as down.
+ *
+ * Each row below is a documented c-ares answer, with Node's own description,
+ * and each was produced against a real resolver on the pinned Node 22 before
+ * it was added. This is reading, not the coercion architecture §7.4 forbids:
+ * §3.4 defines DNS_FAILURE as "resolver itself is failing", and these are the
+ * resolver saying so in its own words. A code off this list -- `ECANCELLED`,
+ * `EBADNAME`, `ENOMEM`, anything new -- still stays UNKNOWN_ERROR with the
+ * code retained, which is what §7.4 actually asks for.
+ */
+const RESOLVER_CODE_TO_CLASS: Readonly<Record<string, FailureClass>> = {
+  // "Domain name not found" / "DNS server returned an answer with no data":
+  // a definitive negative, the same pair `core/ssrf`'s NO_RECORD_CODES
+  // already trusts.
+  ENOTFOUND: 'DNS_NXDOMAIN',
+  ENODATA: 'DNS_NXDOMAIN',
+  // "DNS server returned general failure" -- SERVFAIL, a DNSSEC break, a
+  // lapsed delegation.
+  ESERVFAIL: 'DNS_FAILURE',
+  // "DNS server refused query."
+  EREFUSED: 'DNS_FAILURE',
+  // "Timeout while contacting DNS servers."
+  ETIMEOUT: 'DNS_FAILURE',
+  // "Could not contact DNS servers." The resolver's refusal, not the endpoint's.
+  ECONNREFUSED: 'DNS_FAILURE',
+  // "Bad DNS reply."
+  EBADRESP: 'DNS_FAILURE',
+  // "DNS server does not implement the requested operation."
+  ENOTIMP: 'DNS_FAILURE',
+  // "DNS server claims query was misformatted." c-ares built the query, so
+  // the fault is the server's.
+  EFORMERR: 'DNS_FAILURE',
+  // `getaddrinfo`'s spelling of a failing resolver, §3.4's own signal. c-ares
+  // never raises it, but an injected resolver may, and it means the same.
+  EAI_AGAIN: 'DNS_FAILURE',
+};
+
+/**
+ * Classifies a resolver failure the SSRF guard attached as its `cause`.
+ * UNKNOWN_ERROR for a code the resolver does not document.
+ */
+export function classifyResolverCode(code: string): FailureClass {
+  return Object.hasOwn(RESOLVER_CODE_TO_CLASS, code)
+    ? RESOLVER_CODE_TO_CLASS[code]
+    : 'UNKNOWN_ERROR';
+}
 
 /** How far to walk a `cause` chain before giving up. */
 const MAX_CAUSE_DEPTH = 8;
