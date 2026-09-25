@@ -5,6 +5,7 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
+import { describeError } from '../../../core/errors/describe.js';
 import {
   PARTITION_FAMILIES,
   nextPeriodStart,
@@ -23,6 +24,21 @@ export interface RetentionResult {
 }
 
 type Guard = 'raw' | 'stats' | 'none';
+
+/**
+ * The advisory-lock session died mid-pass, so this pass stopped before its
+ * next DDL statement (#68). PostgreSQL released the lock with the session,
+ * and another worker may already hold it.
+ */
+export class RetentionLockLostError extends Error {
+  constructor(readonly reason: string) {
+    super(`retention lock session lost: ${reason}`);
+    this.name = 'RetentionLockLostError';
+  }
+}
+
+/** Throws `RetentionLockLostError` unless the lock session is still alive. */
+type LockCheck = () => Promise<void>;
 
 export const RETENTION_APPLICATION_NAME = 'probeboard-retention';
 const RETENTION_LOCK_KEY = 'probeboard:retention';
@@ -100,6 +116,29 @@ export class RetentionService {
    */
   async run(now: Date = new Date()): Promise<RetentionResult> {
     const lock = this.dedicatedClient();
+    // The session *is* the lock: if its connection dies, PostgreSQL releases
+    // the lock with it and a second worker can start a pass of its own. The
+    // no-op listener `dedicatedClient` attaches keeps that death from being
+    // fatal; these keep it from being silent (#68).
+    let lost: string | undefined;
+    lock.on('error', (err: unknown) => {
+      lost ??= describeError(err);
+    });
+    lock.on('end', () => {
+      lost ??= 'the connection ended';
+    });
+    const held: LockCheck = async () => {
+      if (lost === undefined) {
+        // The event only arrives once the socket reports it; a round trip on
+        // the lock's own connection proves the session is alive *now*, right
+        // before the statement it licenses.
+        await lock.query('SELECT 1').catch((err: unknown) => {
+          lost ??= describeError(err);
+        });
+      }
+      if (lost !== undefined) throw new RetentionLockLostError(lost);
+    };
+
     try {
       await lock.connect();
       const got = await lock.query<{ ok: boolean }>(
@@ -108,7 +147,7 @@ export class RetentionService {
       );
       const result: RetentionResult = { skipped: false, dropped: [], blocked: [], deferred: [] };
       if (!got.rows[0]?.ok) return { ...result, skipped: true };
-      for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result);
+      for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result, held);
       return result;
     } finally {
       await this.close(lock, 'retention lock');
@@ -134,17 +173,25 @@ export class RetentionService {
     });
   }
 
+  /**
+   * Every DDL statement is preceded by `held()`: a pass whose lock session
+   * has died stops before its next detach or drop rather than running on
+   * beside the second worker that may now hold the lock. Reads are not
+   * checked -- a duplicate read changes nothing.
+   */
   private async runFamily(
     family: PartitionFamily,
     now: Date,
     result: RetentionResult,
+    held: LockCheck,
   ): Promise<void> {
     const cutoff = now.getTime() - this.daysFor(family.parent) * 86_400_000;
     const guard = this.guardFor(family.parent);
 
     // 1. Recover an interrupted detach: the partition already passed its guard.
     for (const name of await this.pendingDetaches(family.parent)) {
-      if (await this.detach(family.parent, name, 'FINALIZE')) await this.drop(name, result);
+      await held();
+      if (await this.detach(family.parent, name, 'FINALIZE')) await this.drop(name, result, held);
       else result.deferred.push(name);
     }
 
@@ -155,12 +202,16 @@ export class RetentionService {
         result.blocked.push({ partition: p.name, reason: blocked });
         continue;
       }
-      if (await this.detach(family.parent, p.name, 'CONCURRENTLY')) await this.drop(p.name, result);
-      else result.deferred.push(p.name);
+      await held();
+      if (await this.detach(family.parent, p.name, 'CONCURRENTLY')) {
+        await this.drop(p.name, result, held);
+      } else {
+        result.deferred.push(p.name);
+      }
     }
 
     // 3. A detached leftover from a crash between detach and drop.
-    for (const name of await this.leftovers(family, cutoff)) await this.drop(name, result);
+    for (const name of await this.leftovers(family, cutoff)) await this.drop(name, result, held);
   }
 
   private async pendingDetaches(parent: string): Promise<string[]> {
@@ -275,7 +326,8 @@ export class RetentionService {
     }
   }
 
-  private async drop(name: string, result: RetentionResult): Promise<void> {
+  private async drop(name: string, result: RetentionResult, held: LockCheck): Promise<void> {
+    await held();
     await sql`DROP TABLE IF EXISTS ${sql.id(name)}`.execute(this.db.kysely);
     result.dropped.push(name);
   }
