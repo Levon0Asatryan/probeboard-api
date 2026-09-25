@@ -4,6 +4,7 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { PartitionService } from './partition.service.js';
+import { RetentionService } from './retention.service.js';
 
 /**
  * Keeps the partitions ahead of the clock (docs/m5-plan.md §3.6).
@@ -21,6 +22,7 @@ export class StorageMaintenanceService implements OnModuleInit, OnModuleDestroy 
 
   constructor(
     private readonly partitions: PartitionService,
+    private readonly retention: RetentionService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
     @InjectPinoLogger(StorageMaintenanceService.name) private readonly logger: PinoLogger,
   ) {}
@@ -58,6 +60,23 @@ export class StorageMaintenanceService implements OnModuleInit, OnModuleDestroy 
       }
     } catch (err) {
       this.logger.error({ err }, 'partition maintenance failed; retrying next tick');
+    }
+    await this.retain(now);
+  }
+
+  /** Retention has its own guard against a failure: it must never stop partition creation. */
+  private async retain(now: Date): Promise<void> {
+    try {
+      const r = await this.retention.run(now);
+      if (r.dropped.length > 0) {
+        this.logger.info({ dropped: r.dropped }, 'retention dropped partitions');
+      }
+      for (const b of r.blocked) {
+        // Data no aggregate has seen: the one irreversible mistake, so it is loud.
+        this.logger.error({ partition: b.partition }, `retention refused to drop: ${b.reason}`);
+      }
+    } catch (err) {
+      this.logger.error({ err }, 'retention failed; retrying next tick');
     }
   }
 }

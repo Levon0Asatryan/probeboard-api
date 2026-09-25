@@ -9,27 +9,36 @@ import { connectTestDb, testDatabaseUrl, truncateAll } from '../../../testing/da
 import { createEndpoint, dropPartitionsOfYear } from '../../../testing/storage-fixtures.js';
 import { RollupRepository } from '../../rollup/repositories/rollup.repository.js';
 import { PartitionService } from '../services/partition.service.js';
+import { RetentionService } from '../services/retention.service.js';
+import type { WindowStats } from '../../../core/stats/repositories/stats.repository.js';
+import type { PinoLogger } from 'nestjs-pino';
 
 /**
- * M5's exit test (docs/m5-plan.md §8), up to and including the read: a 30-day
- * percentile is served from aggregates, and agrees with the raw rows within the
- * histogram's bucket width. (Retention and the same read afterwards: PR 3.)
+ * M5's exit test (docs/m5-plan.md §8): a 30-day percentile is served from
+ * aggregates, agrees with the raw rows within the histogram's bucket width, and
+ * is **identical after retention has dropped the raw rows** (NFR-8, NFR-9).
+ *
+ * Year 2010, deliberately earlier than every other partition on the database:
+ * retention drops *anything* older than its cutoff, so a later year here would
+ * drop the current partitions and break every test that runs after this one.
  */
 const { db, pool, close } = connectTestDb();
 const dbLike = { kysely: db } as never;
 const READER = 'probeboard_stats_reader';
 
-const SEED_FROM = new Date('2032-02-20T00:00:00Z');
-const SEED_TO = new Date('2032-04-01T00:00:00Z');
-const WIN_FROM = new Date('2032-03-01T00:00:00Z');
-const WIN_TO = new Date('2032-03-31T00:00:00Z'); // 30 whole days
+const SEED_FROM = new Date('2010-02-20T00:00:00Z');
+const SEED_TO = new Date('2010-04-01T00:00:00Z');
+const WIN_FROM = new Date('2010-03-01T00:00:00Z');
+const WIN_TO = new Date('2010-03-31T00:00:00Z'); // 30 whole days
 
 let readerPool: Pool;
 const endpoints: { userId: string; endpointId: string }[] = [];
+const before: { stats: WindowStats; exact: number; raw: number }[] = [];
+const NOW = new Date('2010-04-01T00:00:00Z'); // retention: raw and m1 keep 7 days -> cutoff 2010-03-25
 
 beforeAll(async () => {
   await truncateAll(pool);
-  await dropPartitionsOfYear(pool, 2032);
+  await dropPartitionsOfYear(pool, 2010);
   await new PartitionService(
     dbLike,
     loadConfig({
@@ -85,7 +94,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await readerPool?.end();
-  await dropPartitionsOfYear(pool, 2032);
+  await dropPartitionsOfYear(pool, 2010);
   await pool.query(`DROP OWNED BY ${READER}`).catch(() => undefined);
   await pool.query(`DROP ROLE IF EXISTS ${READER}`).catch(() => undefined);
   await close();
@@ -117,6 +126,7 @@ describe('acceptance (NFR-8, NFR-9): a 30-day percentile from aggregates', () =>
       const w = await reader.windowStats(userId, endpointId, WIN_FROM, WIN_TO);
 
       // Served from 30 aggregate rows, not 43,200.
+      before[i] = { stats: w, exact: raw.rows[0].exact, raw: Number(raw.rows[0].n) };
       expect(w.rowsRead).toBe(30);
       expect(w.tiles).toEqual({ d1: 30, h1: 0, m1: 0 });
       expect(w.counts.up + w.counts.down + w.counts.unknown + w.counts.degraded).toBe(43_200);
@@ -143,5 +153,79 @@ describe('acceptance (NFR-8, NFR-9): a 30-day percentile from aggregates', () =>
       WIN_TO,
     );
     expect(viaReader).toEqual(viaSuper);
+  });
+});
+
+describe('after retention has dropped the raw rows', () => {
+  let dropped: string[] = [];
+
+  it('step 4: retention removes the raw partitions older than the window, by dropping them', async () => {
+    const cfg = loadConfig({
+      DATABASE_URL: testDatabaseUrl(),
+      HEADER_ENCRYPTION_KEY: 'ttvqsQVo42QM/ZZbz/sxCf+l7AeczpZBUdpNINtKNPI=',
+      RETENTION_RAW_DAYS: '7',
+      RETENTION_M1_DAYS: '7',
+    });
+    const noop = { warn: () => undefined, info: () => undefined, error: () => undefined };
+    const r = await new RetentionService(dbLike, cfg, noop as unknown as PinoLogger).run(NOW);
+    expect(r.blocked).toEqual([]); // everything had been folded
+    dropped = r.dropped;
+    expect(dropped).toContain('probe_results_p20100301');
+    expect(dropped).toContain('probe_results_p20100324');
+    expect(dropped).not.toContain('probe_results_p20100325');
+
+    // The raw rows for those days are really gone: 6 days remain of the 30.
+    for (const { endpointId } of endpoints) {
+      const { rows } = await pool.query<{ n: string }>(
+        `SELECT count(*) AS n FROM probe_results
+          WHERE endpoint_id = $1 AND started_at >= $2 AND started_at < $3`,
+        [endpointId, WIN_FROM.toISOString(), WIN_TO.toISOString()],
+      );
+      expect(Number(rows[0].n)).toBe(6 * 1440);
+    }
+  });
+
+  it.each([0, 1, 2])(
+    'step 5: endpoint %i: the 30-day statistics are identical to before retention, and still within one bucket of the exact p95 taken earlier',
+    async (i) => {
+      const { userId, endpointId } = endpoints[i];
+      const reader = new StatsRepository({ kysely: createDb(readerPool) } as never);
+      const after = await reader.windowStats(userId, endpointId, WIN_FROM, WIN_TO);
+      expect(after).toEqual(before[i].stats);
+      expect(after.counts.up + after.counts.down).toBe(43_200); // 43,200 probes, 6 days of raw left
+      expect(after.rowsRead).toBe(30);
+      const b = bucketIndex(before[i].exact);
+      const width =
+        (HISTOGRAM_EDGES_MS[b] ?? before[i].exact * 2) - (b === 0 ? 0 : HISTOGRAM_EDGES_MS[b - 1]);
+      expect(Math.abs(after.latency.p95! - before[i].exact)).toBeLessThanOrEqual(width);
+    },
+  );
+
+  it('step 6: that read still touches no raw partition (the reader role has no access to them)', async () => {
+    await expect(readerPool.query(`SELECT 1 FROM probe_results LIMIT 1`)).rejects.toThrow(
+      /permission denied/,
+    );
+    const { userId, endpointId } = endpoints[0];
+    const w = await new StatsRepository({ kysely: createDb(readerPool) } as never).windowStats(
+      userId,
+      endpointId,
+      WIN_FROM,
+      WIN_TO,
+    );
+    expect(w.latency.p95).not.toBeNull();
+  });
+
+  it('a window inside the retained days but needing hourly detail is refused once its m1/h1 are gone', async () => {
+    // Hour edges older than the surviving m1 partitions cannot be answered exactly.
+    const { userId, endpointId } = endpoints[0];
+    const reader = new StatsRepository({ kysely: createDb(readerPool) } as never);
+    await expect(
+      reader.windowStats(
+        userId,
+        endpointId,
+        new Date('2010-03-05T03:30:00Z'),
+        new Date('2010-03-06T00:00:00Z'),
+      ),
+    ).rejects.toMatchObject({ windowCode: 'WINDOW_GRAIN_RETIRED' });
   });
 });

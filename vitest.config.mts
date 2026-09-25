@@ -58,6 +58,13 @@ export default defineConfig({
         // the lock-held skip and the concurrent-callers case, each confirmed to
         // fail when the lock was removed. Unit tests would mock the DDL away.
         'src/worker/storage/services/partition.service.ts',
+        // Retention is partition DDL plus the guard that decides whether it is safe:
+        // detach-concurrently under lock_timeout, an advisory lock across workers,
+        // and a query that must fail closed. Covered by
+        // retention.service.int.test.ts against a real PostgreSQL, every guard
+        // confirmed to fail its test when removed (eight of them). Unit tests
+        // would mock the DDL and the lock away.
+        'src/worker/storage/services/retention.service.ts',
         // Counting rows inside a moving window is database behaviour, the same
         // as a repository. Covered by rate-limit.service.int.test.ts, which
         // exercises both limits, the interaction between them, and that the

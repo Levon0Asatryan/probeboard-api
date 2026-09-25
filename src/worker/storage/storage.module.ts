@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { DbModule } from '../../core/db/db.module.js';
 import { ProbeResultRepository } from './repositories/probe-result.repository.js';
 import { PartitionService } from './services/partition.service.js';
+import { RetentionService } from './services/retention.service.js';
 import { StorageMaintenanceService } from './services/storage-maintenance.service.js';
 
 /**
@@ -11,7 +12,7 @@ import { StorageMaintenanceService } from './services/storage-maintenance.servic
  */
 @Module({
   imports: [DbModule],
-  providers: [ProbeResultRepository, PartitionService, StorageMaintenanceService],
-  exports: [ProbeResultRepository, PartitionService],
+  providers: [ProbeResultRepository, PartitionService, RetentionService, StorageMaintenanceService],
+  exports: [ProbeResultRepository, PartitionService, RetentionService],
 })
 export class StorageModule {}

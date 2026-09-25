@@ -4,6 +4,7 @@ import {
   addUtcDays,
   addUtcMonths,
   partitionName,
+  periodFromSuffix,
   periodsCovering,
   periodStart,
 } from './partition-periods.js';
@@ -74,5 +75,30 @@ describe('partitionName', () => {
 
   it('only ever interpolates safe identifiers', () => {
     for (const f of PARTITION_FAMILIES) expect(f.parent).toMatch(/^[a-z][a-z0-9_]*$/);
+  });
+});
+
+describe('periodFromSuffix', () => {
+  it('reads a day and a month suffix as UTC starts', () => {
+    expect(periodFromSuffix('day', '20260924')?.toISOString()).toBe('2026-09-24T00:00:00.000Z');
+    expect(periodFromSuffix('month', '202609')?.toISOString()).toBe('2026-09-01T00:00:00.000Z');
+  });
+
+  it('rejects a suffix of the wrong shape, or one Date would silently normalise', () => {
+    for (const bad of ['', '2026', '20260924x', '20261301', '20260230', '20260900']) {
+      expect(periodFromSuffix('day', bad), bad).toBeNull();
+    }
+    expect(periodFromSuffix('month', '202613')).toBeNull();
+    expect(periodFromSuffix('month', '20260924')).toBeNull();
+  });
+
+  it('round-trips with periodsCovering', () => {
+    for (const p of periodsCovering(
+      'day',
+      new Date('2026-12-30T00:00:00Z'),
+      new Date('2027-01-02T00:00:00Z'),
+    )) {
+      expect(periodFromSuffix('day', p.suffix)?.getTime()).toBe(p.from.getTime());
+    }
   });
 });
