@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { Controller, Get, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { getLoggerToken } from 'nestjs-pino';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../core/config/index.js';
 import { ErrorFilter } from './common/filters/error.filter.js';
@@ -34,7 +35,15 @@ class RootHealthController {
 
 @Module({
   controllers: [MonitorsController, RootHealthController],
-  providers: [{ provide: ErrorFilter, useValue: { catch: () => undefined } }],
+  providers: [
+    ErrorFilter,
+    // The real filter, with only its logger stubbed. Nest answers an unmatched
+    // route by raising NotFoundException through the global filter, so a
+    // harness whose filter cannot respond leaves the request hanging and can
+    // only ever prove that nothing threw -- which is what it did until
+    // @nestjs/platform-express 12.0.2 made the not-found path go through here.
+    { provide: getLoggerToken(ErrorFilter.name), useValue: { warn: () => {}, error: () => {} } },
+  ],
 })
 class HarnessModule {}
 
@@ -104,7 +113,7 @@ describe('unmatched routes', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
     await expect(res.json()).resolves.toEqual({
       code: 'NOT_FOUND',
-      message: 'route not found',
+      message: 'resource not found',
     });
   });
 
@@ -114,8 +123,19 @@ describe('unmatched routes', () => {
     expect(res.status).toBe(404);
     await expect(res.json()).resolves.toEqual({
       code: 'NOT_FOUND',
-      message: 'route not found',
+      message: 'resource not found',
     });
+  });
+
+  // The two are answered by different machinery -- inside the prefix Nest's
+  // own NotFoundException through the global filter, outside it the fallback
+  // middleware -- and a client cannot be expected to know which it hit.
+  it('answer identically inside and outside the prefix', async () => {
+    const [inside, outside] = await Promise.all([
+      fetch(`${base}/v1/nope`).then((r) => r.json()),
+      fetch(`${base}/nope`).then((r) => r.json()),
+    ]);
+    expect(inside).toEqual(outside);
   });
 
   it('answer on any method, not only GET', async () => {
