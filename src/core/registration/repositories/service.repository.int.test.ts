@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
+import { movedForward, withProcessClockBehind } from '../../../testing/skewed-clock.js';
 import { ServiceRepository } from './service.repository.js';
 import { TagRepository } from './tag.repository.js';
 
@@ -275,6 +276,18 @@ describe('update', () => {
 
     const still = await services.findById(created.id, userId);
     expect(still?.name).toBe('API');
+  });
+
+  it('stamps updated_at from the database clock, the one the insert used (#71)', async () => {
+    const created = await services.create({
+      user_id: userId,
+      name: 'API',
+      base_url: 'https://api.example.com',
+    });
+
+    await withProcessClockBehind(() => services.update(created.id, userId, { name: 'Renamed' }));
+
+    expect(await movedForward(ctx.pool, 'services', created.id)).toBe(true);
   });
 
   it('the patch type excludes user_id, so a caller cannot reassign ownership through it', async () => {

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
+import { movedForward, withProcessClockBehind } from '../../../testing/skewed-clock.js';
 import { ServiceRepository } from './service.repository.js';
 import { EndpointRepository } from './endpoint.repository.js';
 import { TagRepository } from './tag.repository.js';
@@ -160,6 +161,24 @@ describe('the patch type excludes ownership columns', () => {
       // @ts-expect-error -- user_id/service_id are not valid EndpointUpdate fields
       { user_id: otherUserId, service_id: serviceId },
     );
+  });
+});
+
+describe('updated_at', () => {
+  it('is stamped from the database clock, the one the insert used (#71)', async () => {
+    const created = await endpoints.create({
+      service_id: serviceId,
+      user_id: userId,
+      interval_s: 60,
+      timeout_ms: 10000,
+      max_redirects: 5,
+      method: 'GET',
+      path: '/orders',
+    });
+
+    await withProcessClockBehind(() => endpoints.setEnabled(created.id, userId, false));
+
+    expect(await movedForward(ctx.pool, 'endpoints', created.id)).toBe(true);
   });
 });
 

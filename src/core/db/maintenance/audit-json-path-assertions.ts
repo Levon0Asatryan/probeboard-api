@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { isSupportedJsonPath } from '../../assertions/json-path-grammar.js';
 import type { Db } from '../utils/kysely.js';
 import type { EndpointAssertion } from '../types.js';
@@ -154,7 +155,8 @@ export async function auditJsonPathAssertions(db: Db, options: AuditOptions = {}
 
         await trx
           .updateTable('endpoints')
-          .set({ assertions: JSON.stringify(kept), updated_at: new Date() })
+          // The database's clock, the one `DEFAULT now()` stamped at insert.
+          .set({ assertions: JSON.stringify(kept), updated_at: sql<Date>`now()` })
           .where('id', '=', endpointId)
           .execute();
 
