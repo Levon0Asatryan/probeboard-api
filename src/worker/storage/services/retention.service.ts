@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { sql, type Kysely } from 'kysely';
+import { sql } from 'kysely';
+import { Client } from 'pg';
 import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG } from '../../../core/config/config.module.js';
 import type { AppConfig } from '../../../core/config/schema.js';
 import { DbService } from '../../../core/db/db.service.js';
-import type { Database } from '../../../core/db/types.js';
 import {
   PARTITION_FAMILIES,
   nextPeriodStart,
@@ -23,6 +23,13 @@ export interface RetentionResult {
 }
 
 type Guard = 'raw' | 'stats' | 'none';
+
+export const RETENTION_APPLICATION_NAME = 'probeboard-retention';
+
+/** Identifiers here are `parent_pYYYYMMDD` names already validated by `periodFromSuffix`. */
+function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
 
 interface Expired {
   name: string;
@@ -75,25 +82,21 @@ export class RetentionService {
   }
 
   /**
-   * Single-flight across workers by a session advisory lock held on one
-   * dedicated connection for the whole pass: two workers must not race a
-   * detach and a drop of the same partition.
+   * Single-flight across workers by a **transaction-level** advisory lock, held
+   * by an otherwise idle transaction for the whole pass. There is nothing to
+   * unlock and nothing to leak: commit, rollback or a dead connection all release
+   * it, so no cleanup step can fail and leave a pooled session still holding it.
+   * Two workers must not race a detach and a drop of the same partition.
    */
   async run(now: Date = new Date()): Promise<RetentionResult> {
-    return this.db.kysely.connection().execute(async (lockConn: Kysely<Database>) => {
+    return this.db.kysely.transaction().execute(async (lockTx) => {
       const got = await sql<{ ok: boolean }>`
-        SELECT pg_try_advisory_lock(hashtext('probeboard:retention')) AS ok
-      `.execute(lockConn);
+        SELECT pg_try_advisory_xact_lock(hashtext('probeboard:retention')) AS ok
+      `.execute(lockTx);
       const result: RetentionResult = { skipped: false, dropped: [], blocked: [], deferred: [] };
       if (!got.rows[0]?.ok) return { ...result, skipped: true };
-      try {
-        for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result);
-        return result;
-      } finally {
-        await sql`SELECT pg_advisory_unlock(hashtext('probeboard:retention'))`
-          .execute(lockConn)
-          .catch(() => undefined);
-      }
+      for (const family of PARTITION_FAMILIES) await this.runFamily(family, now, result);
+      return result;
     });
   }
 
@@ -206,38 +209,46 @@ export class RetentionService {
   }
 
   /**
-   * One statement on a dedicated connection with `lock_timeout` set on that same
-   * connection: `DETACH ... CONCURRENTLY` cannot run inside a transaction block,
-   * and a multi-statement simple query is one (plan §2.4.6). A timeout leaves the
-   * partition pending; the next tick's `FINALIZE` completes it (§2.4.5).
+   * One statement on a **dedicated, non-pooled** connection with `lock_timeout` set
+   * on it: `DETACH ... CONCURRENTLY` cannot run inside a transaction block, and a
+   * multi-statement simple query is one (plan §2.4.6). The connection is closed
+   * afterwards, never returned to the pool, so a failure while cleaning up cannot
+   * hand another caller a session that still carries this `lock_timeout`. A
+   * timeout leaves the partition pending; the next tick's `FINALIZE` completes it
+   * (§2.4.5).
    */
   private async detach(
     parent: string,
     name: string,
     mode: 'CONCURRENTLY' | 'FINALIZE',
   ): Promise<boolean> {
-    return this.db.kysely.connection().execute(async (conn: Kysely<Database>) => {
-      try {
-        await sql`SET lock_timeout = ${sql.lit(this.cfg.MAINTENANCE_LOCK_TIMEOUT_MS)}`.execute(
-          conn,
-        );
-        const stmt =
-          mode === 'CONCURRENTLY'
-            ? sql`ALTER TABLE ${sql.id(parent)} DETACH PARTITION ${sql.id(name)} CONCURRENTLY`
-            : sql`ALTER TABLE ${sql.id(parent)} DETACH PARTITION ${sql.id(name)} FINALIZE`;
-        await stmt.execute(conn);
-        return true;
-      } catch (err) {
-        this.logger.warn(
-          { err, partition: name, mode },
-          'retention detach did not finish; it stays pending and is retried next tick',
-        );
-        return false;
-      } finally {
-        // The connection returns to the pool: leave no lock_timeout behind.
-        await sql`RESET lock_timeout`.execute(conn).catch(() => undefined);
-      }
+    const client = new Client({
+      connectionString: this.cfg.DATABASE_URL,
+      connectionTimeoutMillis: 5000,
+      application_name: RETENTION_APPLICATION_NAME,
     });
+    // An idle connection's 'error' event is fatal in Node unless listened for; the
+    // statement's own rejection is what this method reports.
+    client.on('error', () => undefined);
+    try {
+      await client.connect();
+      await client.query(`SET lock_timeout = ${Math.trunc(this.cfg.MAINTENANCE_LOCK_TIMEOUT_MS)}`);
+      await client.query(
+        `ALTER TABLE ${quoteIdent(parent)} DETACH PARTITION ${quoteIdent(name)} ${mode}`,
+      );
+      return true;
+    } catch (err) {
+      this.logger.warn(
+        { err, partition: name, mode },
+        'retention detach did not finish; it stays pending and is retried next tick',
+      );
+      return false;
+    } finally {
+      await client.end().catch((err: unknown) => {
+        // The socket is closed either way; this is only worth a line.
+        this.logger.warn({ err, partition: name }, 'closing the retention connection failed');
+      });
+    }
   }
 
   private async drop(name: string, result: RetentionResult): Promise<void> {

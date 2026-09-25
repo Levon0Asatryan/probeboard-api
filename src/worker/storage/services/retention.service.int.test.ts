@@ -8,7 +8,7 @@ import { connectTestDb, testDatabaseUrl, truncateAll } from '../../../testing/da
 import { dropPartitionsOfYear, insertRaw } from '../../../testing/storage-fixtures.js';
 import { RollupRepository } from '../../rollup/repositories/rollup.repository.js';
 import { PartitionService } from './partition.service.js';
-import { RetentionService } from './retention.service.js';
+import { RETENTION_APPLICATION_NAME, RetentionService } from './retention.service.js';
 
 /**
  * Year 2020, and `now` is set explicitly: every other partition on this
@@ -215,21 +215,25 @@ describe('a reader holding the partition', () => {
     }
   });
 
-  it('leaves no lock_timeout behind on the pooled connection it used', async () => {
+  it('closes the dedicated connection it used: no retention backend survives a timed-out detach', async () => {
     const reader = new Client({ connectionString: testDatabaseUrl() });
     await reader.connect();
     try {
       await reader.query('BEGIN');
       await reader.query('SELECT count(*) FROM probe_results_p20200103');
-      await retention({ MAINTENANCE_LOCK_TIMEOUT_MS: '100' }).run(NOW);
+      const r = await retention({ MAINTENANCE_LOCK_TIMEOUT_MS: '100' }).run(NOW);
+      expect(r.deferred).toContain('probe_results_p20200103');
       await reader.query('COMMIT');
     } finally {
       await reader.end();
     }
-    const seen = await Promise.all(
-      Array.from({ length: 5 }, () => pool.query<{ lock_timeout: string }>('SHOW lock_timeout')),
+    // A connection returned to a pool (or leaked) would still be listed, holding
+    // the lock_timeout it was given.
+    const { rows } = await pool.query(
+      `SELECT pid FROM pg_stat_activity WHERE application_name = $1`,
+      [RETENTION_APPLICATION_NAME],
     );
-    for (const r of seen) expect(r.rows[0].lock_timeout).toBe('0');
+    expect(rows).toEqual([]);
   });
 });
 
@@ -252,12 +256,13 @@ describe('leftovers and single flight', () => {
     const holder = new Client({ connectionString: testDatabaseUrl() });
     await holder.connect();
     try {
-      await holder.query(`SELECT pg_advisory_lock(hashtext('probeboard:retention'))`);
+      await holder.query('BEGIN');
+      await holder.query(`SELECT pg_advisory_xact_lock(hashtext('probeboard:retention'))`);
       const r = await retention().run(NOW);
       expect(r).toEqual({ skipped: true, dropped: [], blocked: [], deferred: [] });
       expect(await exists('probe_results_p20200101')).toBe(true);
     } finally {
-      await holder.query(`SELECT pg_advisory_unlock(hashtext('probeboard:retention'))`);
+      await holder.query('COMMIT');
       await holder.end();
     }
     expect((await retention().run(NOW)).skipped).toBe(false);
