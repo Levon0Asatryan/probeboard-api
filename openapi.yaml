@@ -386,7 +386,6 @@ components:
             - PATCH
             - DELETE
             - HEAD
-            - OPTIONS
         path:
           default: /
           type: string
@@ -429,11 +428,11 @@ components:
         failureThreshold:
           type: integer
           minimum: 1
-          maximum: 100
+          maximum: 10
         successThreshold:
           type: integer
           minimum: 1
-          maximum: 100
+          maximum: 10
         followRedirects:
           type: boolean
         maxRedirects:
@@ -538,7 +537,6 @@ components:
             - PATCH
             - DELETE
             - HEAD
-            - OPTIONS
         path:
           type: string
           minLength: 1
@@ -580,11 +578,11 @@ components:
         failureThreshold:
           type: integer
           minimum: 1
-          maximum: 100
+          maximum: 10
         successThreshold:
           type: integer
           minimum: 1
-          maximum: 100
+          maximum: 10
         followRedirects:
           type: boolean
         maxRedirects:
