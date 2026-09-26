@@ -79,7 +79,8 @@ Content-Type: application/json
 #
 # The parser runs before routing, so every route answers the same 413 for an
 # oversized JSON body -- the registration routes, and GET /healthz or
-# POST /v1/auth/logout too -- before the session guard runs.
+# POST /v1/auth/logout too -- before the session guard runs. Malformed JSON
+# gets the parser's 400 BAD_REQUEST on every route the same way.
 
 ###
 # @name malformedPathId

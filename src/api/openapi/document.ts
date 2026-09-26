@@ -221,6 +221,9 @@ const badIdResponse = errorResponse('`BAD_REQUEST`: the `id` in the path is not 
  */
 const tooLargeResponse = errorResponse('Body larger than the configured limit (64 kB by default).');
 
+/** The same parser's answer to a body that is not valid JSON. */
+const malformedJsonResponse = errorResponse('`BAD_REQUEST`: the body is not valid JSON.');
+
 const authErrors = {
   '401': errorResponse('No session cookie, or one that is expired, revoked or unknown.'),
   '429': errorResponse('Too many requests from this address.'),
@@ -237,7 +240,7 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
 
-  return withBodyLimit({
+  return withBodyParser({
     openapi: '3.0.3',
     info: {
       title: 'probeboard API',
@@ -1132,12 +1135,16 @@ export function buildOpenApiDocument(
 }
 
 /**
- * Adds the body limit's `413` to every operation that does not already
- * describe it (#72 defect 4, Codex on #75). A property of the shared parser,
- * not of any one route, so it is applied here rather than remembered route by
- * route: a route added later has it too.
+ * Adds what the shared JSON parser answers to every operation that does not
+ * already describe it (#72 defect 4, Codex on #75). The parser is registered
+ * for the whole app and runs before routing, so any operation sent an
+ * oversized JSON body answers `413`, and any sent malformed JSON answers
+ * `400 BAD_REQUEST` -- measured on `GET /healthz`, `GET /v1/services` and
+ * `POST /v1/auth/logout` alike. A property of the parser, not of any one
+ * route, so it is applied here rather than remembered route by route. An
+ * operation that already documents `400` keeps its own, more specific text.
  */
-function withBodyLimit(doc: Record<string, unknown>): Record<string, unknown> {
+function withBodyParser(doc: Record<string, unknown>): Record<string, unknown> {
   const paths = doc.paths as Record<
     string,
     Record<string, { responses?: Record<string, unknown> }>
@@ -1145,6 +1152,7 @@ function withBodyLimit(doc: Record<string, unknown>): Record<string, unknown> {
   for (const operations of Object.values(paths)) {
     for (const operation of Object.values(operations)) {
       operation.responses ??= {};
+      operation.responses['400'] ??= malformedJsonResponse;
       operation.responses['413'] ??= tooLargeResponse;
     }
   }
