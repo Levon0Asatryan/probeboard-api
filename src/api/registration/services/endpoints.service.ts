@@ -66,7 +66,9 @@ export class EndpointsService {
    * the slot is skipped or claimed late -- the measurement stops being the
    * one-per-interval series every uptime figure assumes (#72, defect 5).
    * Checked on the effective pair: the values being saved, completed from
-   * the stored row when a PATCH names only one of them.
+   * the stored row when a PATCH names only one of them. Migration 0010 holds
+   * the same rule as a CHECK; this is what turns it into a 400 naming the
+   * field rather than a constraint violation.
    */
   private checkTimeoutBelowInterval(timeoutMs: number, intervalS: number): void {
     if (timeoutMs >= intervalS * 1000) {
@@ -301,15 +303,12 @@ export class EndpointsService {
       if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
       // Under the row lock, so the stored half of the pair is the one this
       // write lands beside, not a value a concurrent PATCH has since changed.
-      // Only when this PATCH names either field: a row saved before the rule
-      // existed is not refused for an unrelated edit.
-      if (dto.intervalS !== undefined || dto.timeoutMs !== undefined) {
-        this.checkTimeoutBelowInterval(
-          dto.timeoutMs ?? existing.timeout_ms,
-          dto.intervalS ?? existing.interval_s,
-        );
-      }
-      if (dto.maxRedirects !== undefined) this.checkMaxRedirects(dto.maxRedirects);
+      // Every PATCH, not only one naming either field: migration 0010's CHECK
+      // keeps every stored pair valid, so an unrelated edit always passes.
+      this.checkTimeoutBelowInterval(
+        dto.timeoutMs ?? existing.timeout_ms,
+        dto.intervalS ?? existing.interval_s,
+      );
 
       await this.endpoints
         .update(

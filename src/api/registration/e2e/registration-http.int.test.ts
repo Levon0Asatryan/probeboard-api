@@ -497,26 +497,6 @@ describe('PRD §6.5 per-endpoint bounds (#72, defect 5)', () => {
     expect(both.status).toBe(200);
   });
 
-  it('does not refuse an unrelated edit to a row saved before the rule existed', async () => {
-    const id = await serviceId();
-    const created = await call(`/services/${id}/endpoints`, {
-      cookie: alice,
-      body: { path: '/a' },
-    });
-    const endpointId = (created.body as { id: string }).id;
-    const pool = (db as unknown as { pool: import('pg').Pool }).pool;
-    await pool.query('UPDATE endpoints SET interval_s = 30, timeout_ms = 30000 WHERE id = $1', [
-      endpointId,
-    ]);
-
-    const edit = await call(`/endpoints/${endpointId}`, {
-      method: 'PATCH',
-      cookie: alice,
-      body: { followRedirects: false },
-    });
-    expect(edit.status).toBe(200);
-  });
-
   it('bounds the incident thresholds to 1-10', async () => {
     const id = await serviceId();
     for (const field of ['failureThreshold', 'successThreshold']) {
