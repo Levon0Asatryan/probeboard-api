@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../core/config/index.js';
-import { clearOauthCookieOptions, oauthCookieName, oauthCookieOptions } from './oauth-cookie.js';
+import { randomUUID } from 'node:crypto';
+import {
+  clearOauthCookieOptions,
+  looksLikeOauthCookie,
+  oauthCookieName,
+  oauthCookieOptions,
+} from './oauth-cookie.js';
 
 const cfg = (env: Partial<NodeJS.ProcessEnv> = {}) =>
   loadConfig({
@@ -63,5 +69,26 @@ describe('oauthCookieName', () => {
     expect(opts.secure).toBe(true);
     expect(opts.path).toBe('/');
     expect(opts).not.toHaveProperty('domain');
+  });
+});
+
+describe('looksLikeOauthCookie', () => {
+  it('accepts the canonical uuid a pending authorization is issued with', () => {
+    expect(looksLikeOauthCookie(randomUUID())).toBe(true);
+    expect(looksLikeOauthCookie('00000000-0000-0000-0000-000000000000')).toBe(true);
+    expect(looksLikeOauthCookie(randomUUID().toUpperCase())).toBe(true);
+  });
+
+  it.each([
+    ['a forged word', 'forged'],
+    ['the shape the verification run sent', 'forged-value-123'],
+    ['a decoded space', 'abc def'],
+    ['empty', ''],
+    ['PostgreSQL braces', '{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'],
+    ['PostgreSQL unhyphenated', 'a0eebc999c0b4ef8bb6d6bb9bd380a11'],
+    ['a trailing byte', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\u0000'],
+    ['a non-hex digit', 'g0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'],
+  ])('rejects %s', (_label, value) => {
+    expect(looksLikeOauthCookie(value)).toBe(false);
   });
 });

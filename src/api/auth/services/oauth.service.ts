@@ -19,6 +19,8 @@ import type { ProviderAccount } from '../repositories/oauth-identity.repository.
 import { OAuthAuthorizationRepository } from '../repositories/oauth-authorization.repository.js';
 import { SessionRepository } from '../repositories/session.repository.js';
 import { OAuthStrategyRegistry } from '../strategies/strategy-registry.service.js';
+import { looksLikeState } from '../utils/oauth-callback.js';
+import { looksLikeOauthCookie } from '../utils/oauth-cookie.js';
 import { hashToken, looksLikeToken } from '../utils/session-token.js';
 import { AuthRateLimitService } from './rate-limit.service.js';
 import { OAuthIdentityService, type SignInOutcome } from './oauth-identity.service.js';
@@ -129,7 +131,20 @@ export class OAuthService {
       return { kind: 'error', code: 'OAUTH_STATE_INVALID' };
     }
 
+    // Both are attacker-controlled and both reach a typed column, so a
+    // malformed one is refused here rather than handed to PostgreSQL to fail
+    // as a 500 (rule #8). Neither value is logged: it is whatever the caller
+    // chose to send.
+    if (!looksLikeOauthCookie(opts.cookieValue)) {
+      this.logger.warn({ provider }, 'oauth callback: malformed state cookie');
+      return { kind: 'error', code: 'OAUTH_STATE_INVALID' };
+    }
+
     const state = opts.query.get('state') ?? '';
+    if (!looksLikeState(state)) {
+      this.logger.warn({ provider }, 'oauth callback: malformed state');
+      return { kind: 'error', code: 'OAUTH_STATE_INVALID' };
+    }
     // Bound to the provider the callback actually arrived on (RFC 9700's
     // mix-up), not only the id and state: see consume()'s own comment.
     const pending = await this.authorizations.consume(opts.cookieValue, state, provider, now);

@@ -323,9 +323,19 @@ export async function assertSaveableUrl(
 
   const blocked = addresses.find(isBlockedAddress);
   if (blocked) {
-    throw new SsrfValidationError('ADDRESS_NOT_ALLOWED', 'resolves to a disallowed address', {
-      address: blocked,
-    });
+    // The address goes to the log, never the response (#72, C-7). In
+    // `details` it was serialized straight back to whoever submitted the URL,
+    // which made the save endpoint a resolver for internal names: any
+    // signed-in user could learn what `db.internal` points at. It is internal
+    // DNS state, the same kind as the resolver code `resolveAll` routes to
+    // `cause` below, and it takes the same route. "This address is not
+    // allowed" does not need the address to explain itself.
+    const error = new SsrfValidationError(
+      'ADDRESS_NOT_ALLOWED',
+      'resolves to a disallowed address',
+    );
+    error.cause = `resolved to ${blocked}`;
+    throw error;
   }
 
   return { hostname, addresses, port };

@@ -61,6 +61,22 @@ GET {{baseUrl}}/v1/auth/oauth/google/callback?code=whatever&state=whatever
 Cookie: {{oauthCookieName}}={{forgedOauthCookie}}
 
 ###
+# @name callbackMalformedCookie
+# 302 to .../login?error=OAUTH_STATE_INVALID. A cookie that is not a uuid at
+# all is refused before the lookup; it used to reach PostgreSQL and answer 500
+# (#72, defect 3), which the well-formed forged value above never showed.
+GET {{baseUrl}}/v1/auth/oauth/github/callback?code=whatever&state=whatever
+Cookie: {{oauthCookieName}}=forged
+
+###
+# @name callbackStateWithNul
+# 302 to .../login?error=OAUTH_STATE_INVALID. A NUL byte in state is refused
+# before it reaches the text column, which would reject it with 22021 and
+# answer 500.
+GET {{baseUrl}}/v1/auth/oauth/google/callback?code=whatever&state=a%00b
+Cookie: {{oauthCookieName}}={{forgedOauthCookie}}
+
+###
 # @name callbackStaleState
 # Run startGoogle above, do not follow the redirect, then run this within ten
 # minutes of that request but with a state that does not match the one it

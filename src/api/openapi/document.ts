@@ -142,14 +142,6 @@ const errorSchema = {
             count: { type: 'integer' },
           },
         },
-        {
-          type: 'object',
-          description: 'ADDRESS_NOT_ALLOWED: the disallowed address a hostname resolved to (§5.1).',
-          required: ['address'],
-          properties: {
-            address: { type: 'string' },
-          },
-        },
       ],
     },
   },
@@ -214,6 +206,24 @@ const tagParam = {
 };
 
 /** Shared by every authenticated route. */
+/**
+ * `ParseUUIDPipe` on every `{id}`: a malformed id is refused before the
+ * handler, with the framework's `400`, on every operation that takes one.
+ */
+const badIdResponse = errorResponse('`BAD_REQUEST`: the `id` in the path is not a UUID.');
+
+/**
+ * The shared JSON body limit. The parser is registered for the whole app
+ * (`bootstrap.ts`) and runs before routing, so it can answer this on *any*
+ * operation that is sent an oversized JSON body -- measured on `GET /healthz`,
+ * `GET /v1/services` and `POST /v1/auth/logout` alike -- not only on the ones
+ * that document a body.
+ */
+const tooLargeResponse = errorResponse('Body larger than the configured limit (64 kB by default).');
+
+/** The same parser's answer to a body that is not valid JSON. */
+const malformedJsonResponse = errorResponse('`BAD_REQUEST`: the body is not valid JSON.');
+
 const authErrors = {
   '401': errorResponse('No session cookie, or one that is expired, revoked or unknown.'),
   '429': errorResponse('Too many requests from this address.'),
@@ -230,7 +240,7 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
 
-  return {
+  return withBodyParser({
     openapi: '3.0.3',
     info: {
       title: 'probeboard API',
@@ -755,6 +765,7 @@ export function buildOpenApiDocument(
                 },
               },
             },
+            '404': errorResponse('Unknown provider.'),
             '429': errorResponse('Too many attempts from this address.'),
           },
         },
@@ -870,6 +881,7 @@ export function buildOpenApiDocument(
               '`CONFLICT`: a service already exists at this base URL (explicit form only). ' +
                 '`QUOTA_EXCEEDED`: the endpoint quota is reached (implicit form only).',
             ),
+            '413': tooLargeResponse,
             ...authErrors,
           },
         },
@@ -903,6 +915,7 @@ export function buildOpenApiDocument(
               description: 'The service.',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/Service' } } },
             },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or it belongs to someone else -- indistinguishable.'),
             ...authErrors,
           },
@@ -924,10 +937,11 @@ export function buildOpenApiDocument(
               content: { 'application/json': { schema: { $ref: '#/components/schemas/Service' } } },
             },
             '400': errorResponse(
-              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
             ),
             '404': errorResponse('Not found, or owned by someone else.'),
             '409': errorResponse('`CONFLICT`: another service already uses this base URL.'),
+            '413': tooLargeResponse,
             ...authErrors,
           },
         },
@@ -940,6 +954,7 @@ export function buildOpenApiDocument(
           parameters: [idParam],
           responses: {
             '204': { description: 'Deleted.' },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -960,7 +975,9 @@ export function buildOpenApiDocument(
                 },
               },
             },
-            '400': errorResponse('`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter.'),
+            '400': errorResponse(
+              '`VALIDATION_FAILED`: a malformed cursor, limit, or tag filter. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -983,13 +1000,14 @@ export function buildOpenApiDocument(
               },
             },
             '400': errorResponse(
-              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
             ),
             '404': errorResponse('Service not found, or owned by someone else.'),
             '409': errorResponse(
               '`CONFLICT`: duplicate method+path on this service. `QUOTA_EXCEEDED`: the ' +
                 'endpoint quota is reached.',
             ),
+            '413': tooLargeResponse,
             ...authErrors,
           },
         },
@@ -1027,6 +1045,7 @@ export function buildOpenApiDocument(
                 'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
               },
             },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -1048,12 +1067,13 @@ export function buildOpenApiDocument(
               },
             },
             '400': errorResponse(
-              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`.',
+              '`VALIDATION_FAILED`, an SSRF code, or `HEADER_NOT_ALLOWED`/`HEADER_INVALID`. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
             ),
             '404': errorResponse('Not found, or owned by someone else.'),
             '409': errorResponse(
               '`CONFLICT`: another endpoint on this service uses this method+path.',
             ),
+            '413': tooLargeResponse,
             ...authErrors,
           },
         },
@@ -1064,6 +1084,7 @@ export function buildOpenApiDocument(
           parameters: [idParam],
           responses: {
             '204': { description: 'Deleted.' },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -1083,6 +1104,7 @@ export function buildOpenApiDocument(
                 'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
               },
             },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -1101,6 +1123,7 @@ export function buildOpenApiDocument(
                 'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
               },
             },
+            '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,
           },
@@ -1108,5 +1131,30 @@ export function buildOpenApiDocument(
       },
     },
     security: [{ sessionCookie: [] }],
-  };
+  });
+}
+
+/**
+ * Adds what the shared JSON parser answers to every operation that does not
+ * already describe it (#72 defect 4, Codex on #75). The parser is registered
+ * for the whole app and runs before routing, so any operation sent an
+ * oversized JSON body answers `413`, and any sent malformed JSON answers
+ * `400 BAD_REQUEST` -- measured on `GET /healthz`, `GET /v1/services` and
+ * `POST /v1/auth/logout` alike. A property of the parser, not of any one
+ * route, so it is applied here rather than remembered route by route. An
+ * operation that already documents `400` keeps its own, more specific text.
+ */
+function withBodyParser(doc: Record<string, unknown>): Record<string, unknown> {
+  const paths = doc.paths as Record<
+    string,
+    Record<string, { responses?: Record<string, unknown> }>
+  >;
+  for (const operations of Object.values(paths)) {
+    for (const operation of Object.values(operations)) {
+      operation.responses ??= {};
+      operation.responses['400'] ??= malformedJsonResponse;
+      operation.responses['413'] ??= tooLargeResponse;
+    }
+  }
+  return doc;
 }

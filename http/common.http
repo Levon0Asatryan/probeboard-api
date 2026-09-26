@@ -76,6 +76,18 @@ Content-Type: application/json
 #   python3 -c "import json,sys; sys.stdout.write(json.dumps({'email':'a@b.co','password':'x'*200000}))" > /tmp/big.json
 #   curl -s -w '%{http_code}\n' -X POST http://127.0.0.1:3000/v1/auth/login \
 #     -H 'content-type: application/json' --data-binary @/tmp/big.json
+#
+# The parser runs before routing, so every route answers the same 413 for an
+# oversized JSON body -- the registration routes, and GET /healthz or
+# POST /v1/auth/logout too -- before the session guard runs. Malformed JSON
+# gets the parser's 400 BAD_REQUEST on every route the same way.
+
+###
+# @name malformedPathId
+# 400 {"code":"BAD_REQUEST"}. Every {id} is a UUID and ParseUUIDPipe refuses
+# anything else before the handler, on every operation that takes one (#72,
+# defect 4). Needs a session: auth.http's login first.
+GET {{baseUrl}}/v1/services/not-a-uuid
 
 ### Rate limiting (AUTH_MAX_PER_IP, AUTH_MAX_FAILURES_PER_EMAIL)
 #
