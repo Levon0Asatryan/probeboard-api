@@ -301,6 +301,7 @@ export class EndpointsService {
 
       if (dto.intervalS !== undefined) this.checkInterval(dto.intervalS);
       if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
+      if (dto.maxRedirects !== undefined) this.checkMaxRedirects(dto.maxRedirects);
       // Under the row lock, so the stored half of the pair is the one this
       // write lands beside, not a value a concurrent PATCH has since changed.
       // Every PATCH, not only one naming either field: migration 0010's CHECK

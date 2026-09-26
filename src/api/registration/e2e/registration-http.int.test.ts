@@ -497,6 +497,32 @@ describe('PRD §6.5 per-endpoint bounds (#72, defect 5)', () => {
     expect(both.status).toBe(200);
   });
 
+  it('holds PATCH to the redirect cap, as create is (FR-21)', async () => {
+    // A rewrite of the PATCH checks once dropped this line, and nothing noticed:
+    // create refused 11 while PATCH saved it.
+    const id = await serviceId();
+    const created = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a' },
+    });
+    const endpointId = (created.body as { id: string }).id;
+
+    refused(
+      await call(`/endpoints/${endpointId}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body: { maxRedirects: 11 },
+      }),
+      'maxRedirects',
+    );
+    const ok = await call(`/endpoints/${endpointId}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { maxRedirects: 10 },
+    });
+    expect(ok.status).toBe(200);
+  });
+
   it('bounds the incident thresholds to 1-10', async () => {
     const id = await serviceId();
     for (const field of ['failureThreshold', 'successThreshold']) {
