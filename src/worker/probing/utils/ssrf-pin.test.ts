@@ -34,10 +34,33 @@ describe('classifyGuardRejection', () => {
     expect(result).toEqual({ failureClass: 'DNS_FAILURE', code: 'EAI_AGAIN' });
   });
 
-  it('keeps an unrecognised resolver code rather than coercing it', () => {
-    // Architecture §7.4: never silently coerced. SERVFAIL is not EAI_AGAIN
-    // and pretending otherwise would send an operator to the wrong system.
-    for (const code of ['SERVFAIL', 'ETIMEOUT', 'ECONNREFUSED', 'EREFUSED']) {
+  it.each(['ESERVFAIL', 'EREFUSED', 'ETIMEOUT', 'EBADRESP', 'ENOTIMP', 'EFORMERR'])(
+    'maps the resolver reporting its own failure (%s) to DNS_FAILURE',
+    (code) => {
+      // #72 defect 1: these are c-ares' documented answers, and the only
+      // ones a real resolver raises here. Mapping EAI_AGAIN alone -- a
+      // getaddrinfo code c-ares never produces -- stored every one of them
+      // as UNKNOWN_ERROR.
+      expect(classifyGuardRejection(unresolvable({ code }))).toEqual({
+        failureClass: 'DNS_FAILURE',
+        code,
+      });
+    },
+  );
+
+  it('reads c-ares ECONNREFUSED as the resolver refusing, not the endpoint', () => {
+    // The same spelling means "host up, nothing listening" on the transport
+    // path. Here it is "could not contact DNS servers".
+    expect(classifyGuardRejection(unresolvable({ code: 'ECONNREFUSED' }))).toEqual({
+      failureClass: 'DNS_FAILURE',
+      code: 'ECONNREFUSED',
+    });
+  });
+
+  it('keeps a code the resolver does not document rather than coercing it', () => {
+    // Architecture §7.4: never silently coerced. `SERVFAIL` without the E is
+    // not a Node code, and ECANCELLED is our own cancellation, not an answer.
+    for (const code of ['SERVFAIL', 'ECANCELLED', 'EBADNAME', 'ESOMETHINGNEW']) {
       expect(classifyGuardRejection(unresolvable({ code }))).toEqual({
         failureClass: 'UNKNOWN_ERROR',
         code,

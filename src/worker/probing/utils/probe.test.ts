@@ -6,6 +6,7 @@
  * cannot produce: `resolver` for DNS answers, `clock` for a clock that
  * misbehaves, and `dispatcherFactory` for a transport that never connects.
  */
+import net from 'node:net';
 import { Agent, type Dispatcher } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SsrfGuardConfig } from '../../../core/ssrf/host-validator.js';
@@ -21,6 +22,12 @@ import {
   type Handler,
   type TestServer,
 } from '../../../testing/probe-server.js';
+import {
+  resolverFor,
+  startDnsServer,
+  type DnsFailureMode,
+  type TestDnsServer,
+} from '../../../testing/dns-server.js';
 import { trustFixtureCa } from '../../../testing/tls-fixtures.js';
 import { createConnector, type PinnedConnectOptions } from './pinned-connect.js';
 import { probe, type EndpointProbeConfig, type ProbeDeps } from './probe.js';
@@ -589,6 +596,119 @@ describe('probe, SSRF guard', () => {
   });
 });
 
+/**
+ * The guard against a real resolver (#72, defect 1).
+ *
+ * Everything above hands the guard a resolver that rejects with a code the
+ * test chose, which is how `EAI_AGAIN` came to be the only code mapped: it was
+ * the code the tests used, and c-ares -- the resolver the guard actually runs
+ * -- never produces it. Here a real `dns.promises.Resolver` asks a real name
+ * server that fails on purpose, so each row is a code c-ares raised itself,
+ * carried through `assertSaveableUrl`'s `resolveAll` and the guard's
+ * classification exactly as in production.
+ */
+describe('probe, real resolver failures under the guard', () => {
+  const servers: TestDnsServer[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+  });
+
+  async function probeAgainst(mode: DnsFailureMode, aaaaMode: DnsFailureMode = mode) {
+    const dnsServer = await startDnsServer(mode, aaaaMode);
+    servers.push(dnsServer);
+    const dispatcherFactory = vi.fn(realDispatcher);
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com/' }),
+      deps({ ssrf: GUARD_ON, resolver: resolverFor(dnsServer.port), dispatcherFactory }),
+    );
+    // The resolver really asked, and nothing was dialled: otherwise a row
+    // could pass for a reason other than the answer it names.
+    expect(dnsServer.queries()).toBeGreaterThan(0);
+    expect(dispatcherFactory).not.toHaveBeenCalled();
+    return outcome;
+  }
+
+  it.each([
+    ['servfail', 'ESERVFAIL'],
+    ['refused', 'EREFUSED'],
+    ['notimp', 'ENOTIMP'],
+    ['formerr', 'EFORMERR'],
+    ['garbage', 'EBADRESP'],
+    ['silent', 'ETIMEOUT'],
+  ] as const)('reports a %s name server as DNS_FAILURE, keeping %s', async (mode, code) => {
+    const outcome = await probeAgainst(mode);
+
+    expect(outcome).toMatchObject({ success: false, failureClass: 'DNS_FAILURE', code });
+  });
+
+  it('reports an unreachable name server as DNS_FAILURE, not CONNECTION_REFUSED', async () => {
+    // c-ares says ECONNREFUSED when it cannot reach the *resolver*. The
+    // transport table maps the same spelling to the endpoint refusing, and
+    // reading it there would report a dead name server as the endpoint's
+    // process being down.
+    const closed = await startDnsServer('servfail');
+    const port = closed.port;
+    await closed.close();
+    const dispatcherFactory = vi.fn(realDispatcher);
+
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com/' }),
+      deps({ ssrf: GUARD_ON, resolver: resolverFor(port), dispatcherFactory }),
+    );
+
+    expect(outcome).toMatchObject({ failureClass: 'DNS_FAILURE', code: 'ECONNREFUSED' });
+    expect(dispatcherFactory).not.toHaveBeenCalled();
+  });
+
+  it('still reports a name that does not exist as DNS_NXDOMAIN', async () => {
+    // NXDOMAIN on both families folds into "no addresses" inside core/ssrf,
+    // so the guard rejects with no cause at all: the clean negative.
+    expect(await probeAgainst('nxdomain')).toMatchObject({
+      failureClass: 'DNS_NXDOMAIN',
+      code: 'URL_UNRESOLVABLE',
+    });
+    expect(await probeAgainst('nodata')).toMatchObject({
+      failureClass: 'DNS_NXDOMAIN',
+      code: 'URL_UNRESOLVABLE',
+    });
+  });
+
+  it('reports a failing family as DNS_FAILURE even when the other has no record', async () => {
+    // A only: NXDOMAIN, a definitive negative. AAAA: SERVFAIL, which says
+    // nothing about what the name holds. The failure is what the user needs
+    // to hear about.
+    expect(await probeAgainst('nxdomain', 'servfail')).toMatchObject({
+      failureClass: 'DNS_FAILURE',
+      code: 'ESERVFAIL',
+    });
+  });
+});
+
+/**
+ * An address this machine refuses to route to, and the code it refuses with.
+ * Fails the test rather than falling back: a machine that routes every
+ * candidate would otherwise time out, which also reads CONNECTION_TIMEOUT
+ * and would prove nothing about the mapping.
+ */
+async function unreachableTarget(): Promise<{ address: string; code: string }> {
+  for (const address of ['100::1', '255.255.255.255', '0.0.0.1']) {
+    const code = await new Promise<string | undefined>((resolve) => {
+      const socket = net.connect({ host: address, port: 8080, timeout: 1000 });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(undefined);
+      });
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(undefined);
+      });
+      socket.once('error', (error: NodeJS.ErrnoException) => resolve(error.code));
+    });
+    if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') return { address, code };
+  }
+  throw new Error('no candidate address is refused as unreachable on this machine');
+}
+
 describe('probe, transport failures', () => {
   it('classifies a refused connection from the real wrapped error (D34)', async () => {
     // fetch() wraps transport errors in a TypeError whose own code is
@@ -603,6 +723,37 @@ describe('probe, transport failures', () => {
     expect(outcome).toMatchObject({ success: false, failureClass: 'CONNECTION_REFUSED' });
     // D22: total_ms exists for a failure that never reached a response.
     expect(outcome.timings.totalMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('classifies a real unreachable host as CONNECTION_TIMEOUT, keeping the code (#72)', async () => {
+    // The kernel's own answer, not a synthetic error: an address this host
+    // has no route to fails at connect with EHOSTUNREACH or ENETUNREACH
+    // straight away. Which one depends on the kernel -- 100::1 measured
+    // EHOSTUNREACH on macOS and ENETUNREACH on Linux -- so the target is
+    // whichever candidate this machine refuses promptly, found first with a
+    // bare socket.
+    const target = await unreachableTarget();
+    const outcome = await probe(
+      config({ url: 'http://probe.example.com:8080/' }),
+      deps({
+        ssrf: GUARD_ON,
+        resolver: {
+          resolve4: () => Promise.resolve([ROUTABLE]),
+          resolve6: () => Promise.resolve([]),
+        },
+        dispatcherFactory: (options) =>
+          new Agent({ connect: createConnector({ ...options, address: target.address }) }),
+      }),
+    );
+
+    // The code as well as the class: a deadline firing mid-connect is also
+    // CONNECTION_TIMEOUT, but carries no code, so this cannot pass through
+    // the abort path by accident.
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'CONNECTION_TIMEOUT',
+      code: target.code,
+    });
   });
 
   it('classifies a real mid-response reset as CONNECTION_RESET', async () => {
