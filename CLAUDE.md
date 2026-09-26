@@ -101,7 +101,11 @@ Applies to every chat, with or without a handoff prompt. The report
    `docker compose` run with `psql` checks are required for an HTTP surface,
    a migration, a database change or the last PR of a milestone — for a PR
    that only changes pure logic, CI plus the local suites are enough. Say in
-   the report which applied.
+   the report which applied. Clone from the local repository
+   (`git clone <checkout> <dir> && git -C <dir> checkout <branch>`), never
+   by pushing first to have something to clone: a push is where the review
+   gate runs, and `--no-verify` to get a clone source skips it for
+   convenience.
 4. **Re-review**, after revalidation. Review the whole diff yourself as a
    hostile reviewer against `AGENTS.md`, and separately **walk the plan's
    normative sentences** — every "must", "is anchored on", "is excluded from"
