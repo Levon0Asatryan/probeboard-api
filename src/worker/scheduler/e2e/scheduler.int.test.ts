@@ -139,7 +139,7 @@ async function makeDueEndpoint(
   const path = `/p${String(Math.random()).slice(2)}`;
   const endpoint = await pg.query<{ id: string }>(
     `INSERT INTO endpoints (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
-     VALUES ($1, $2, 'GET', $3, $4, 5000, 5) RETURNING id`,
+     VALUES ($1, $2, 'GET', $3, $4, LEAST(5000, $4 * 1000 - 1), 5) RETURNING id`,
     [serviceId, userId, path, opts.intervalS ?? 60],
   );
   const id = endpoint.rows[0].id;

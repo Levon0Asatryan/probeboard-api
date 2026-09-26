@@ -60,6 +60,27 @@ export class EndpointsService {
     }
   }
 
+  /**
+   * PRD §6.5: the timeout is under the interval. A probe allowed to run as
+   * long as its interval is still running when its next slot comes due, so
+   * the slot is skipped or claimed late -- the measurement stops being the
+   * one-per-interval series every uptime figure assumes (#72, defect 5).
+   * Checked on the effective pair: the values being saved, completed from
+   * the stored row when a PATCH names only one of them. Migration 0010 holds
+   * the same rule as a CHECK; this is what turns it into a 400 naming the
+   * field rather than a constraint violation.
+   */
+  private checkTimeoutBelowInterval(timeoutMs: number, intervalS: number): void {
+    if (timeoutMs >= intervalS * 1000) {
+      throw new ValidationError([
+        {
+          path: 'timeoutMs',
+          message: `must be less than the interval (${String(intervalS * 1000)} ms)`,
+        },
+      ]);
+    }
+  }
+
   private checkMaxRedirects(maxRedirects: number): void {
     if (maxRedirects > this.cfg.PROBE_MAX_REDIRECTS_CAP) {
       throw new ValidationError([
@@ -93,6 +114,7 @@ export class EndpointsService {
     const maxRedirects = dto.maxRedirects ?? this.cfg.PROBE_DEFAULT_MAX_REDIRECTS;
     this.checkInterval(intervalS);
     this.checkTimeout(timeoutMs);
+    this.checkTimeoutBelowInterval(timeoutMs, intervalS);
     this.checkMaxRedirects(maxRedirects);
 
     // SSRF validation does real DNS resolution against a user-controlled
@@ -280,6 +302,14 @@ export class EndpointsService {
       if (dto.intervalS !== undefined) this.checkInterval(dto.intervalS);
       if (dto.timeoutMs !== undefined) this.checkTimeout(dto.timeoutMs);
       if (dto.maxRedirects !== undefined) this.checkMaxRedirects(dto.maxRedirects);
+      // Under the row lock, so the stored half of the pair is the one this
+      // write lands beside, not a value a concurrent PATCH has since changed.
+      // Every PATCH, not only one naming either field: migration 0010's CHECK
+      // keeps every stored pair valid, so an unrelated edit always passes.
+      this.checkTimeoutBelowInterval(
+        dto.timeoutMs ?? existing.timeout_ms,
+        dto.intervalS ?? existing.interval_s,
+      );
 
       await this.endpoints
         .update(
