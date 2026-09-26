@@ -555,6 +555,13 @@ export const configSchema = baseSchema
     path: ['PROBE_DEFAULT_INTERVAL_S'],
     message: 'must be one of PROBE_ALLOWED_INTERVALS_S, or no endpoint could ever use the default',
   })
+  // The implicit form of POST /v1/services creates an endpoint from these
+  // two defaults alone, with nothing the caller could correct, so the pair
+  // must already satisfy PRD §6.5's timeout-under-interval rule.
+  .refine((c) => c.PROBE_DEFAULT_TIMEOUT_MS < c.PROBE_DEFAULT_INTERVAL_S * 1000, {
+    path: ['PROBE_DEFAULT_TIMEOUT_MS'],
+    message: 'must be less than PROBE_DEFAULT_INTERVAL_S (PRD §6.5: timeout < interval)',
+  })
   .refine((c) => c.PROBE_DEFAULT_TIMEOUT_MS <= c.PROBE_MAX_TIMEOUT_MS, {
     path: ['PROBE_DEFAULT_TIMEOUT_MS'],
     message: 'must not exceed PROBE_MAX_TIMEOUT_MS',

@@ -450,6 +450,73 @@ describe('PRD §6.5 per-endpoint bounds (#72, defect 5)', () => {
     expect(JSON.stringify(res.body)).toContain(path);
   };
 
+  it('refuses a timeout that is not under the interval, and accepts one that is', async () => {
+    const id = await serviceId();
+
+    refused(
+      await call(`/services/${id}/endpoints`, {
+        cookie: alice,
+        body: { path: '/a', intervalS: 30, timeoutMs: 30000 },
+      }),
+      'timeoutMs',
+    );
+    const ok = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', intervalS: 30, timeoutMs: 29999 },
+    });
+    expect(ok.status).toBe(201);
+  });
+
+  it('checks a PATCH naming one half of the pair against the stored other half', async () => {
+    const id = await serviceId();
+    const created = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', intervalS: 60, timeoutMs: 30000 },
+    });
+    const endpointId = (created.body as { id: string }).id;
+
+    // Only the interval changes, but 30 s against the stored 30 000 ms is the
+    // pair PRD §6.5 forbids.
+    refused(
+      await call(`/endpoints/${endpointId}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body: { intervalS: 30 },
+      }),
+      'timeoutMs',
+    );
+    const stored = await call(`/endpoints/${endpointId}`, { method: 'GET', cookie: alice });
+    expect(stored.body).toMatchObject({ intervalS: 60, timeoutMs: 30000 });
+
+    // Both halves together, valid as a pair.
+    const both = await call(`/endpoints/${endpointId}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { intervalS: 30, timeoutMs: 20000 },
+    });
+    expect(both.status).toBe(200);
+  });
+
+  it('does not refuse an unrelated edit to a row saved before the rule existed', async () => {
+    const id = await serviceId();
+    const created = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a' },
+    });
+    const endpointId = (created.body as { id: string }).id;
+    const pool = (db as unknown as { pool: import('pg').Pool }).pool;
+    await pool.query('UPDATE endpoints SET interval_s = 30, timeout_ms = 30000 WHERE id = $1', [
+      endpointId,
+    ]);
+
+    const edit = await call(`/endpoints/${endpointId}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { followRedirects: false },
+    });
+    expect(edit.status).toBe(200);
+  });
+
   it('bounds the incident thresholds to 1-10', async () => {
     const id = await serviceId();
     for (const field of ['failureThreshold', 'successThreshold']) {

@@ -401,6 +401,7 @@ components:
           minimum: 0
           exclusiveMinimum: true
           maximum: 9007199254740991
+          description: Milliseconds. Must be less than the interval (PRD §6.5), checked against the stored interval when only one of the two is sent, and at most PROBE_MAX_TIMEOUT_MS.
         expectedStatus:
           minItems: 1
           type: array
@@ -551,6 +552,7 @@ components:
           minimum: 0
           exclusiveMinimum: true
           maximum: 9007199254740991
+          description: Milliseconds. Must be less than the interval (PRD §6.5), checked against the stored interval when only one of the two is sent, and at most PROBE_MAX_TIMEOUT_MS.
         expectedStatus:
           minItems: 1
           type: array
