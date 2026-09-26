@@ -17,7 +17,7 @@ export class ErrorFilter implements ExceptionFilter {
     const res = http.getResponse<Response>();
     const req = http.getRequest<Request>();
 
-    const { status, body, logDetail, isServerFault } = toErrorResponse(err);
+    const { status, body, logDetail, isServerFault, headers } = toErrorResponse(err);
 
     const fields = {
       status,
@@ -38,6 +38,7 @@ export class ErrorFilter implements ExceptionFilter {
       this.logger.warn(fields, 'request rejected');
     }
 
+    for (const [name, value] of Object.entries(headers ?? {})) res.setHeader(name, value);
     res.status(status).json(body);
   }
 }

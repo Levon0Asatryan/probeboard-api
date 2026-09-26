@@ -191,6 +191,59 @@ describe('SchedulerService: the tick', () => {
     await svc.stop();
   });
 
+  it('paces a repeating failure instead of logging every tick, and reports the recovery (#72, D3)', async () => {
+    // The database down: every step of every tick fails. Thirty ticks used to
+    // be ninety error lines.
+    const repo = fakeRepo();
+    const down = Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), { code: 'ENOTFOUND' });
+    repo.adopt.mockRejectedValue(down);
+    repo.reconcile.mockRejectedValue(down);
+    repo.claim.mockRejectedValue(down);
+    const logger = fakeLogger();
+    const { svc } = makeService({ repo, logger });
+    svc.start();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 29; i += 1) await vi.advanceTimersByTimeAsync(cfg.SCHEDULER_TICK_MS);
+    expect(repo.claim.mock.calls.length).toBe(30);
+
+    const errors = logger.calls.filter((c) => c.level === 'error');
+    const lines = (message: string) =>
+      errors.filter((c) => c.args[1] === message).map((c) => c.args[0] as Record<string, unknown>);
+    // Ticks 1, 2, 4, 8, 16 of 30 -- per site, not per tick.
+    for (const message of [
+      'adopt() failed; claim still runs this tick (D19)',
+      'reconcile() failed; claim still runs this tick (D19)',
+      'tick failed',
+    ]) {
+      const logged = lines(message);
+      expect(
+        logged.map((l) => l.failures),
+        message,
+      ).toEqual([1, 2, 4, 8, 16]);
+      // Nothing is lost: each line counts what it held back.
+      expect(
+        logged.map((l) => l.suppressed),
+        message,
+      ).toEqual([0, 0, 1, 3, 7]);
+      expect(logged[0].err).toBe(down);
+    }
+
+    // The database comes back: one line per site says so.
+    repo.adopt.mockResolvedValue(0);
+    repo.reconcile.mockResolvedValue(0);
+    repo.claim.mockResolvedValue([]);
+    await vi.advanceTimersByTimeAsync(cfg.SCHEDULER_TICK_MS);
+    const recovered = logger.calls.filter(
+      (c) => c.level === 'info' && c.args[1] === 'scheduler recovered after failures',
+    );
+    expect(recovered.map((c) => c.args[0])).toEqual([
+      { what: 'adopt()', failures: 30 },
+      { what: 'reconcile()', failures: 30 },
+      { what: 'tick', failures: 30 },
+    ]);
+    await svc.stop();
+  });
+
   it('re-arms after the tick settles, and never overlaps: claim is not called again mid-tick', async () => {
     const repo = fakeRepo();
     let resolveClaim!: (rows: ClaimedSlot[]) => void;

@@ -7,6 +7,12 @@ export interface ReserveLimits {
   since: Date;
   maxPerIp: number;
   maxFailuresPerEmail: number;
+  /**
+   * Which per-address counter this attempt draws on: login's `ip` by
+   * default, or registration's own `register`, so the two never exhaust
+   * each other.
+   */
+  ipScope?: 'ip' | 'register';
 }
 
 export interface ReserveResult {
@@ -42,16 +48,20 @@ export class AuthAttemptRepository {
     limits: ReserveLimits,
     now: Date = new Date(),
   ): Promise<ReserveResult> {
+    const ipScope = limits.ipScope ?? 'ip';
     return this.db.kysely.transaction().execute(async (trx) => {
       // Sorted, so two requests that share both keys always take them in the
       // same order and cannot deadlock against each other.
-      const lockKeys = [`ip:${ip}`, ...(email === undefined ? [] : [`email:${email}`])].sort();
+      const lockKeys = [
+        `${ipScope}:${ip}`,
+        ...(email === undefined ? [] : [`email:${email}`]),
+      ].sort();
       for (const key of lockKeys) {
         await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(trx);
       }
 
-      const fromIp = await this.count(trx, 'ip', ip, limits.since, false);
-      if (fromIp >= limits.maxPerIp) return { allowed: false, scope: 'ip' as const };
+      const fromIp = await this.count(trx, ipScope, ip, limits.since, false);
+      if (fromIp >= limits.maxPerIp) return { allowed: false, scope: ipScope };
 
       if (email !== undefined) {
         const failures = await this.count(trx, 'email', email, limits.since, true);
@@ -65,7 +75,7 @@ export class AuthAttemptRepository {
       await trx
         .insertInto('auth_attempts')
         .values([
-          { scope: 'ip' as const, key: ip, succeeded: false, occurred_at: now },
+          { scope: ipScope, key: ip, succeeded: false, occurred_at: now },
           ...(email === undefined
             ? []
             : [{ scope: 'email' as const, key: email, succeeded: false, occurred_at: now }]),

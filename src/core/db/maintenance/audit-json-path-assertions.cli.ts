@@ -198,21 +198,20 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(async (err: unknown) => {
-  // stderr, so this still reports when it was stdout that failed. The stream
-  // error is appended when one was seen, because a rejected write and a dead
-  // pipe read very differently to an operator deciding whether the repair ran
-  // (D65).
+/**
+ * Reports a failed run on stderr and yields the exit status.
+ *
+ * The stream error is appended when one was seen, because a rejected write
+ * and a dead pipe read very differently to an operator deciding whether the
+ * repair ran (D65).
+ */
+async function reportFailure(err: unknown): Promise<number> {
   const streamDetail = lastStreamError === undefined ? '' : ` (${lastStreamError})`;
 
   try {
-    // Awaited, and `process.exitCode` rather than `process.exit(1)`:
-    // `console.error` on a pipe or a file is asynchronous, so exiting
-    // immediately can terminate the process with the diagnostic still queued.
-    // On the stdout-failure path this line is the operator's only statement of
-    // whether the destructive repair rolled back, so it has to reach the
-    // stream before the process ends. Setting the exit code instead lets the
-    // streams drain on their own (D68).
+    // Awaited before the process ends: on the stdout-failure path this line
+    // is the operator's only statement of whether the destructive repair
+    // rolled back, so it has to have reached the stream first (D68).
     await writeErrLine(
       `audit failed: ${describeError(err)}${streamDetail}\n`,
       REPORT_WRITE_TIMEOUT_MS,
@@ -221,6 +220,21 @@ main().catch(async (err: unknown) => {
     // stderr is unusable too, so there is no channel left to explain this
     // through; the non-zero exit status is the only signal remaining.
   }
+  return 1;
+}
 
-  process.exitCode = 1;
-});
+// The bounded exit (D69, tracker #49). By the time either branch settles,
+// everything the run owes has been awaited: every recovery record's write
+// callback, the summary or the failure diagnostic (each under its own
+// deadline), and the pool's teardown. What can still be pending is only a
+// write the deadline already gave up on -- a reader that stopped consuming
+// without closing the pipe -- and a write blocked on a full pipe keeps the
+// event loop alive for ever. Nothing in the stream API releases it:
+// `destroy()` and `unref()` both left the process hung on Node 24 and on the
+// pinned Node 22; only `process.exit()` returns. Setting `process.exitCode`
+// and letting the loop drain, as D68 did, is therefore a hang whenever the
+// reader stalls. Exiting here is safe because nothing awaited is lost: an
+// awaited write has already been handed to the OS.
+void main()
+  .then(() => 0, reportFailure)
+  .then((code) => process.exit(code));

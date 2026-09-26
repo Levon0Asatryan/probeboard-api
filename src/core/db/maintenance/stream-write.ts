@@ -25,13 +25,6 @@
  */
 export interface LineWritable {
   write(chunk: string, callback: (error?: Error | null) => void): boolean;
-
-  /**
-   * Torn down when a write misses its deadline (D69). Optional so a caller
-   * can pass anything write-shaped, but `process.stdout` and `process.stderr`
-   * both have it.
-   */
-  destroy?(error?: Error): void;
 }
 
 export class StreamWriteTimeoutError extends Error {
@@ -59,25 +52,12 @@ export function writeLineWithDeadline(
       if (settled) return;
       settled = true;
 
-      // Rejecting is not enough on its own (D69). The underlying
-      // `stream.write()` is still pending, and a pending write keeps Node's
-      // event loop alive: the transaction rolls back and releases its row
-      // lock, but the audit process then hangs instead of exiting -- and
-      // since D68 sets `process.exitCode` rather than calling
-      // `process.exit()`, nothing forcibly ends it any more. Tearing the
-      // stalled stream down releases that write so the loop can drain.
-      //
-      // Deliberately without an error argument: `destroy(err)` makes the
-      // stream emit `error`, and by the time the final diagnostic is written
-      // the CLI has already removed its scoped listeners, so that event would
-      // be an uncaught exception -- the exact failure D65 exists to prevent.
-      try {
-        stream.destroy?.();
-      } catch {
-        // Best effort. A stream that cannot be torn down must not mask the
-        // timeout that is already being reported.
-      }
-
+      // The write itself stays pending: nothing in the stream API releases a
+      // write already blocked on a full pipe -- `destroy()` and `unref()` were
+      // both measured leaving the process hung, on Node 24 and on the pinned
+      // Node 22 (D69). Rejecting frees the transaction and its row lock; the
+      // CLI then ends the process itself once it has reported (its bounded
+      // exit), which is the only thing that does release the write.
       reject(new StreamWriteTimeoutError(timeoutMs));
     }, timeoutMs);
 

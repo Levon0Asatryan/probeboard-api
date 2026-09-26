@@ -13,6 +13,7 @@ import { toResultRow } from '../storage/utils/outcome-mapping.js';
 import { MonitorLoaderService } from './services/monitor-loader.service.js';
 import { ProbePoolService } from './services/probe-pool.service.js';
 import { ResultRecorderService, type WriteBudget } from './services/result-recorder.service.js';
+import { LogBackoff } from './utils/log-backoff.js';
 
 /** `endpointId:scheduledAt` -- the pool's key, and what a claim, release or abandon all fence on. */
 export function slotKey(row: Pick<ClaimedSlot, 'endpoint_id' | 'scheduled_at'>): string {
@@ -46,6 +47,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private stopping = false;
   private tickInFlight: Promise<void> = Promise.resolve();
   private readonly probeDeps: ProbeDeps;
+  private readonly adoptLog: LogBackoff;
+  private readonly reconcileLog: LogBackoff;
+  private readonly tickLog: LogBackoff;
   /**
    * The wall-clock instant the shutdown grace expires, set once at the start
    * of `doStop()`. Every terminal write's own `statement_timeout` is bounded
@@ -66,6 +70,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     @InjectPinoLogger(SchedulerService.name) private readonly logger: PinoLogger,
   ) {
     this.probeDeps = createProbeDeps(cfg);
+    const backoff = () =>
+      new LogBackoff(cfg.SCHEDULER_TICK_MS, cfg.SCHEDULER_ERROR_LOG_MAX_INTERVAL_MS);
+    this.adoptLog = backoff();
+    this.reconcileLog = backoff();
+    this.tickLog = backoff();
   }
 
   onModuleInit(): void {
@@ -103,14 +112,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     try {
       try {
         await this.repo.adopt(this.cfg.SCHEDULER_ADOPT_JITTER_MAX_S);
+        this.recovered(this.adoptLog, 'adopt()');
       } catch (err) {
-        this.logger.error({ err }, 'adopt() failed; claim still runs this tick (D19)');
+        this.failed(this.adoptLog, err, 'adopt() failed; claim still runs this tick (D19)');
       }
 
       try {
         await this.repo.reconcile();
+        this.recovered(this.reconcileLog, 'reconcile()');
       } catch (err) {
-        this.logger.error({ err }, 'reconcile() failed; claim still runs this tick (D19)');
+        this.failed(this.reconcileLog, err, 'reconcile() failed; claim still runs this tick (D19)');
       }
 
       // Re-checked here, not only at arm-time: adopt()/reconcile() await the
@@ -130,13 +141,31 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         );
         for (const row of rows) this.dispatch(row);
       }
+      this.recovered(this.tickLog, 'tick');
     } catch (err) {
-      this.logger.error({ err }, 'tick failed');
+      this.failed(this.tickLog, err, 'tick failed');
     } finally {
       if (!this.stopping) {
         this.arm(Math.max(0, this.cfg.SCHEDULER_TICK_MS - (Date.now() - startedAt)));
       }
     }
+  }
+
+  /**
+   * A tick-level failure, logged at once and then paced (#72, D3): while the
+   * database is down every tick fails the same way, and logging each one
+   * buried the log at three lines a tick per worker. Each line that is
+   * written says how many were held back since the previous one.
+   */
+  private failed(log: LogBackoff, err: unknown, message: string): void {
+    const report = log.failure();
+    if (report) this.logger.error({ err, ...report }, message);
+  }
+
+  /** Ends a run of failures, saying how long it was, so recovery is visible too. */
+  private recovered(log: LogBackoff, what: string): void {
+    const failures = log.success();
+    if (failures > 0) this.logger.info({ what, failures }, 'scheduler recovered after failures');
   }
 
   /** Starts one claimed slot in the pool. Not awaited by the tick (§3.4). */

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
+import { movedForward, withProcessClockBehind } from '../../../testing/skewed-clock.js';
 import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from './user.repository.js';
 
@@ -97,13 +98,26 @@ describe('findById', () => {
 
 describe('updatePasswordHash', () => {
   it('replaces the hash and moves updated_at', async () => {
+    // #71's flake had two causes, and this reasons around both. The insert's
+    // DEFAULT now() and the update's now() are one clock, two transactions
+    // apart, so no sleep orders them; and they are compared by PostgreSQL at
+    // microsecond precision, not as the millisecond Dates the driver returns.
     const created = await repo.create('alice@example.com', 'old');
-    await new Promise((r) => setTimeout(r, 5));
 
     const updated = await repo.updatePasswordHash(created!.id, 'new');
 
     expect(updated?.password_hash).toBe('new');
-    expect(updated!.updated_at.getTime()).toBeGreaterThan(created!.updated_at.getTime());
+    expect(await movedForward(ctx.pool, 'users', created!.id)).toBe(true);
+  });
+
+  it('stamps updated_at from the database clock, whatever this process thinks the time is', async () => {
+    // The other cause, made deterministic: with the process clock behind the
+    // database's, a process-stamped updated_at moved backwards.
+    const created = await repo.create('alice@example.com', 'old');
+
+    await withProcessClockBehind(() => repo.updatePasswordHash(created!.id, 'new'));
+
+    expect(await movedForward(ctx.pool, 'users', created!.id)).toBe(true);
   });
 
   it('leaves the address alone', async () => {

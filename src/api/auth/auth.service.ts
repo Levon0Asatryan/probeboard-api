@@ -4,7 +4,7 @@ import { APP_CONFIG } from '../../core/config/config.module.js';
 import type { AppConfig } from '../../core/config/schema.js';
 import { DbService } from '../../core/db/db.service.js';
 import type { Database } from '../../core/db/types.js';
-import { AppError, ValidationError } from '../../core/errors/app-error.js';
+import { AppError, RateLimitedError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRepository } from '../../core/users/repositories/user.repository.js';
 import { PasswordService } from './services/password.service.js';
 import { AuthRateLimitService } from './services/rate-limit.service.js';
@@ -25,12 +25,6 @@ export interface AuthenticatedUser {
 export class InvalidCredentialsError extends AppError {
   constructor() {
     super('INVALID_CREDENTIALS', 'email or password is incorrect', 401);
-  }
-}
-
-export class RateLimitedError extends AppError {
-  constructor(readonly retryAfterSeconds: number) {
-    super('RATE_LIMITED', 'too many attempts, try again later', 429);
   }
 }
 
@@ -74,7 +68,11 @@ export class AuthService {
     // the victim's correct password is refused for the whole window. It would
     // also make repeated registration behave differently for an address that
     // exists, which is the distinction A-1 exists to remove.
-    const verdict = await this.limiter.admit(ip, undefined);
+    //
+    // And on registration's own per-address budget, not login's: sharing one
+    // let a room of registrations behind one NAT lock that address out of
+    // login (#72).
+    const verdict = await this.limiter.admitRegistration(ip);
     if (!verdict.allowed) throw new RateLimitedError(verdict.retryAfterSeconds);
 
     const hash = await this.passwords.hash(password);

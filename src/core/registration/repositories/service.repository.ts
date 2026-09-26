@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ExpressionBuilder, Kysely } from 'kysely';
+import { sql, type ExpressionBuilder, type Kysely } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database, NewService, Service, ServiceUpdate } from '../../db/types.js';
 
@@ -123,9 +123,10 @@ export class ServiceRepository {
     patch: ServiceUpdate,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<Service | undefined> {
+    // The database's clock, the one `DEFAULT now()` stamped at insert.
     return executor
       .updateTable('services')
-      .set({ ...patch, updated_at: new Date() })
+      .set({ ...patch, updated_at: sql<Date>`now()` })
       .where('id', '=', id)
       .where('user_id', '=', userId)
       .returningAll()

@@ -11,6 +11,7 @@ const cfg = loadConfig({
   AUTH_WINDOW_MS: '60000',
   AUTH_MAX_PER_IP: '5',
   AUTH_MAX_FAILURES_PER_EMAIL: '3',
+  AUTH_MAX_REGISTRATIONS_PER_IP: '4',
 });
 
 let ctx: TestDb;
@@ -121,6 +122,49 @@ describe('per-account limit', () => {
     for (let i = 0; i < 3; i++) await failedAttempt(IP, 'victim@example.com');
 
     expect((await limiter.admit(IP, 'victim@example.com')).scope).toBe('email');
+  });
+});
+
+describe('registration has its own per-address budget (#72)', () => {
+  it('refuses registrations past their own limit, as scope register', async () => {
+    for (let i = 0; i < 4; i++) expect((await limiter.admitRegistration(IP)).allowed).toBe(true);
+
+    const verdict = await limiter.admitRegistration(IP);
+    expect(verdict).toMatchObject({ allowed: false, scope: 'register', retryAfterSeconds: 60 });
+  });
+
+  // Each direction needs caps that a shared counter would trip: registrations
+  // outnumbering login's cap for the first, login's attempts outnumbering the
+  // registration cap for the second. Otherwise both pass either way.
+  const withCaps = (registrations: string) =>
+    new AuthRateLimitService(
+      { ...cfg, AUTH_MAX_REGISTRATIONS_PER_IP: Number(registrations) },
+      repo,
+    );
+
+  it('leaves login admitted after registrations exhaust theirs', async () => {
+    // The NAT case: a room registering from one address must not lock that
+    // address out of login. 8 registrations against a login cap of 5.
+    const roomy = withCaps('8');
+    for (let i = 0; i < 10; i++) await roomy.admitRegistration(IP);
+    expect((await roomy.admitRegistration(IP)).allowed).toBe(false);
+
+    expect((await roomy.admit(IP, 'someone@example.com')).allowed).toBe(true);
+  });
+
+  it('leaves registration admitted after login exhausts its budget', async () => {
+    // 5 login attempts against a registration cap of 4.
+    for (let i = 0; i < 6; i++) await failedAttempt(IP, `u${String(i)}@example.com`);
+    expect((await limiter.admit(IP, 'next@example.com')).allowed).toBe(false);
+
+    expect((await limiter.admitRegistration(IP)).allowed).toBe(true);
+  });
+
+  it('does not let a parallel burst exceed the registration cap', async () => {
+    const verdicts = await Promise.all(
+      Array.from({ length: 20 }, () => limiter.admitRegistration('203.0.113.2')),
+    );
+    expect(verdicts.filter((v) => v.allowed)).toHaveLength(4);
   });
 });
 

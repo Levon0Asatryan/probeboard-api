@@ -89,6 +89,10 @@ const auth = {
     .default(15 * 60_000),
   AUTH_MAX_PER_IP: z.coerce.number().int().min(1).default(20),
   AUTH_MAX_FAILURES_PER_EMAIL: z.coerce.number().int().min(1).default(5),
+  // Registrations per address per AUTH_WINDOW_MS, counted apart from
+  // AUTH_MAX_PER_IP: sharing one budget let a room of people registering
+  // behind one NAT lock that address out of login (#72).
+  AUTH_MAX_REGISTRATIONS_PER_IP: z.coerce.number().int().min(1).max(10_000).default(20),
   AUTH_ATTEMPT_RETENTION_MS: z.coerce
     .number()
     .int()
@@ -399,6 +403,16 @@ const scheduler = {
   // a hot loop hammering the database. This is why Uptime Kuma depends on
   // `unlimited-timeout`; a bound is cheaper than a dependency.
   SCHEDULER_TICK_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  // The longest a repeating scheduler error goes unlogged (#72, D3). A
+  // failing tick is logged at once, then at intervals doubling from
+  // SCHEDULER_TICK_MS up to this, each line carrying how many it held back.
+  // Bounded above like the tick itself, for the same timer-overflow reason.
+  SCHEDULER_ERROR_LOG_MAX_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(3_600_000)
+    .default(60_000),
   // Rows claimed per tick. Capped because a batch larger than any plausible
   // pool leases rows nothing will start within the lease.
   SCHEDULER_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(100),

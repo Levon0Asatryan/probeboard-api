@@ -68,6 +68,7 @@ interface Res {
   body: unknown;
   cookie?: string;
   setCookieRaw?: string;
+  retryAfter?: string;
 }
 
 async function call(
@@ -91,6 +92,7 @@ async function call(
     body: text ? (JSON.parse(text) as unknown) : undefined,
     setCookieRaw: raw,
     cookie: raw ? raw.split(';')[0] : undefined,
+    retryAfter: res.headers.get('retry-after') ?? undefined,
   };
 }
 
@@ -300,6 +302,22 @@ describe('registration cannot be used against an account', () => {
     expect(res.status).toBe(200);
   });
 
+  it('registrations from one address do not lock that address out of login (#72)', async () => {
+    // A room of people behind one NAT, registering: 35 attempts is past both
+    // registration's own budget (20) and login's (30 here). While the two
+    // shared a counter, the login below was refused with 429.
+    await register('nat-user@example.com', 'correct horse battery');
+    const statuses: number[] = [];
+    for (let i = 0; i < 35; i++) {
+      statuses.push(
+        (await register(`nat${String(i)}@example.com`, 'correct horse battery')).status,
+      );
+    }
+    expect(statuses).toContain(429);
+
+    expect((await login('nat-user@example.com', 'correct horse battery')).status).toBe(200);
+  });
+
   it('registration is still limited, by address rather than by account', async () => {
     // Mass registration from one host is throttled; it just does not touch the
     // credential-failure counter belonging to any account.
@@ -373,6 +391,9 @@ describe('A-6: rate limiting through HTTP', () => {
     const res = await login('victim@example.com', 'correct horse battery');
     expect(res.status).toBe(429);
     expect(res.body).toMatchObject({ code: 'RATE_LIMITED' });
+    // How long to wait: the whole window, after which every attempt that led
+    // here has aged out (#72). AUTH_WINDOW_MS is the default 15 minutes.
+    expect(res.retryAfter).toBe('900');
   });
 
   it('a forged X-Forwarded-For does not buy a fresh limit', async () => {

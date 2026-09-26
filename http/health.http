@@ -20,6 +20,9 @@ GET {{baseUrl}}/healthz
 # To see the failing case:
 #   docker compose stop postgres   # readyz -> 503, healthz stays 200
 #   docker compose start postgres  # readyz -> 200 again, no api restart
+#
+# Every /v1 route answers the same 503 DATABASE_UNAVAILABLE while the
+# database is down -- not 500, which would mean a bug (#72, D3).
 GET {{baseUrl}}/readyz
 
 ###

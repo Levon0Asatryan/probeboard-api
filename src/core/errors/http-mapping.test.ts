@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AppError, NotFoundError, QuotaExceededError, ValidationError } from './app-error.js';
+import {
+  AppError,
+  NotFoundError,
+  QuotaExceededError,
+  RateLimitedError,
+  ValidationError,
+} from './app-error.js';
 import { toErrorResponse } from './http-mapping.js';
 
 describe('toErrorResponse', () => {
@@ -30,6 +36,33 @@ describe('toErrorResponse', () => {
     );
     expect(toErrorResponse({ status: 429, response: {} }).body.code).toBe('RATE_LIMITED');
     expect(toErrorResponse({ status: 413, response: {} }).body.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+
+  it('answers 503, not 500, when the database cannot be reached (#72, D3)', () => {
+    const down = Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), { code: 'ENOTFOUND' });
+    const m = toErrorResponse(down);
+    expect(m.status).toBe(503);
+    // The same body /readyz answers with.
+    expect(m.body).toEqual({ code: 'DATABASE_UNAVAILABLE', message: 'database is not reachable' });
+    expect(m.logDetail).toContain('ENOTFOUND');
+  });
+
+  it('keeps a query the database rejected a 500', () => {
+    const bug = Object.assign(new Error('relation "x" does not exist'), { code: '42P01' });
+    expect(toErrorResponse(bug)).toMatchObject({
+      status: 500,
+      body: { code: 'INTERNAL_ERROR' },
+    });
+  });
+
+  it('tells a rate-limited client how long to wait (#72)', () => {
+    const m = toErrorResponse(new RateLimitedError(900));
+    expect(m.status).toBe(429);
+    expect(m.headers).toEqual({ 'Retry-After': '900' });
+  });
+
+  it('adds no header to an ordinary error', () => {
+    expect(toErrorResponse(new NotFoundError('monitor')).headers).toBeUndefined();
   });
 
   it('falls back for a status it does not know', () => {

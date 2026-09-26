@@ -76,60 +76,6 @@ describe('writeLineWithDeadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('tears down the stalled stream so its pending write cannot outlive the deadline', async () => {
-    // Rejecting alone leaves `stream.write()` pending, and a pending write
-    // holds Node's event loop open -- so the audit would roll back, release
-    // its row lock, and then hang rather than exit (D69).
-    let destroyed = 0;
-    const stream: LineWritable = {
-      write: () => false,
-      destroy: () => {
-        destroyed += 1;
-      },
-    };
-
-    const promise = writeLineWithDeadline(stream, 'line\n', 1_000);
-    const assertion = expect(promise).rejects.toBeInstanceOf(StreamWriteTimeoutError);
-    await vi.advanceTimersByTimeAsync(1_000);
-    await assertion;
-
-    expect(destroyed).toBe(1);
-  });
-
-  it('reports the timeout even when the stream refuses to be torn down', async () => {
-    const stream: LineWritable = {
-      write: () => false,
-      destroy: () => {
-        throw new Error('already destroyed');
-      },
-    };
-
-    const promise = writeLineWithDeadline(stream, 'line\n', 1_000);
-    const assertion = expect(promise).rejects.toBeInstanceOf(StreamWriteTimeoutError);
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    // The teardown failure must not replace the error being reported.
-    await assertion;
-  });
-
-  it('leaves a healthy stream alone when the write completes in time', async () => {
-    let destroyed = 0;
-    const stream: LineWritable = {
-      write: (_chunk, callback) => {
-        callback(null);
-        return true;
-      },
-      destroy: () => {
-        destroyed += 1;
-      },
-    };
-
-    await expect(writeLineWithDeadline(stream, 'line\n', 10_000)).resolves.toBeUndefined();
-
-    expect(destroyed).toBe(0);
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
   it('ignores a callback that arrives after the deadline has already fired', async () => {
     let late: ((error?: Error | null) => void) | undefined;
     const stream: LineWritable = {

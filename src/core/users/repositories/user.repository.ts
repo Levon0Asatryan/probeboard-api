@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { DbService } from '../../db/db.service.js';
 import type { Database } from '../../db/types.js';
 import type { User } from '../../db/types.js';
@@ -117,9 +117,12 @@ export class UserRepository {
     passwordHash: string,
     executor: Kysely<Database> = this.db.kysely,
   ): Promise<User | undefined> {
+    // The database's clock, not this process's: `updated_at` was stamped at
+    // insert by `DEFAULT now()`, and mixing two clocks can move it backwards
+    // -- what the flaky test on #71 saw, 16 ms apart.
     return executor
       .updateTable('users')
-      .set({ password_hash: passwordHash, updated_at: new Date() })
+      .set({ password_hash: passwordHash, updated_at: sql<Date>`now()` })
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirst();

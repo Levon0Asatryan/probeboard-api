@@ -205,7 +205,6 @@ const tagParam = {
   },
 };
 
-/** Shared by every authenticated route. */
 /**
  * `ParseUUIDPipe` on every `{id}`: a malformed id is refused before the
  * handler, with the framework's `400`, on every operation that takes one.
@@ -224,9 +223,27 @@ const tooLargeResponse = errorResponse('Body larger than the configured limit (6
 /** The same parser's answer to a body that is not valid JSON. */
 const malformedJsonResponse = errorResponse('`BAD_REQUEST`: the body is not valid JSON.');
 
+/**
+ * A 429 from the authentication limiter, which says how long to wait. The
+ * value is the whole window (`AUTH_WINDOW_MS`): refused attempts are not
+ * counted, so by then every attempt that led to the refusal has aged out.
+ */
+function rateLimitedResponse(description: string) {
+  return {
+    ...errorResponse(description),
+    headers: {
+      'Retry-After': {
+        description: 'Seconds to wait before retrying (RFC 9110 §10.2.3).',
+        schema: { type: 'integer', minimum: 1 },
+      },
+    },
+  };
+}
+
+/** Shared by every authenticated route. */
 const authErrors = {
   '401': errorResponse('No session cookie, or one that is expired, revoked or unknown.'),
-  '429': errorResponse('Too many requests from this address.'),
+  '429': rateLimitedResponse('Too many requests from this address.'),
 };
 
 /**
@@ -240,7 +257,7 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const cookieName = sessionCookieName(cfg ?? { COOKIE_SECURE: true });
 
-  return withBodyParser({
+  return withSharedResponses({
     openapi: '3.0.3',
     info: {
       title: 'probeboard API',
@@ -565,7 +582,7 @@ export function buildOpenApiDocument(
             '204': { description: 'Accepted. No body, and no session.' },
             '400': errorResponse('`VALIDATION_FAILED`, or `BAD_REQUEST` for malformed JSON.'),
             '413': errorResponse('Body larger than the configured limit (64 kB by default).'),
-            '429': errorResponse('Too many attempts from this address.'),
+            '429': rateLimitedResponse('Too many attempts from this address.'),
           },
         },
       },
@@ -599,7 +616,7 @@ export function buildOpenApiDocument(
               'Wrong password, or no such account. Identical either way: `INVALID_CREDENTIALS`.',
             ),
             '413': errorResponse('Body larger than the configured limit.'),
-            '429': errorResponse(
+            '429': rateLimitedResponse(
               'Rate limited, by address or by account. `RATE_LIMITED`. Note that an account ' +
                 'locked by repeated failures answers 429 even for the correct password.',
             ),
@@ -647,7 +664,7 @@ export function buildOpenApiDocument(
                 'to change.',
             ),
             '413': errorResponse('Body larger than the configured limit.'),
-            '429': errorResponse('Too many attempts from this address.'),
+            '429': rateLimitedResponse('Too many attempts from this address.'),
           },
         },
       },
@@ -727,7 +744,7 @@ export function buildOpenApiDocument(
                 'state cookie.',
             },
             '404': errorResponse('Unknown or unconfigured provider.'),
-            '429': errorResponse('Too many attempts from this address.'),
+            '429': rateLimitedResponse('Too many attempts from this address.'),
           },
         },
       },
@@ -766,7 +783,7 @@ export function buildOpenApiDocument(
               },
             },
             '404': errorResponse('Unknown provider.'),
-            '429': errorResponse('Too many attempts from this address.'),
+            '429': rateLimitedResponse('Too many attempts from this address.'),
           },
         },
       },
@@ -1157,4 +1174,36 @@ function withBodyParser(doc: Record<string, unknown>): Record<string, unknown> {
     }
   }
   return doc;
+}
+
+/**
+ * Adds `503` to every `/v1` operation (#72, D3).
+ *
+ * Every one of them reads or writes PostgreSQL -- the unauthenticated ones
+ * too, through the rate limiter and the pending-authorization row -- and the
+ * error filter answers `503 DATABASE_UNAVAILABLE` whenever the database cannot
+ * be reached. Applied here rather than written into each operation because it
+ * is a property of the shared layer, like the body limit, and a route added
+ * later has it without anyone remembering to.
+ */
+function withDatabaseUnavailable(doc: Record<string, unknown>): Record<string, unknown> {
+  const paths = doc.paths as Record<
+    string,
+    Record<string, { responses?: Record<string, unknown> }>
+  >;
+  for (const [path, operations] of Object.entries(paths)) {
+    if (!path.startsWith(`/${API_VERSION_PREFIX}/`)) continue;
+    for (const operation of Object.values(operations)) {
+      operation.responses ??= {};
+      operation.responses['503'] ??= errorResponse(
+        'The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`.',
+      );
+    }
+  }
+  return doc;
+}
+
+/** Both, applied to the finished document. */
+function withSharedResponses(doc: Record<string, unknown>): Record<string, unknown> {
+  return withDatabaseUnavailable(withBodyParser(doc));
 }

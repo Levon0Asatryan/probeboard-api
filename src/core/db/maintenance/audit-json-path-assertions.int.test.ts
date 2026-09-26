@@ -6,6 +6,7 @@ import { UserRepository } from '../../users/repositories/user.repository.js';
 import { ServiceRepository } from '../../registration/repositories/service.repository.js';
 import { EndpointRepository } from '../../registration/repositories/endpoint.repository.js';
 import { connectTestDb, truncateAll, type TestDb } from '../../../testing/database.js';
+import { movedForward, withProcessClockBehind } from '../../../testing/skewed-clock.js';
 import { auditJsonPathAssertions, type RemovedAssertion } from './audit-json-path-assertions.js';
 
 /**
@@ -163,6 +164,14 @@ describe('auditJsonPathAssertions', () => {
     expect(await readAssertions(endpointId)).toEqual([SUPPORTED, BODY]);
     expect(removed).toBe(1);
     expect(sink.records).toEqual([{ endpointId, removed: UNSUPPORTED }]);
+  });
+
+  it('stamps updated_at from the database clock, the one the insert used (#71)', async () => {
+    await setAssertions(endpointId, [UNSUPPORTED, BODY]);
+
+    await withProcessClockBehind(() => auditJsonPathAssertions(ctx.db, collector()));
+
+    expect(await movedForward(ctx.pool, 'endpoints', endpointId)).toBe(true);
   });
 
   it('leaves an endpoint whose assertions are all supported completely alone', async () => {

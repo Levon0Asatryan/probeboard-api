@@ -89,12 +89,14 @@ Content-Type: application/json
 # defect 4). Needs a session: auth.http's login first.
 GET {{baseUrl}}/v1/services/not-a-uuid
 
-### Rate limiting (AUTH_MAX_PER_IP, AUTH_MAX_FAILURES_PER_EMAIL)
+### Rate limiting (AUTH_MAX_PER_IP, AUTH_MAX_FAILURES_PER_EMAIL, AUTH_MAX_REGISTRATIONS_PER_IP)
 #
 # Both limits are counted, so they need repetition rather than a single
 # request. Sending auth.http's loginWrongPassword five times locks the account
 # (429 on the sixth, even with the correct password); twenty requests from one
 # address exhaust the per-address budget whatever account they name.
+# Registration counts on a budget of its own (AUTH_MAX_REGISTRATIONS_PER_IP,
+# 20 by default), so registering does not spend login's (#72).
 #
 # The property worth checking is that the limit holds when the requests arrive
 # together, which no interactive client can produce:
