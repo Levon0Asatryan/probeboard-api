@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbService } from '../../db/db.service.js';
 import { UserRepository } from '../../users/repositories/user.repository.js';
@@ -581,5 +582,96 @@ describe('cascade delete via service', () => {
     await services.delete(serviceId, userId);
 
     await expect(endpoints.findById(created.id, userId)).resolves.toBeUndefined();
+  });
+});
+
+describe('PRD §6.5 bounds, held by the table (migration 0010)', () => {
+  const insert = (over: Record<string, unknown>) =>
+    ctx.db
+      .insertInto('endpoints')
+      .values({
+        service_id: serviceId,
+        user_id: userId,
+        interval_s: 60,
+        timeout_ms: 10000,
+        max_redirects: 5,
+        method: 'GET',
+        path: `/p${String(Math.random()).slice(2, 8)}`,
+        ...over,
+      })
+      .execute();
+
+  it.each([
+    ['failure_threshold', { failure_threshold: 11 }],
+    ['failure_threshold', { failure_threshold: 0 }],
+    ['success_threshold', { success_threshold: 11 }],
+    ['timeout_under_interval', { interval_s: 30, timeout_ms: 30000 }],
+  ])('refuses a row outside the bounds (%s)', async (constraint, over) => {
+    await expect(insert(over)).rejects.toMatchObject({
+      code: '23514',
+      constraint: `endpoints_${constraint}_check`,
+    });
+  });
+
+  it('accepts the edges of the bounds', async () => {
+    await expect(
+      insert({ failure_threshold: 10, success_threshold: 1, interval_s: 30, timeout_ms: 29999 }),
+    ).resolves.toBeDefined();
+  });
+
+  it('repairs rows stored under the old bounds before constraining them', async () => {
+    // The up file itself, run against rows the old schema accepted. Inside one
+    // transaction that is rolled back, so the constraints other tests rely on
+    // are never seen missing.
+    const upSql = readFileSync(
+      new URL('../../db/migrations/0010_endpoint_prd_bounds.up.sql', import.meta.url),
+      'utf8',
+    );
+    const client = await ctx.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`ALTER TABLE endpoints
+        DROP CONSTRAINT endpoints_timeout_under_interval_check,
+        DROP CONSTRAINT endpoints_success_threshold_check,
+        DROP CONSTRAINT endpoints_failure_threshold_check`);
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO endpoints (service_id, user_id, interval_s, timeout_ms, max_redirects, method,
+                                path, failure_threshold, success_threshold)
+         VALUES ($1, $2, 30, 30000, 5, 'GET', '/old-a', 100, 0),
+                ($1, $2, 60, 10000, 5, 'OPTIONS', '/old-b', 3, 2)
+         RETURNING id`,
+        [serviceId, userId],
+      );
+
+      await client.query(upSql);
+
+      const repaired = await client.query(
+        `SELECT path, method, interval_s, timeout_ms, failure_threshold, success_threshold
+           FROM endpoints WHERE id = ANY($1) ORDER BY path`,
+        [rows.map((r) => r.id)],
+      );
+      expect(repaired.rows).toEqual([
+        {
+          path: '/old-a',
+          method: 'GET',
+          interval_s: 30,
+          timeout_ms: 29999,
+          failure_threshold: 10,
+          success_threshold: 1,
+        },
+        // In bounds already, and OPTIONS is left as its owner saved it.
+        {
+          path: '/old-b',
+          method: 'OPTIONS',
+          interval_s: 60,
+          timeout_ms: 10000,
+          failure_threshold: 3,
+          success_threshold: 2,
+        },
+      ]);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
   });
 });

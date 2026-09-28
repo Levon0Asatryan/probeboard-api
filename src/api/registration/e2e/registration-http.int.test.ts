@@ -435,6 +435,138 @@ describe('duplicate method+path', () => {
   });
 });
 
+describe('PRD §6.5 per-endpoint bounds (#72, defect 5)', () => {
+  async function serviceId(): Promise<string> {
+    const created = await call('/services', {
+      cookie: alice,
+      body: { name: 'x', baseUrl: 'http://93.184.216.34' },
+    });
+    return (created.body as { service: { id: string } }).service.id;
+  }
+
+  const refused = (res: { status: number; body: unknown }, path: string) => {
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(JSON.stringify(res.body)).toContain(path);
+  };
+
+  it('refuses a timeout that is not under the interval, and accepts one that is', async () => {
+    const id = await serviceId();
+
+    refused(
+      await call(`/services/${id}/endpoints`, {
+        cookie: alice,
+        body: { path: '/a', intervalS: 30, timeoutMs: 30000 },
+      }),
+      'timeoutMs',
+    );
+    const ok = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', intervalS: 30, timeoutMs: 29999 },
+    });
+    expect(ok.status).toBe(201);
+  });
+
+  it('checks a PATCH naming one half of the pair against the stored other half', async () => {
+    const id = await serviceId();
+    const created = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', intervalS: 60, timeoutMs: 30000 },
+    });
+    const endpointId = (created.body as { id: string }).id;
+
+    // Only the interval changes, but 30 s against the stored 30 000 ms is the
+    // pair PRD §6.5 forbids.
+    refused(
+      await call(`/endpoints/${endpointId}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body: { intervalS: 30 },
+      }),
+      'timeoutMs',
+    );
+    const stored = await call(`/endpoints/${endpointId}`, { method: 'GET', cookie: alice });
+    expect(stored.body).toMatchObject({ intervalS: 60, timeoutMs: 30000 });
+
+    // Both halves together, valid as a pair.
+    const both = await call(`/endpoints/${endpointId}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { intervalS: 30, timeoutMs: 20000 },
+    });
+    expect(both.status).toBe(200);
+  });
+
+  it('holds PATCH to the redirect cap, as create is (FR-21)', async () => {
+    // A rewrite of the PATCH checks once dropped this line, and nothing noticed:
+    // create refused 11 while PATCH saved it.
+    const id = await serviceId();
+    const created = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a' },
+    });
+    const endpointId = (created.body as { id: string }).id;
+
+    refused(
+      await call(`/endpoints/${endpointId}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body: { maxRedirects: 11 },
+      }),
+      'maxRedirects',
+    );
+    const ok = await call(`/endpoints/${endpointId}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: { maxRedirects: 10 },
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it('bounds the incident thresholds to 1-10', async () => {
+    const id = await serviceId();
+    for (const field of ['failureThreshold', 'successThreshold']) {
+      refused(
+        await call(`/services/${id}/endpoints`, {
+          cookie: alice,
+          body: { path: '/a', [field]: 11 },
+        }),
+        field,
+      );
+    }
+    const ok = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', failureThreshold: 10, successThreshold: 10 },
+    });
+    expect(ok.status).toBe(201);
+    const endpointId = (ok.body as { id: string }).id;
+    refused(
+      await call(`/endpoints/${endpointId}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body: { failureThreshold: 11 },
+      }),
+      'failureThreshold',
+    );
+  });
+
+  it('accepts the methods PRD §6.5 lists and no others', async () => {
+    const id = await serviceId();
+    refused(
+      await call(`/services/${id}/endpoints`, {
+        cookie: alice,
+        body: { path: '/a', method: 'OPTIONS' },
+      }),
+      'method',
+    );
+    const ok = await call(`/services/${id}/endpoints`, {
+      cookie: alice,
+      body: { path: '/a', method: 'HEAD' },
+    });
+    expect(ok.status).toBe(201);
+  });
+});
+
 describe('malformed ids', () => {
   it('400s rather than 500ing on a non-UUID :id', async () => {
     for (const path of [

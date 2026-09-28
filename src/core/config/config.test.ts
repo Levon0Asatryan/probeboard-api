@@ -781,6 +781,18 @@ describe('scheduler cross-field rules', () => {
     expect(loadConfig({ ...valid, SCHEDULER_TICK_MS: '500' }).SCHEDULER_TICK_MS).toBe(500);
   });
 
+  it('rejects a default timeout that is not under the default interval (PRD §6.5)', () => {
+    // The implicit create form uses both defaults with nothing the caller can
+    // correct, so an invalid pair would make every one-step registration fail.
+    expect(() =>
+      loadConfig({ ...valid, PROBE_DEFAULT_INTERVAL_S: '30', PROBE_DEFAULT_TIMEOUT_MS: '30000' }),
+    ).toThrow(/PROBE_DEFAULT_TIMEOUT_MS: must be less than PROBE_DEFAULT_INTERVAL_S/);
+    expect(
+      loadConfig({ ...valid, PROBE_DEFAULT_INTERVAL_S: '30', PROBE_DEFAULT_TIMEOUT_MS: '29999' })
+        .PROBE_DEFAULT_TIMEOUT_MS,
+    ).toBe(29_999);
+  });
+
   it('leaves the shutdown-grace floor satisfiable at the most permissive timeout', () => {
     // The mirror of the floor test below: at PROBE_MAX_TIMEOUT_MS' ceiling and
     // SCHEDULER_LOAD_BUDGET_MS' floor, a legal grace must still exist. Before
@@ -791,6 +803,8 @@ describe('scheduler cross-field rules', () => {
       ...valid,
       PROBE_MAX_TIMEOUT_MS: '300000',
       PROBE_DEFAULT_TIMEOUT_MS: '300000',
+      // A 300s default timeout needs a default interval above it (PRD §6.5).
+      PROBE_DEFAULT_INTERVAL_S: '900',
       SCHEDULER_LOAD_BUDGET_MS: '100',
       SCHEDULER_SHUTDOWN_GRACE_MS: '300100',
       SCHEDULER_LEASE_MS: '400000',

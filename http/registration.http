@@ -193,6 +193,20 @@ Content-Type: application/json
 }
 
 ###
+# @name rejectTimeoutNotUnderInterval
+# 400 VALIDATION_FAILED on timeoutMs -- PRD §6.5: the timeout is under the
+# interval, or a probe can still be running when its next slot comes due. A
+# PATCH naming only one of the two is checked against the stored other one.
+POST {{baseUrl}}/v1/services/:serviceId/endpoints
+Content-Type: application/json
+
+{
+  "path": "/slow",
+  "intervalS": 30,
+  "timeoutMs": 30000
+}
+
+###
 # @name createWithJsonPathAssertion
 # 201. The supported json_path subset: dot-separated names and [0] indices.
 # `$` may lead the path or be omitted -- `$.data.status` and `data.status`

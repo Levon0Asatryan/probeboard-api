@@ -62,7 +62,19 @@ export const assertionSchema = z.discriminatedUnion('type', [
 /** PostgreSQL `integer` column range -- `latency_warn_ms` has no other bound. */
 export const POSTGRES_INT4_MAX = 2_147_483_647;
 
-export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
+/**
+ * PRD §6.5's list, exactly. `OPTIONS` was accepted too until #72 (defect 5)
+ * found the schema wider than the specification; a monitor asks whether an
+ * API serves its requests, and a preflight is not one of them.
+ */
+export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const;
+
+/**
+ * PRD §6.5: failures to open an incident and successes to close one are
+ * each 1-10. Wider values reach M6's hysteresis unread today, which is why
+ * the gap was harmless until now and why it closes before M6 reads them.
+ */
+export const INCIDENT_THRESHOLD_MAX = 10;
 
 /**
  * A generous structural ceiling on `path`, in JS string length -- not the
