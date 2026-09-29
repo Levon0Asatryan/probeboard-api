@@ -422,10 +422,13 @@ observations turn that exclusion into a state the user sees.
   the past could only pretend to have applied); a `starts_at` in the past is
   accepted and applies from the moment it is saved.
 - Bounds: `ends_at − starts_at ≤ MAINTENANCE_MAX_DURATION_DAYS` (default 31);
-  at most `MAINTENANCE_WINDOW_QUOTA_PER_USER` (default 100) windows whose
-  `ends_at > now()` per user, counted under the user row lock the endpoint
-  quota already takes (M2 §5.3) — a signed-in user cannot grow the table
-  without bound.
+  at most `MAINTENANCE_WINDOW_QUOTA_PER_USER` (default 100) **stored** windows
+  per user, ended ones included, counted under the user row lock the endpoint
+  quota already takes (M2 §5.3). Counting only unexpired windows would let a
+  user create short windows, wait out their end and repeat, growing the table
+  without bound; counting every row bounds it at quota × users with no
+  cleanup job. Ended windows stay until their owner deletes them — they are
+  the record of why `count_maintenance` moved.
 - Evaluator: §3.4's second row. Rollup: D6.
 - Notifications: nothing opens inside a window, so nothing is queued for an
   open; a close is always queued (C11, open question 2).
@@ -574,14 +577,14 @@ The user sees the deletion **immediately** anyway: every read joins
 `src/core/config/schema.ts`, validated at boot; each key ships with a
 rejection test.
 
-| Key                                 | Type / bound                     | Default  | Note                               |
-| ----------------------------------- | -------------------------------- | -------- | ---------------------------------- |
-| `EVALUATOR_TICK_MS`                 | `int().min(100).max(600_000)`    | `10_000` | 07's table                         |
-| `EVALUATOR_BATCH_XIDS`              | `int().min(1).max(100_000)`      | `5000`   | M5's batching                      |
-| `EVALUATOR_STALE_TICKS`             | `int().min(1).max(1000)`         | `10`     | `warn` when the watermark is older |
-| `UNKNOWN_GRACE_MS`                  | `int().min(1000).max(3_600_000)` | `90_000` | `refine` §3.6                      |
-| `MAINTENANCE_MAX_DURATION_DAYS`     | `int().min(1).max(366)`          | `31`     |                                    |
-| `MAINTENANCE_WINDOW_QUOTA_PER_USER` | `int().min(1).max(100_000)`      | `100`    | windows with `ends_at > now()`     |
+| Key                                 | Type / bound                     | Default  | Note                                     |
+| ----------------------------------- | -------------------------------- | -------- | ---------------------------------------- |
+| `EVALUATOR_TICK_MS`                 | `int().min(100).max(600_000)`    | `10_000` | 07's table                               |
+| `EVALUATOR_BATCH_XIDS`              | `int().min(1).max(100_000)`      | `5000`   | M5's batching                            |
+| `EVALUATOR_STALE_TICKS`             | `int().min(1).max(1000)`         | `10`     | `warn` when the watermark is older       |
+| `UNKNOWN_GRACE_MS`                  | `int().min(1000).max(3_600_000)` | `90_000` | `refine` §3.6                            |
+| `MAINTENANCE_MAX_DURATION_DAYS`     | `int().min(1).max(366)`          | `31`     |                                          |
+| `MAINTENANCE_WINDOW_QUOTA_PER_USER` | `int().min(1).max(100_000)`      | `100`    | every stored window, ended ones included |
 
 ---
 
