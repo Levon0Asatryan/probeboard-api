@@ -167,6 +167,7 @@ describe('schema (0008)', () => {
           intervalS: 60,
           workerId: 'w1',
           attemptId: '00000000-0000-4000-8000-0000000000a1',
+          latencyWarnMs: null,
         }),
       ),
     ).rejects.toThrow(/no partition of relation "probe_results"/);
@@ -182,6 +183,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a1',
+      latencyWarnMs: null,
     });
     const res = await recorder().recordAndRelease(row, fence(id), () => ({
       timeoutMs: 2000,
@@ -212,6 +214,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a2',
+      latencyWarnMs: null,
     });
     const res = await recorder().recordAndRelease(row, fence(id), () => ({
       timeoutMs: 2000,
@@ -231,6 +234,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000a3',
+      latencyWarnMs: null,
     });
     const first = await recorder().recordAndRelease(row, fence(id), () => ({
       timeoutMs: 2000,
@@ -260,6 +264,7 @@ describe('ResultRecorderService (real transaction)', () => {
           intervalS: 60,
           workerId: 'w1',
           attemptId,
+          latencyWarnMs: null,
         }),
         fence(id),
         () => ({ timeoutMs: 2000, expired: false }),
@@ -277,6 +282,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000c1',
+      latencyWarnMs: null,
     });
     await expect(
       recorder({ RESULT_WRITE_ATTEMPTS: '2' }).recordAndRelease(row, fence(id), () => ({
@@ -299,6 +305,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000d1',
+      latencyWarnMs: null,
     });
     // A second connection holds the runtime row, so the release blocks until
     // statement_timeout fires. The lock is taken before the call: no sleep.
@@ -330,6 +337,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000d2',
+      latencyWarnMs: null,
     });
     // The first statement is given 5 s; by the second, 150 ms remain. A single
     // SET LOCAL would let the blocked release wait the full 5 s.
@@ -376,6 +384,7 @@ describe('ResultRecorderService (real transaction)', () => {
       intervalS: 60,
       workerId: 'w1',
       attemptId: '00000000-0000-4000-8000-0000000000e1',
+      latencyWarnMs: null,
     });
     await recorder().recordAndRelease(row, fence(id), () => ({ timeoutMs: 2000, expired: false }));
     const { rows } = await pool.query<{

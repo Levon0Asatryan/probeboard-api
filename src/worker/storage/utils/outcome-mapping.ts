@@ -17,6 +17,12 @@ export interface ResultContext {
   workerId: string;
   /** Generated once per attempt, before the probe; reused by retries of the write. */
   attemptId: string;
+  /**
+   * `endpoints.latency_warn_ms` as loaded for this probe. Decided here, once:
+   * a later threshold edit never rewrites a recorded verdict (docs/m6-plan.md
+   * D7), the same rule as `interval_s`.
+   */
+  latencyWarnMs: number | null;
 }
 
 /**
@@ -24,9 +30,21 @@ export interface ResultContext {
  * refusal and `UNKNOWN_ERROR` is unclassified: recording either as `down`
  * would manufacture an outage M6 is required to exclude. A failure with no
  * class at all is unclassified too.
+ *
+ * A success over the endpoint's latency threshold is `degraded`, not `down`
+ * (PRD §6.5): "crossing it" is strictly greater, judged on the millisecond
+ * value the row stores, so the verdict and the stored `total_ms` agree.
  */
-export function outcomeLabel(o: Pick<ProbeOutcome, 'success' | 'failureClass'>): ProbeOutcomeLabel {
-  if (o.success) return 'up';
+export function outcomeLabel(
+  o: Pick<ProbeOutcome, 'success' | 'failureClass'>,
+  totalMs?: number,
+  latencyWarnMs: number | null = null,
+): ProbeOutcomeLabel {
+  if (o.success) {
+    return latencyWarnMs !== null && totalMs !== undefined && totalMs > latencyWarnMs
+      ? 'degraded'
+      : 'up';
+  }
   if (o.failureClass === undefined) return 'unknown';
   if (o.failureClass === 'BLOCKED_BY_POLICY' || o.failureClass === 'UNKNOWN_ERROR')
     return 'unknown';
@@ -44,7 +62,7 @@ export function toResultRow(o: ProbeOutcome, ctx: ResultContext): NewProbeResult
     started_at: new Date(o.startedAt),
     scheduled_at: ctx.slot,
     interval_s: ctx.intervalS,
-    outcome: outcomeLabel(o),
+    outcome: outcomeLabel(o, Math.round(o.timings.totalMs), ctx.latencyWarnMs),
     failure_class: o.failureClass ? (o.failureClass.toLowerCase() as FailureClassLabel) : null,
     failure_code: o.code ?? null,
     status_code: o.status ?? null,
