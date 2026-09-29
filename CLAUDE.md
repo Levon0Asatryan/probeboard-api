@@ -29,6 +29,15 @@ changes, change both files.
   evidence wins. A finding both raise is one finding, answered once.
 - **Two different models catch different things.** A finding only one reviewer
   raised is not weaker for it.
+- **A review that says it could not review is not a review.** Copilot posts a
+  `COMMENTED` review on the head SHA even when it reviewed nothing — "unable to
+  review this pull request because the user who requested the review has
+  reached their quota limit" was its first one here. Counting that as done
+  would be a check that fails open. Read the body, not only the `commit_id`.
+- **When Copilot is unavailable, the PR proceeds on Codex alone** — quota,
+  outage, or a plan not yet active. Say so in the report's "Not verified" and
+  the PR's evidence. Do not stall a PR waiting for a reviewer that cannot run,
+  and do not re-request it in a loop.
 
 ### Cost discipline — the loop must stay cheap
 
@@ -227,7 +236,9 @@ Applies to every chat, with or without a handoff prompt. The report
    is not, and **reply on every thread**. Re-check after each push.
    A push is reviewed only when **both** are done with it. Copilot is done
    when `pulls/<n>/reviews` has an entry from `copilot-pull-request-reviewer`
-   whose `commit_id` is the head SHA. Codex is done when it has a review with
+   whose `commit_id` is the head SHA **and whose body is an actual review** —
+   not "unable to review", which means Copilot is unavailable and the PR
+   proceeds on Codex alone (see "Two reviewers, one loop"). Codex is done when it has a review with
    that `commit_id`, or when its "Didn't find any major issues" comment is
    timestamped after the head was pushed. The 👍 (`+1`) reaction on `issues/<n>/reactions`
    is not proof by itself — the reaction has no `commit_id`, so a reaction from
