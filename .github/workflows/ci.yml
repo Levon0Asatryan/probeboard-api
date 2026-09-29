@@ -160,7 +160,8 @@ jobs:
         run: |
           types=$(docker compose exec -T postgres psql -U probeboard -d probeboard -tAc \
             "SELECT count(DISTINCT typname) FROM pg_type t JOIN pg_enum e ON e.enumtypid=t.oid")
-          [ "$types" = "4" ] || { echo "::error::expected 4 enum types, got $types"; exit 1; }
+          # 0001's four, plus notification_kind from 0011.
+          [ "$types" = "5" ] || { echo "::error::expected 5 enum types, got $types"; exit 1; }
 
       - name: Each worker has a distinct identity
         run: |
