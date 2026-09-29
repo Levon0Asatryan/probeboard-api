@@ -49,6 +49,7 @@ interface Stat {
   count_down: number;
   count_degraded: number;
   count_unknown: number;
+  count_maintenance: number;
   covered_seconds: number;
   up_seconds: number;
   degraded_seconds: number;
@@ -99,7 +100,9 @@ describe('the fold', () => {
       const ms = 1 + Math.floor(rnd() * rnd() * 3000);
       const responded = outcome === 'up' || outcome === 'degraded' || rnd() < 0.5;
       const minute = Math.floor(rnd() * 60 * 30);
+      const inMaintenance = rnd() < 0.1;
       rows.push({
+        inMaintenance,
         endpointId,
         startedAt: new Date(Date.parse(`${DAY}T00:00:00Z`) + minute * 60_000 + i).toISOString(),
         outcome,
@@ -126,6 +129,7 @@ describe('the fold', () => {
           count_down: 0,
           count_degraded: 0,
           count_unknown: 0,
+          count_maintenance: 0,
           covered_seconds: 0,
           up_seconds: 0,
           degraded_seconds: 0,
@@ -135,10 +139,14 @@ describe('the fold', () => {
           sum_ttfb_ms: '0',
           hist_total: emptyHistogram(),
         };
-        (e as unknown as Record<string, number>)[`count_${r.outcome}`] += 1;
-        if (r.outcome !== 'unknown') e.covered_seconds += r.intervalS!;
-        if (r.outcome === 'up') e.up_seconds += r.intervalS!;
-        if (r.outcome === 'degraded') e.degraded_seconds += r.intervalS!;
+        if (r.inMaintenance) {
+          e.count_maintenance += 1;
+        } else {
+          (e as unknown as Record<string, number>)[`count_${r.outcome}`] += 1;
+          if (r.outcome !== 'unknown') e.covered_seconds += r.intervalS!;
+          if (r.outcome === 'up') e.up_seconds += r.intervalS!;
+          if (r.outcome === 'degraded') e.degraded_seconds += r.intervalS!;
+        }
         if (r.ttfbMs !== null) {
           e.sum_total_ms = String(Number(e.sum_total_ms) + r.totalMs!);
           e.sum_ttfb_ms = String(Number(e.sum_ttfb_ms) + r.ttfbMs!);
@@ -163,6 +171,7 @@ describe('the fold', () => {
         count_down: want!.count_down,
         count_degraded: want!.count_degraded,
         count_unknown: want!.count_unknown,
+        count_maintenance: want!.count_maintenance,
         covered_seconds: want!.covered_seconds,
         up_seconds: want!.up_seconds,
         degraded_seconds: want!.degraded_seconds,
@@ -225,6 +234,47 @@ describe('the fold', () => {
     const [row] = await stats(endpointId, 'm1');
     expect(row).toMatchObject({ count_up: 1, count_down: 1, max_total_ms: 50, sum_total_ms: '50' });
     expect(row.hist_total.reduce((s, v) => s + v, 0)).toBe(1);
+  });
+
+  it('a maintenance row counts only in count_maintenance and adds no seconds (docs/m6-plan.md D6)', async () => {
+    // A deploy inside a declared window must not lower uptime by side effect
+    // (03 §3.5.1 case 3), whatever the probe saw. The raw row keeps `down`.
+    const { endpointId } = await createEndpoint(pool, 'm@example.com');
+    await insertRaw(pool, [
+      { endpointId, startedAt: `${DAY}T10:00:10Z`, outcome: 'down', inMaintenance: true },
+      { endpointId, startedAt: `${DAY}T10:00:20Z`, outcome: 'up', inMaintenance: true },
+      { endpointId, startedAt: `${DAY}T10:00:30Z`, outcome: 'up' },
+    ]);
+    await repo.runOnce(10);
+    for (const row of await stats(endpointId)) {
+      expect(row).toMatchObject({
+        count_up: 1,
+        count_down: 0,
+        count_maintenance: 2,
+        covered_seconds: 60,
+        up_seconds: 60,
+      });
+      // Disjoint categories: the counts add up to the rows.
+      expect(
+        row.count_up +
+          row.count_down +
+          row.count_degraded +
+          row.count_unknown +
+          row.count_maintenance,
+      ).toBe(3);
+    }
+  });
+
+  it('folds a degraded row into count_degraded and degraded_seconds, not up_seconds', async () => {
+    const { endpointId } = await createEndpoint(pool, 'dg@example.com');
+    await insertRaw(pool, [{ endpointId, startedAt: `${DAY}T10:00:10Z`, outcome: 'degraded' }]);
+    await repo.runOnce(10);
+    expect((await stats(endpointId, 'd1'))[0]).toMatchObject({
+      count_degraded: 1,
+      degraded_seconds: 60,
+      covered_seconds: 60,
+      up_seconds: 0,
+    });
   });
 
   it('an unknown probe adds a count and no observed seconds', async () => {
