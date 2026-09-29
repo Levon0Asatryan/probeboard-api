@@ -111,9 +111,11 @@ describe('acceptance: down, an incident after three failures timed from the firs
     });
     expect(await outbox()).toEqual([{ kind: 'incident_open', incident_id: incident.id }]);
 
-    // 3. One success: still open.
+    // 3. One success: still open. And the pass reports only what it did --
+    // not the incident an earlier pass opened (the real run caught every
+    // later pass re-reporting it).
     await results(endpointId, [['10:04', 'up']]);
-    await pass();
+    expect(await pass()).toMatchObject({ opened: [], closed: [] });
     expect((await incidents(endpointId))[0].closed_at).toBeNull();
     expect(await health(endpointId)).toMatchObject({ state: 'down' });
 

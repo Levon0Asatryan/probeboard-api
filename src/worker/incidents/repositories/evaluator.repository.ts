@@ -65,16 +65,25 @@ interface ResultRow {
   user_id: string;
 }
 
-const SKIPPED: EvaluatorPass = {
-  skipped: true,
-  evaluated: 0,
-  late: 0,
-  opened: [],
-  closed: [],
-  markedUnknown: 0,
-  orphansRemoved: 0,
-  lagMs: 0,
-};
+/**
+ * A fresh result for every pass. Never a shared constant spread into one: a
+ * spread copies the arrays by reference, so every pass pushed into the same
+ * `opened` and `closed`, and each later pass reported every incident ever
+ * opened on that worker again -- found by the M6 real run, where one incident
+ * was logged "opened" on five passes.
+ */
+function emptyPass(skipped: boolean, lagMs = 0): EvaluatorPass {
+  return {
+    skipped,
+    evaluated: 0,
+    late: 0,
+    opened: [],
+    closed: [],
+    markedUnknown: 0,
+    orphansRemoved: 0,
+    lagMs,
+  };
+}
 
 /**
  * One evaluator pass, in **one transaction** (docs/m6-plan.md §3.3).
@@ -113,7 +122,7 @@ export class EvaluatorRepository {
         FOR UPDATE SKIP LOCKED
       `.execute(trx);
       const row = state.rows[0];
-      if (!row) return SKIPPED;
+      if (!row) return emptyPass(true);
 
       // Read once and bound thereafter: under READ COMMITTED every statement
       // takes a fresh snapshot, and a re-read could pass a transaction still
@@ -124,7 +133,7 @@ export class EvaluatorRepository {
         )
       ).rows[0].h;
 
-      const pass: EvaluatorPass = { ...SKIPPED, skipped: false, lagMs: row.lag_ms };
+      const pass = emptyPass(false, row.lag_ms);
       let last = row.last_xid;
       for (;;) {
         // The (n+1)-th distinct xid at or above `last` and below the horizon:
