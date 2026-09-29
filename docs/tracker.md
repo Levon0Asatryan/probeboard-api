@@ -82,10 +82,13 @@ fix round (#74–#76). `main` is green at b8cf9b0.
 - **Before the scheduler probes for real:** run
   `npm run audit:json-path-assertions` once against each deployed database
   (D48/D50/D51). Nothing persists a probe result until M5.
-- **Merge gate:** merge a code PR only after Codex has reviewed or 👍'd the
-  **head SHA** and the orchestrator has validated. Small docs-only PRs (this
-  tracker, `CLAUDE.md`, templates) skip the Codex wait — Levon merges them
-  directly (decided 2026-09-14). The gate exists because #18, #19, #21, #23,
+- **Merge gate:** merge a code PR only after **the review gate** (`CLAUDE.md`,
+  "Two reviewers, one loop") has passed on the **head SHA** — both reviewers,
+  or the one not limited; both limited means wait — and the orchestrator has validated. Small docs-only
+  PRs (this tracker, `CLAUDE.md`, templates) skip the reviewers' wait — Levon
+  merges them directly (decided 2026-09-14). Copilot was added as a second
+  automatic reviewer on 2026-09-29, through the `copilot-review` ruleset, which
+  re-reviews every push; it reviews against `.github/copilot-instructions.md`. The gate exists because #18, #19, #21, #23,
   #29 and #34 each merged early: #23's unreviewed last commit shipped an open
   redirect, and #34's left seven threads unanswered until #37.
 

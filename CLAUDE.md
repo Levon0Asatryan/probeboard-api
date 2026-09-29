@@ -10,6 +10,52 @@ and validates; **worker** chats implement one milestone or one plan step from a
 handoff prompt (`docs/handoff-template.md`). `docs/tracker.md` is the status of
 record — read it first. Levon approves plans and merges; no chat merges.
 
+### Two reviewers, one loop
+
+Every pull request is reviewed by **Codex** and **Copilot**, both automatic:
+Codex through its GitHub app, and Copilot through the `copilot-review` ruleset,
+which re-reviews every push. Both review against the same contract: `AGENTS.md`
+for Codex and `.github/copilot-instructions.md` for Copilot. When that contract
+changes, change both files.
+
+- **A round is a push, not a reviewer.** Both review the same push in
+  parallel. Read both reviews, decide on every finding from either, and fix all
+  of them in one push. That is one round, and the wait is the slower of the
+  two, not their sum.
+- **Neither reviewer outranks the other.** Judge each finding on its merits
+  against the severity contract. When they contradict each other, the one with
+  evidence wins. A finding both raise is one finding, answered once.
+- **Two different models catch different things.** A finding only one reviewer
+  raised is not weaker for it.
+- **Never write `@codex` in a PR body or comment, except as the exact request
+  `@codex review`.** Codex treats any other mention as a request to _do_ work,
+  which runs as a cloud task, needs a configured environment, and on #82 was
+  answered with "To use Codex here, create an environment for this repo" —
+  because the PR description quoted the policy. Reviews need no environment.
+  In prose, write "a Codex review request".
+- **A review that says it could not review is not a review.** Copilot posts a
+  `COMMENTED` review on the head SHA even when it reviewed nothing — "unable to
+  review this pull request because the user who requested the review has
+  reached their quota limit" was its first one here — and Codex answers a usage
+  limit with a comment rather than a review. Counting either as done would be a
+  check that fails open. Read the body, not only the `commit_id`.
+- **The review gate** — the one definition every checklist below points at.
+  A push passes it when **every reviewer that can review has reviewed its head
+  SHA**:
+  - **Both available** → both must have reviewed the head.
+  - **Copilot limited** → Codex must have reviewed the head.
+  - **Codex limited** → Copilot must have reviewed the head.
+  - **Both limited** → it does not pass. **Wait** — nothing is merged and no
+    round is counted until at least one has actually reviewed the head. A PR
+    is never merged unreviewed because the reviewers ran out.
+
+  "Reviewed" means an actual review of that SHA, read from its body: a Copilot
+  review from `copilot-pull-request-reviewer` whose `commit_id` is the head and
+  whose body is not "unable to review"; a Codex review with that `commit_id`, or
+  its "Didn't find any major issues" comment posted after the head was pushed.
+  A limited reviewer is named, with its reason, in the report's "Not verified"
+  and the PR, and re-requested once its quota resets — not in a loop.
+
 ### Cost discipline — the loop must stay cheap
 
 Added 2026-09-19, after one regex plus a maintenance script cost twelve
@@ -22,8 +68,9 @@ defects; the loop around it is not.
   build. Everything else gets a one-line reply saying it is deferred, and a
   follow-up row. Answer every thread either way.
 - **The cap limits what is fixed, not whether the head is reviewed.** The last
-  fix push still gets one confirmation round on the head SHA, asked for
-  explicitly and scoped to the commits since the previous round. Only the
+  fix push still gets one confirmation round on the head SHA, and the review
+  gate must pass on it. Copilot re-reviews every push on its own; ask Codex explicitly with
+  an `@codex review` comment scoped to the commits since the previous round. Only the
   fix-now categories are acted on; anything else is a follow-up row, so the
   round cannot restart the loop. Without it a PR merges with its most recent —
   and often its subtlest — commits seen by nobody but their author: #23's open
@@ -43,7 +90,7 @@ defects; the loop around it is not.
   implementation in coherent chunks. A PR that only makes sense alongside the
   next one should have been one PR.
 - **The orchestrator validates at milestone end**, not per PR. Per PR it
-  checks only: CI green on the head SHA, Codex reviewed that SHA, threads
+  checks only: CI green on the head SHA, the review gate passed on that SHA, threads
   answered. Deep validation happens once, against the finished milestone.
 
 ### The review loop — where the time actually goes
@@ -56,11 +103,11 @@ one — so the rules below move finding earlier and make each round carry more.
 
 1. **The first push is a finished PR, not a draft.** Phase 3 — the full suite,
    the guard-removal proofs, the real `docker compose` run — happens **before**
-   the first push of code, not after it. Codex reviewing work the author has
+   the first push of code, not after it. A reviewer reviewing work the author has
    not yet checked converts the author's own defects into review rounds at six
    minutes each. Push once the PR is one you would merge.
 2. **One push per round, carrying every finding of that round.** Read all of
-   Codex's comments, decide on all of them, fix all of them, push once. A push
+   every reviewer's comments, decide on all of them, fix all of them, push once. A push
    per finding is what turns four defects into four rounds and twenty-four
    minutes of waiting.
 3. **Every fix push re-runs the full automated gate, and a review of the fix's
@@ -73,7 +120,7 @@ one — so the rules below move finding earlier and make each round carry more.
    behaviour changed. A **whole**-diff re-read is only required when a fix
    reaches outside the module the finding named — that is the case where the
    blast radius is not knowable from the fix alone.
-4. **A plan PR gets one Codex round, then it merges.** A design document
+4. **A plan PR gets one review round, then it merges.** A design document
    cannot be made correct by review — it has no tests, and each fix opens new
    surface. Fix only what changes the design; everything else becomes scope in
    the implementation PR. See `AGENTS.md`, "Reviewing a design document".
@@ -112,7 +159,7 @@ Applies to every chat, with or without a handoff prompt. The report
    — and point at the line that implements each. Reading the diff for smells
    finds lifetime and resource bugs; it does not find a measurement that
    deviates from a sentence already written in the plan. On #49 both the
-   `dns_ms` and `total_ms` defects were that kind, and Codex found them. Then wait for Codex on the head SHA
+   `dns_ms` and `total_ms` defects were that kind, and Codex found them. Then wait for the review gate on the head SHA
    (see "Before calling it done", step 4), and answer every thread. A fix push
    repeats the checks it affects — but only for two rounds, after which the
    fix-now rule in "Cost discipline" decides what is fixed and what is
@@ -198,14 +245,15 @@ Applies to every chat, with or without a handoff prompt. The report
 3. CI green on all five jobs, and `gh pr view <n> --json mergeable` says
    `MERGEABLE` — green checks do not mean no conflicts, `gh pr checks` doesn't
    report that field.
-4. Codex reviews every push. Read findings with
+4. **Codex and Copilot review every push.** Read findings from both with
    `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments --paginate`
    (a PR with more comments than one page reads as "everything answered" with
    an older thread still open if you drop `--paginate`). Verify each against
    the code before acting: fix what is real, push back with evidence on what
    is not, and **reply on every thread**. Re-check after each push.
-   Codex is done with a push only when `pulls/<n>/reviews` has an entry whose
-   `commit_id` is the head SHA. The 👍 (`+1`) reaction on `issues/<n>/reactions`
+   The push is done when **the review gate** passes on its head SHA (see "Two
+   reviewers, one loop" — it covers what counts as a review and what to do
+   when a reviewer is limited). The 👍 (`+1`) reaction on `issues/<n>/reactions`
    is not proof by itself — the reaction has no `commit_id`, so a reaction from
    reviewing an older push can look like it postdates a new one. 👀 means still
    reviewing.
