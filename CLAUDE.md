@@ -32,12 +32,19 @@ changes, change both files.
 - **A review that says it could not review is not a review.** Copilot posts a
   `COMMENTED` review on the head SHA even when it reviewed nothing — "unable to
   review this pull request because the user who requested the review has
-  reached their quota limit" was its first one here. Counting that as done
-  would be a check that fails open. Read the body, not only the `commit_id`.
-- **When Copilot is unavailable, the PR proceeds on Codex alone** — quota,
-  outage, or a plan not yet active. Say so in the report's "Not verified" and
-  the PR's evidence. Do not stall a PR waiting for a reviewer that cannot run,
-  and do not re-request it in a loop.
+  reached their quota limit" was its first one here — and Codex answers a usage
+  limit with a comment rather than a review. Counting either as done would be a
+  check that fails open. Read the body, not only the `commit_id`.
+- **When a reviewer hits its limit:**
+  - **Copilot limited** → wait for Codex; the push is reviewed when Codex has
+    reviewed its head.
+  - **Codex limited** → wait for Copilot, the same way.
+  - **Both limited** → **wait.** Nothing is merged, and no round is counted,
+    until at least one of them has actually reviewed the head SHA. A PR is
+    never merged unreviewed because the reviewers ran out.
+  - Say in the report's "Not verified", and in the PR, which reviewer was
+    unavailable and why. Re-request a limited reviewer once its quota resets,
+    not in a loop.
 
 ### Cost discipline — the loop must stay cheap
 
@@ -237,8 +244,9 @@ Applies to every chat, with or without a handoff prompt. The report
    A push is reviewed only when **both** are done with it. Copilot is done
    when `pulls/<n>/reviews` has an entry from `copilot-pull-request-reviewer`
    whose `commit_id` is the head SHA **and whose body is an actual review** —
-   not "unable to review", which means Copilot is unavailable and the PR
-   proceeds on Codex alone (see "Two reviewers, one loop"). Codex is done when it has a review with
+   not "unable to review". If one reviewer is limited, the push is reviewed
+   once the other has reviewed its head; if both are, wait (see "Two
+   reviewers, one loop"). Codex is done when it has a review with
    that `commit_id`, or when its "Didn't find any major issues" comment is
    timestamped after the head was pushed. The 👍 (`+1`) reaction on `issues/<n>/reactions`
    is not proof by itself — the reaction has no `commit_id`, so a reaction from

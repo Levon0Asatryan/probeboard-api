@@ -76,9 +76,11 @@ Per the approved plan. Deviations go in the report under "Decisions made".
   stale comments, docs/http/openapi drift. Fix or justify each finding.
 - After the last push, wait for **both** reviewers on the head SHA: a Copilot
   review whose commit_id is that SHA, and a Codex review with that commit_id or
-  its no-findings comment posted after the push. A Copilot review whose body
-  says it was "unable to review" is not a review: Copilot is unavailable, the
-  PR proceeds on Codex alone, and the report says so. Verify each finding against the code before acting:
+  its no-findings comment posted after the push. A review or comment saying a
+  reviewer could not review (a quota or usage limit) is not a review. If one
+  reviewer is limited, wait for the other. If both are limited, wait until one
+  of them has actually reviewed the head: never merge unreviewed. Say which was
+  unavailable, and why, in the report. Verify each finding against the code before acting:
   check the premise, and push back with evidence on a finding whose facts are
   wrong rather than implementing it.
 - **Two rounds, then stop.** From round three, fix only a security hole, data
@@ -166,7 +168,7 @@ done | blocked | plan ready for approval
 - Rounds: <n>. Threads: <resolved>/<total>, <open> left open and why.
 - Regressions caught by the post-fix gate: <what broke while fixing, or none>
 - Codex: reviewed SHA <sha>, <review | no-findings comment> at <time>
-- Copilot: reviewed SHA <sha> at <time> | unavailable (<reason from its review body>)
+- Copilot: reviewed SHA <sha> at <time> | limited (<reason from its review body>)
 - Rounds: <n> (a round is one push, reviewed by both)
 - Deferred to follow-ups: <finding — why it is not fix-now; one line each>
 
