@@ -288,6 +288,22 @@ describe('probe, redirects', () => {
     expect(server.received.map((r) => r.url)).toEqual(['/start', '/final']);
   });
 
+  it('refuses a redirect onto a port the HTTP client refuses, as policy (docs/m6-plan.md §3.11)', async () => {
+    // Save time cannot see a redirect target. Without the per-hop check,
+    // fetch's own "bad port" error carries no code and the probe recorded
+    // UNKNOWN_ERROR with nothing to say why.
+    const server = await serve(redirect('http://127.0.0.1:10080/final'));
+
+    const outcome = await probe(config({ url: `${server.origin}/start` }), deps());
+
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'BLOCKED_BY_POLICY',
+      code: 'PORT_NOT_ALLOWED',
+      redirects: 1,
+    });
+  });
+
   it('keeps headers on a same-origin hop', async () => {
     const server = await serve((request, response) => {
       if (request.url === '/start') {

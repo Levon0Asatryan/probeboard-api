@@ -1,6 +1,7 @@
 import { promises as dns } from 'node:dns';
 import { BlockList, isIP } from 'node:net';
 import { AppError } from '../errors/app-error.js';
+import { FETCH_BLOCKED_PORTS } from './fetch-blocked-ports.js';
 
 /**
  * Save-time SSRF validation (docs/m2-plan.md §5.1, §6).
@@ -285,6 +286,16 @@ export async function assertSaveableUrl(
   const effectivePort = port ?? (url.protocol === 'https:' ? 443 : 80);
   if (cfg.blockedPorts.includes(effectivePort)) {
     throw new SsrfValidationError('PORT_NOT_ALLOWED', `port ${effectivePort} is not allowed`);
+  }
+  // The HTTP client's own refusal, checked here so it runs at save time (B-7:
+  // an unmonitorable endpoint is refused, not stored) and again on every
+  // redirect hop, which this function also validates. Before it, such an
+  // endpoint recorded `unknown` for ever (docs/m6-plan.md §3.11).
+  if (FETCH_BLOCKED_PORTS.has(effectivePort)) {
+    throw new SsrfValidationError(
+      'PORT_NOT_ALLOWED',
+      `port ${effectivePort} cannot be probed: HTTP clients refuse it`,
+    );
   }
 
   // `URL.hostname` keeps an IPv6 literal bracketed ("[::1]"); every other
