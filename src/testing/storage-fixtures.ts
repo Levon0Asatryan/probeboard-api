@@ -33,6 +33,14 @@ export interface RawRow {
   ttfbMs?: number | null;
   /** Written inside a declared window (0011). */
   inMaintenance?: boolean;
+  /**
+   * The stored class. Defaults to what the writer would store for the outcome:
+   * `connection_refused` for `down`, `blocked_by_policy` for `unknown`, none
+   * otherwise.
+   */
+  failureClass?: string | null;
+  /** Fixed when a test needs to name the row; a fresh UUID otherwise. */
+  attemptId?: string;
 }
 
 /**
@@ -61,9 +69,9 @@ export async function insertRawOn(
   await client.query(
     `INSERT INTO probe_results (endpoint_id, started_at, scheduled_at, interval_s, outcome,
                                 total_ms, ttfb_ms, redirects, truncated, worker_id, attempt_id,
-                                in_maintenance)
-     VALUES ($1, $2::timestamptz, $2::timestamptz, $3, $4, $5, $6, 0, false, 'fixture', gen_random_uuid(),
-             $7)`,
+                                in_maintenance, failure_class)
+     VALUES ($1, $2::timestamptz, $2::timestamptz, $3, $4, $5, $6, 0, false, 'fixture',
+             coalesce($8::uuid, gen_random_uuid()), $7, $9::failure_class)`,
     [
       r.endpointId,
       r.startedAt,
@@ -72,6 +80,14 @@ export async function insertRawOn(
       r.totalMs ?? 40,
       r.ttfbMs === undefined ? Math.floor((r.totalMs ?? 40) / 2) : r.ttfbMs,
       r.inMaintenance ?? false,
+      r.attemptId ?? null,
+      r.failureClass !== undefined
+        ? r.failureClass
+        : r.outcome === 'down'
+          ? 'connection_refused'
+          : r.outcome === 'unknown'
+            ? 'blocked_by_policy'
+            : null,
     ],
   );
 }
