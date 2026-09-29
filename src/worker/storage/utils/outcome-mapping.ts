@@ -59,5 +59,8 @@ export function toResultRow(o: ProbeOutcome, ctx: ResultContext): NewProbeResult
     cert_expires_at: o.certExpiresAt ?? null,
     worker_id: ctx.workerId,
     attempt_id: ctx.attemptId,
+    // Which assertion failed (M3-14). JSON text: the column is jsonb and
+    // node-postgres would otherwise send an object as a Postgres array literal.
+    failure_detail: o.assertionFailure === undefined ? null : JSON.stringify(o.assertionFailure),
   };
 }

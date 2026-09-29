@@ -219,6 +219,41 @@ describe('probe, status and assertions', () => {
     });
   });
 
+  it('says which assertion failed, and carries none of the body (M3-14, NFR-13)', async () => {
+    // Before M6 a body check and a json_path check failing stored identical
+    // rows; the index, code and configured assertion are what tell them apart.
+    const server = await serve(respond('{"status":"degraded","token":"SENTINEL-7f3a"}'));
+    const assertions = [
+      { type: 'body_contains', value: 'status' },
+      { type: 'json_path', path: '$.status', equals: 'ok' },
+    ] as const;
+
+    const outcome = await probe(
+      config({ url: server.origin, assertions: [...assertions] }),
+      deps(),
+    );
+
+    expect(outcome.assertionFailure).toEqual({
+      index: 1,
+      code: 'value_mismatch',
+      assertion: assertions[1],
+    });
+    expect(JSON.stringify(outcome)).not.toContain('SENTINEL-7f3a');
+  });
+
+  it('carries no assertion detail on any other outcome', async () => {
+    const server = await serve(respond('{}', 500));
+    const outcome = await probe(
+      config({
+        url: server.origin,
+        assertions: [{ type: 'body_contains', value: 'never' }],
+      }),
+      deps(),
+    );
+    expect(outcome).toMatchObject({ failureClass: 'STATUS_MISMATCH' });
+    expect(outcome.assertionFailure).toBeUndefined();
+  });
+
   it('passes assertions against the body it actually read', async () => {
     const server = await serve(respond('{"status":"ok","db":{"up":true}}'));
 

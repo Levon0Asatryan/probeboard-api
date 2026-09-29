@@ -139,7 +139,43 @@ describe('evaluateAssertions', () => {
     const result = evaluateAssertions(all, whole('{"status":"ok"}'));
     expect(result).toMatchObject({
       passed: false,
+      index: 1,
+      code: 'substring_absent',
       reason: expect.stringContaining('expected substring'),
     });
+  });
+});
+
+describe('failure codes -- one per path, stable, never response text (M3-14)', () => {
+  const contains: EndpointAssertion = { type: 'body_contains', value: 'healthy' };
+  const notContains: EndpointAssertion = { type: 'body_not_contains', value: 'ERROR' };
+  const path: EndpointAssertion = { type: 'json_path', path: '$.status', equals: 'ok' };
+  // Each row reaches a different return in evaluate.ts; the codes are what a
+  // stored result and an incident say, so two paths sharing one would make
+  // those two failures indistinguishable again.
+  const cases: [string, EndpointAssertion, ReturnType<typeof whole>, string][] = [
+    ['substring absent', contains, whole('SECRET-BODY-TEXT'), 'substring_absent'],
+    [
+      'forbidden present',
+      notContains,
+      whole('ERROR SECRET-BODY-TEXT'),
+      'forbidden_substring_present',
+    ],
+    ['absence unprovable', notContains, cut('SECRET-BODY-TEXT'), 'truncated_absence_unprovable'],
+    ['not parsed', path, cut('{"status":"SECRET-BODY-TEXT"}'), 'truncated_not_parsed'],
+    ['not JSON', path, whole('SECRET-BODY-TEXT'), 'not_json'],
+    ['path missing', path, whole('{"other":"SECRET-BODY-TEXT"}'), 'path_not_found'],
+    ['value differs', path, whole('{"status":"SECRET-BODY-TEXT"}'), 'value_mismatch'],
+  ];
+
+  it.each(cases)('%s', (_name, assertion, body, code) => {
+    const result = evaluateAssertion(assertion, body);
+    expect(result).toMatchObject({ passed: false, code });
+    // NFR-13: what the endpoint sent never reaches the result.
+    expect(JSON.stringify(result)).not.toContain('SECRET-BODY-TEXT');
+  });
+
+  it('gives every path its own code', () => {
+    expect(new Set(cases.map(([, , , code]) => code)).size).toBe(cases.length);
   });
 });

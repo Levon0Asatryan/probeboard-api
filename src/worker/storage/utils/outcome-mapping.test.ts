@@ -126,6 +126,23 @@ describe('toResultRow', () => {
     expect((row.started_at as Date).toISOString()).toBe('2026-09-21T08:45:12.200Z');
   });
 
+  it('stores which assertion failed as JSON, and nothing for any other outcome (M3-14)', () => {
+    const detail = {
+      index: 1,
+      code: 'value_mismatch' as const,
+      assertion: { type: 'json_path' as const, path: '$.status', equals: 'ok' },
+    };
+    const row = toResultRow(
+      outcome({ success: false, failureClass: 'ASSERTION_FAILED', assertionFailure: detail }),
+      ctx,
+    );
+    expect(JSON.parse(row.failure_detail!)).toEqual(detail);
+    expect(toResultRow(outcome(), ctx).failure_detail).toBeNull();
+    expect(
+      toResultRow(outcome({ success: false, failureClass: 'STATUS_MISMATCH' }), ctx).failure_detail,
+    ).toBeNull();
+  });
+
   it('writes only the allow-listed columns -- no header, body or response text can reach a row', () => {
     expect(Object.keys(toResultRow(outcome(), ctx)).sort()).toEqual(
       [
@@ -148,6 +165,7 @@ describe('toResultRow', () => {
         'cert_expires_at',
         'worker_id',
         'attempt_id',
+        'failure_detail',
       ].sort(),
     );
   });
