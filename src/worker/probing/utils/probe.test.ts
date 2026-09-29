@@ -334,7 +334,7 @@ describe('probe, redirects', () => {
     expect(outcome).toMatchObject({
       success: false,
       failureClass: 'BLOCKED_BY_POLICY',
-      code: 'PORT_NOT_ALLOWED',
+      code: 'BAD_PORT',
       redirects: 1,
     });
   });

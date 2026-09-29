@@ -29,6 +29,19 @@ export class SsrfValidationError extends AppError {
   }
 }
 
+/**
+ * A port the HTTP client itself refuses (the Fetch standard's bad ports), as
+ * opposed to one `SSRF_BLOCKED_PORTS` lists. The same `PORT_NOT_ALLOWED` to an
+ * API caller -- both mean "this URL cannot be saved" -- but a different fact
+ * to a stored probe result: configured policy against the client's hard limit
+ * (docs/m6-plan.md §3.11). The probe's classifier tells them apart by class.
+ */
+export class FetchBlockedPortError extends SsrfValidationError {
+  constructor(port: number) {
+    super('PORT_NOT_ALLOWED', `port ${port} cannot be probed: HTTP clients refuse it`);
+  }
+}
+
 export interface SsrfGuardConfig {
   /** SSRF_GUARD_ENABLED. false skips DNS resolution and address classification only. */
   enabled: boolean;
@@ -291,12 +304,7 @@ export async function assertSaveableUrl(
   // an unmonitorable endpoint is refused, not stored) and again on every
   // redirect hop, which this function also validates. Before it, such an
   // endpoint recorded `unknown` for ever (docs/m6-plan.md §3.11).
-  if (FETCH_BLOCKED_PORTS.has(effectivePort)) {
-    throw new SsrfValidationError(
-      'PORT_NOT_ALLOWED',
-      `port ${effectivePort} cannot be probed: HTTP clients refuse it`,
-    );
-  }
+  if (FETCH_BLOCKED_PORTS.has(effectivePort)) throw new FetchBlockedPortError(effectivePort);
 
   // `URL.hostname` keeps an IPv6 literal bracketed ("[::1]"); every other
   // check below -- the hostname denylist, net.isIP, dns.resolve, BlockList --

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SsrfValidationError } from '../../../core/ssrf/host-validator.js';
+import { FetchBlockedPortError, SsrfValidationError } from '../../../core/ssrf/host-validator.js';
 import { classifyGuardRejection, isGuardRejection } from './ssrf-pin.js';
 
 function unresolvable(cause?: unknown): SsrfValidationError {
@@ -17,6 +17,16 @@ describe('classifyGuardRejection', () => {
   ] as const)('maps %s to BLOCKED_BY_POLICY', (code) => {
     const result = classifyGuardRejection(new SsrfValidationError(code, 'nope'));
     expect(result).toEqual({ failureClass: 'BLOCKED_BY_POLICY', code });
+  });
+
+  it("stores the HTTP client's own port refusal as BAD_PORT, apart from a configured one (docs/m6-plan.md §3.11)", () => {
+    const refused = new FetchBlockedPortError(10080);
+    // The API caller sees the same code for both; the stored result does not.
+    expect(refused.code).toBe('PORT_NOT_ALLOWED');
+    expect(classifyGuardRejection(refused)).toEqual({
+      failureClass: 'BLOCKED_BY_POLICY',
+      code: 'BAD_PORT',
+    });
   });
 
   it('maps a cleanly-empty resolve to DNS_NXDOMAIN, not BLOCKED_BY_POLICY', () => {
@@ -117,5 +127,6 @@ describe('isGuardRejection', () => {
     expect(isGuardRejection(new Error('transport'))).toBe(false);
     expect(isGuardRejection(null)).toBe(false);
     expect(isGuardRejection({ code: 'PORT_NOT_ALLOWED' })).toBe(false);
+    expect(isGuardRejection(new FetchBlockedPortError(10080))).toBe(true);
   });
 });
