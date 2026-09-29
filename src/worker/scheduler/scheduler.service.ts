@@ -241,7 +241,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       'outcome',
     );
 
-    await this.persistAndRelease(row, outcome, attemptId);
+    await this.persistAndRelease(row, outcome, attemptId, loaded.latencyWarnMs);
   }
 
   /**
@@ -329,6 +329,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     row: ClaimedSlot,
     outcome: ProbeOutcome,
     attemptId: string,
+    latencyWarnMs: number | null,
   ): Promise<void> {
     try {
       const { released } = await this.recorder.recordAndRelease(
@@ -338,6 +339,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           intervalS: row.scheduled_interval_s,
           workerId: this.cfg.WORKER_ID,
           attemptId,
+          latencyWarnMs,
         }),
         { endpointId: row.endpoint_id, workerId: this.cfg.WORKER_ID, slot: row.scheduled_at },
         () => this.terminalWriteBudget(),

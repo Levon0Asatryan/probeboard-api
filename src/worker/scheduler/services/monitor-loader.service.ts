@@ -10,6 +10,16 @@ import { mergeHeaderRows } from '../../../core/registration/header-merge.js';
 import { effectiveUrl } from '../../../core/registration/url.js';
 import type { EndpointProbeConfig } from '../../probing/index.js';
 
+/**
+ * What `probe()` needs, plus what the result's verdict needs. `probe()` takes
+ * the config part and never sees the rest: a latency threshold is a verdict
+ * about the measurement, made when the result is written (docs/m6-plan.md §3.2).
+ */
+export interface LoadedMonitor extends EndpointProbeConfig {
+  /** `endpoints.latency_warn_ms`; `null` means no threshold, never `degraded`. */
+  latencyWarnMs: number | null;
+}
+
 /** The claimed slot's endpoint no longer exists, or the row it points at is gone. */
 export class MonitorNotFoundError extends AppError {
   constructor(endpointId: string) {
@@ -72,7 +82,7 @@ export class MonitorLoaderService {
    * PostgreSQL treats `statement_timeout = 0` as "disabled", the opposite of
    * what an expired deadline means here.
    */
-  async load(endpointId: string, timeoutMs?: number): Promise<EndpointProbeConfig> {
+  async load(endpointId: string, timeoutMs?: number): Promise<LoadedMonitor> {
     const key = this.key;
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
 
@@ -133,6 +143,7 @@ export class MonitorLoaderService {
           timeoutMs: endpoint.timeout_ms,
           followRedirects: endpoint.follow_redirects,
           maxRedirects: endpoint.max_redirects,
+          latencyWarnMs: endpoint.latency_warn_ms,
         };
       });
   }

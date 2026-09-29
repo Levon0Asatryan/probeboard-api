@@ -56,10 +56,12 @@ export async function truncateAll(pool: Pool): Promise<void> {
 
   const tables = rows.map((r) => `"${r.tablename}"`).join(', ');
   await pool.query(`TRUNCATE ${tables} RESTART IDENTITY CASCADE`);
-  // The rollup's single state row is seeded by the migration, not by the
-  // application, so a truncate must put it back or every fold finds no row.
+  // The consumers' state rows -- the rollup's and the incident evaluator's --
+  // are seeded by migrations, not by the application, so a truncate must put
+  // them back or every pass finds no row.
   await pool.query(
-    `INSERT INTO rollup_state (name, last_xid) VALUES ('probe_results', '0')
+    `INSERT INTO rollup_state (name, last_xid)
+     VALUES ('probe_results', '0'), ('incident_evaluator', '0')
      ON CONFLICT (name) DO NOTHING`,
   );
 }

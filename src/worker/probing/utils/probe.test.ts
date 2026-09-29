@@ -219,6 +219,41 @@ describe('probe, status and assertions', () => {
     });
   });
 
+  it('says which assertion failed, and carries none of the body (M3-14, NFR-13)', async () => {
+    // Before M6 a body check and a json_path check failing stored identical
+    // rows; the index, code and configured assertion are what tell them apart.
+    const server = await serve(respond('{"status":"degraded","token":"SENTINEL-7f3a"}'));
+    const assertions = [
+      { type: 'body_contains', value: 'status' },
+      { type: 'json_path', path: '$.status', equals: 'ok' },
+    ] as const;
+
+    const outcome = await probe(
+      config({ url: server.origin, assertions: [...assertions] }),
+      deps(),
+    );
+
+    expect(outcome.assertionFailure).toEqual({
+      index: 1,
+      code: 'value_mismatch',
+      assertion: assertions[1],
+    });
+    expect(JSON.stringify(outcome)).not.toContain('SENTINEL-7f3a');
+  });
+
+  it('carries no assertion detail on any other outcome', async () => {
+    const server = await serve(respond('{}', 500));
+    const outcome = await probe(
+      config({
+        url: server.origin,
+        assertions: [{ type: 'body_contains', value: 'never' }],
+      }),
+      deps(),
+    );
+    expect(outcome).toMatchObject({ failureClass: 'STATUS_MISMATCH' });
+    expect(outcome.assertionFailure).toBeUndefined();
+  });
+
   it('passes assertions against the body it actually read', async () => {
     const server = await serve(respond('{"status":"ok","db":{"up":true}}'));
 
@@ -286,6 +321,22 @@ describe('probe, redirects', () => {
 
     expect(outcome).toMatchObject({ success: true, status: 200, redirects: 1 });
     expect(server.received.map((r) => r.url)).toEqual(['/start', '/final']);
+  });
+
+  it('refuses a redirect onto a port the HTTP client refuses, as policy (docs/m6-plan.md §3.11)', async () => {
+    // Save time cannot see a redirect target. Without the per-hop check,
+    // fetch's own "bad port" error carries no code and the probe recorded
+    // UNKNOWN_ERROR with nothing to say why.
+    const server = await serve(redirect('http://127.0.0.1:10080/final'));
+
+    const outcome = await probe(config({ url: `${server.origin}/start` }), deps());
+
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'BLOCKED_BY_POLICY',
+      code: 'BAD_PORT',
+      redirects: 1,
+    });
   });
 
   it('keeps headers on a same-origin hop', async () => {

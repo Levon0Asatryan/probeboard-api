@@ -75,6 +75,12 @@ describe('MonitorLoaderService.load: assembly', () => {
     expect(config.method).toBe('GET');
   });
 
+  it('carries the latency threshold for the result verdict, null when unset (docs/m6-plan.md D7)', async () => {
+    expect((await loader.load(endpointId)).latencyWarnMs).toBeNull();
+    await pool.query(`UPDATE endpoints SET latency_warn_ms = 750 WHERE id = $1`, [endpointId]);
+    expect((await loader.load(endpointId)).latencyWarnMs).toBe(750);
+  });
+
   it('decrypts a secret header and leaves a plain one as-is', async () => {
     await addHeader({ scope: 'service', name: 'X-Plain', value: 'plain-value' });
     await addHeader({ scope: 'service', name: 'X-Secret', value: 'top-secret', secret: true });
