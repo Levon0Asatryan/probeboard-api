@@ -19,6 +19,8 @@ export class RollupService implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
   private inFlight: Promise<void> = Promise.resolve();
+  /** When the orphan sweep last ran; 0 so the first tick runs it. */
+  private orphansSweptAt = 0;
 
   constructor(
     private readonly repo: RollupRepository,
@@ -50,6 +52,7 @@ export class RollupService implements OnModuleInit, OnModuleDestroy {
 
   /** One pass. Never rejects. */
   async tick(): Promise<void> {
+    await this.sweepOrphans();
     try {
       const pass = await this.repo.runOnce(this.cfg.ROLLUP_BATCH_ROWS);
       if (pass.skipped) return;
@@ -62,6 +65,24 @@ export class RollupService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (err) {
       this.logger.error({ err }, 'rollup pass failed; nothing was applied, retrying next tick');
+    }
+  }
+
+  /**
+   * A deleted endpoint's aggregates, once per `STORAGE_MAINTENANCE_INTERVAL_MS`
+   * (docs/m6-plan.md §3.12): hourly is ample for rows no reader can reach --
+   * every statistics read joins endpoints. Never rejects; a failure is retried
+   * at the next interval.
+   */
+  private async sweepOrphans(): Promise<void> {
+    const now = Date.now();
+    if (now - this.orphansSweptAt < this.cfg.STORAGE_MAINTENANCE_INTERVAL_MS) return;
+    this.orphansSweptAt = now;
+    try {
+      const removed = await this.repo.removeOrphans();
+      if (removed > 0) this.logger.info({ removed }, 'removed aggregates of deleted endpoints');
+    } catch (err) {
+      this.logger.error({ err }, 'removing aggregates of deleted endpoints failed; retrying later');
     }
   }
 }

@@ -28,7 +28,10 @@ function fakeLogger() {
 }
 
 function make(pass: unknown = { skipped: false, folded: 0, lagMs: 0 }) {
-  const repo = { runOnce: vi.fn().mockResolvedValue(pass) };
+  const repo = {
+    runOnce: vi.fn().mockResolvedValue(pass),
+    removeOrphans: vi.fn().mockResolvedValue(0),
+  };
   const logger = fakeLogger();
   return { svc: new RollupService(repo as never, cfg, logger), repo, logger };
 }
@@ -95,5 +98,26 @@ describe('RollupService', () => {
     const fresh = make({ skipped: false, folded: 3, lagMs: 500 });
     await fresh.svc.tick();
     expect(fresh.logger.calls.some((c) => c.level === 'warn')).toBe(false);
+  });
+
+  it("removes deleted endpoints' aggregates on the first tick, then once per maintenance interval (docs/m6-plan.md §3.12)", async () => {
+    const { svc, repo } = make();
+    await svc.tick();
+    expect(repo.removeOrphans).toHaveBeenCalledTimes(1);
+    await svc.tick();
+    expect(repo.removeOrphans).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + cfg.STORAGE_MAINTENANCE_INTERVAL_MS);
+    await svc.tick();
+    expect(repo.removeOrphans).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a failed orphan sweep and still folds', async () => {
+    const { svc, repo, logger } = make();
+    repo.removeOrphans.mockRejectedValueOnce(new Error('db down'));
+    await expect(svc.tick()).resolves.toBeUndefined();
+    expect(repo.runOnce).toHaveBeenCalledTimes(1);
+    expect(logger.calls.filter((c) => c.level === 'error').map((c) => c.args[1])).toEqual([
+      'removing aggregates of deleted endpoints failed; retrying later',
+    ]);
   });
 });

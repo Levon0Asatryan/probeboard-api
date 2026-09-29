@@ -432,3 +432,53 @@ describe('the watermark', () => {
     expect(BigInt(after.rows[0].last_xid)).toBeGreaterThan(BigInt(before.rows[0].last_xid));
   });
 });
+
+describe("a deleted endpoint's aggregates (docs/m6-plan.md §3.12)", () => {
+  it('are removed at every grain, and no other endpoint loses a row', async () => {
+    const gone = await createEndpoint(pool, 'gone@example.com');
+    const kept = await createEndpoint(pool, 'kept@example.com');
+    await insertRaw(pool, [
+      { endpointId: gone.endpointId, startedAt: `${DAY}T10:00:10Z`, outcome: 'up' },
+      { endpointId: kept.endpointId, startedAt: `${DAY}T10:00:10Z`, outcome: 'up' },
+    ]);
+    await repo.runOnce(10);
+    expect(await stats(gone.endpointId)).toHaveLength(3);
+
+    await pool.query(`DELETE FROM endpoints WHERE id = $1`, [gone.endpointId]);
+    expect(await repo.removeOrphans()).toBe(3);
+    expect(await stats(gone.endpointId)).toEqual([]);
+    expect(await stats(kept.endpointId)).toHaveLength(3);
+    expect(await repo.removeOrphans()).toBe(0);
+  });
+
+  it('wait for a fold in progress rather than racing it', async () => {
+    // The fold holds the state row for its whole transaction; the sweep takes
+    // the same row blocking, so it cannot delete a row a fold is upserting.
+    const holder = new Client({ connectionString: testDatabaseUrl() });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT 1 FROM rollup_state WHERE name = 'probe_results' FOR UPDATE`);
+      const sweep = repo.removeOrphans();
+      // Barrier: the sweep's backend is waiting on the row lock. Bounded, so
+      // a sweep that never waits fails here instead of hanging.
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0].pid;
+      let waiting = false;
+      for (let i = 0; i < 500 && !waiting; i += 1) {
+        const { rows } = await pool.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND query LIKE '%rollup_state%FOR UPDATE%'
+              AND pid <> $1`,
+          [holderPid],
+        );
+        waiting = rows[0].n > 0;
+      }
+      expect(waiting).toBe(true);
+      await holder.query('COMMIT');
+      await expect(sweep).resolves.toBe(0);
+    } finally {
+      await holder.end();
+    }
+  });
+});
