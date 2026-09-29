@@ -15,14 +15,18 @@ ALTER TABLE probe_results
     -- class is assertion_failed. Never response text (NFR-13, plan D11).
     ADD COLUMN failure_detail jsonb;
 
+-- Lets maintenance_windows reference (id, user_id) together, as endpoints
+-- already references services (0004).
+ALTER TABLE endpoints ADD CONSTRAINT endpoints_id_user_id_key UNIQUE (id, user_id);
+
 -- One-off windows on a service or on one endpoint (plan §3.7). Only the API
 -- writes this table and the worker reads it without locks, so it keeps its
 -- foreign keys: no evaluator lock can meet a cascading delete here.
 CREATE TABLE maintenance_windows (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    service_id  uuid        REFERENCES services (id) ON DELETE CASCADE,
-    endpoint_id uuid        REFERENCES endpoints (id) ON DELETE CASCADE,
+    service_id  uuid,
+    endpoint_id uuid,
     -- [starts_at, ends_at): a probe at starts_at is inside, one at ends_at is not.
     starts_at   timestamptz NOT NULL,
     ends_at     timestamptz NOT NULL,
@@ -30,7 +34,17 @@ CREATE TABLE maintenance_windows (
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT maintenance_windows_one_target CHECK ((service_id IS NULL) <> (endpoint_id IS NULL)),
-    CONSTRAINT maintenance_windows_ordered    CHECK (ends_at > starts_at)
+    CONSTRAINT maintenance_windows_ordered    CHECK (ends_at > starts_at),
+    -- The owner is the target's owner, held by the schema. The writer suppresses
+    -- incidents for whatever a window names, so a window naming someone else's
+    -- endpoint must be impossible to store -- not merely refused by a service
+    -- that remembers to check (AGENTS.md; probeboard rule #10). A NULL target
+    -- column leaves its key unchecked (MATCH SIMPLE); one_target makes sure the
+    -- other is set.
+    CONSTRAINT maintenance_windows_service_owner_fkey
+        FOREIGN KEY (service_id, user_id) REFERENCES services (id, user_id) ON DELETE CASCADE,
+    CONSTRAINT maintenance_windows_endpoint_owner_fkey
+        FOREIGN KEY (endpoint_id, user_id) REFERENCES endpoints (id, user_id) ON DELETE CASCADE
 );
 -- The writer's lookup: a window on this endpoint or its service that has not
 -- ended by started_at.
