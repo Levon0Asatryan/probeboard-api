@@ -83,7 +83,8 @@ fix round (#74–#76). `main` is green at b8cf9b0.
   `npm run audit:json-path-assertions` once against each deployed database
   (D48/D50/D51). Nothing persists a probe result until M5.
 - **Merge gate:** merge a code PR only after **both Codex and Copilot** have
-  reviewed the **head SHA** and the orchestrator has validated. Small docs-only
+  reviewed the **head SHA** — or, if one has hit its usage limit, the other
+  has; if both have, wait — and the orchestrator has validated. Small docs-only
   PRs (this tracker, `CLAUDE.md`, templates) skip the reviewers' wait — Levon
   merges them directly (decided 2026-09-14). Copilot was added as a second
   automatic reviewer on 2026-09-29, through the `copilot-review` ruleset, which
