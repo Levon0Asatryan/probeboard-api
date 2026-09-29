@@ -55,6 +55,18 @@ async function live(parent: string): Promise<string[]> {
   return rows.map((r) => r.relname);
 }
 
+/**
+ * Stands in for the incident evaluator, which this storage test does not run:
+ * moves its watermark to wherever the rollup's is.
+ */
+async function evaluatorCaughtUp(): Promise<void> {
+  await pool.query(
+    `UPDATE rollup_state
+        SET last_xid = (SELECT last_xid FROM rollup_state WHERE name = 'probe_results')
+      WHERE name = 'incident_evaluator'`,
+  );
+}
+
 const exists = async (name: string) =>
   (await pool.query(`SELECT to_regclass($1) IS NOT NULL AS e`, [name])).rows[0]!.e as boolean;
 
@@ -130,6 +142,7 @@ describe('the guard: unfolded data is never dropped', () => {
     expect(await exists('probe_results_p20200104')).toBe(false); // its neighbours are fine
 
     await new RollupRepository(dbLike).runOnce(5000);
+    await evaluatorCaughtUp();
     const second = await retention().run(NOW);
     expect(second.blocked).toEqual([]);
     expect(await exists('probe_results_p20200105')).toBe(false);
@@ -141,6 +154,35 @@ describe('the guard: unfolded data is never dropped', () => {
       [endpointId],
     );
     expect(rows).toEqual([{ count_up: 1 }]);
+  });
+
+  it('keeps a raw partition the incident evaluator has not read, though the rollup has (docs/m6-plan.md D14)', async () => {
+    const endpointId = randomUUID();
+    await insertRaw(pool, [{ endpointId, startedAt: '2020-01-05T10:00:00Z', outcome: 'down' }]);
+    await new RollupRepository(dbLike).runOnce(5000);
+
+    // Folded, not evaluated: the raw row is an outage's only evidence until
+    // the evaluator has read it. Its m1 partition answers only to the rollup.
+    const first = await retention().run(NOW);
+    expect(first.blocked.map((b) => b.partition)).toEqual(['probe_results_p20200105']);
+    expect(first.blocked[0].reason).toMatch(/unevaluated/);
+    expect(await exists('probe_results_p20200105')).toBe(true);
+    expect(await exists('probe_stats_m1_p20200105')).toBe(false);
+
+    await evaluatorCaughtUp();
+    expect((await retention().run(NOW)).blocked).toEqual([]);
+    expect(await exists('probe_results_p20200105')).toBe(false);
+  });
+
+  it('fails closed: with the evaluator watermark row missing, a partition holding rows is not dropped', async () => {
+    await insertRaw(pool, [
+      { endpointId: randomUUID(), startedAt: '2020-01-05T10:00:00Z', outcome: 'up' },
+    ]);
+    await new RollupRepository(dbLike).runOnce(5000);
+    await pool.query(`DELETE FROM rollup_state WHERE name = 'incident_evaluator'`);
+    const r = await retention().run(NOW);
+    expect(r.blocked.map((b) => b.partition)).toContain('probe_results_p20200105');
+    expect(await exists('probe_results_p20200105')).toBe(true);
   });
 
   it('fails closed: with the watermark row missing, a partition holding rows is not dropped', async () => {
