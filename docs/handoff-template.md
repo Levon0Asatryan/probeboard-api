@@ -74,15 +74,11 @@ Per the approved plan. Deviations go in the report under "Decisions made".
 - Review the whole PR diff yourself, line by line, as a hostile reviewer
   against AGENTS.md: security, concurrency, error paths, naming, dead code,
   stale comments, docs/http/openapi drift. Fix or justify each finding.
-- After the last push, wait for **both** reviewers on the head SHA: a Copilot
-  review whose commit_id is that SHA, and a Codex review with that commit_id or
-  its no-findings comment posted after the push. A review or comment saying a
-  reviewer could not review (a quota or usage limit) is not a review. If one
-  reviewer is limited, wait for the other. If both are limited, wait until one
-  of them has actually reviewed the head: never merge unreviewed. Say which was
-  unavailable, and why, in the report. Verify each finding against the code before acting:
-  check the premise, and push back with evidence on a finding whose facts are
-  wrong rather than implementing it.
+- After the last push, wait for **the review gate** on the head SHA, as
+  CLAUDE.md defines it: every reviewer that can review has actually reviewed
+  the head. One limited → wait for the other. Both limited → wait; never merge
+  unreviewed. Verify each finding's premise before acting: push back with
+  evidence on a finding whose facts are wrong rather than implementing it.
 - **Two rounds, then stop.** From round three, fix only a security hole, data
   loss, a wrong result or a broken build. Everything else gets a one-line
   reply saying it is deferred plus a tracker follow-up — never silence.
@@ -107,8 +103,8 @@ Per the approved plan. Deviations go in the report under "Decisions made".
 - Do not merge. Do not push to main.
 
 ## When to report, and when not to
-One report per pull request, when it is finished: pushed, CI green, Codex's
-rounds done, threads resolved, machine clean. Not per push, not per review
+One report per pull request, when it is finished: pushed, CI green, the
+review gate passed, threads resolved, machine clean. Not per push, not per review
 round, not per fix, not when the review finds something interesting.
 
 Report mid-flight only for these, and immediately:
@@ -169,7 +165,7 @@ done | blocked | plan ready for approval
 - Regressions caught by the post-fix gate: <what broke while fixing, or none>
 - Codex: reviewed SHA <sha>, <review | no-findings comment> at <time>
 - Copilot: reviewed SHA <sha> at <time> | limited (<reason from its review body>)
-- Rounds: <n> (a round is one push, reviewed by both)
+- Rounds: <n> (a round is one push, reviewed by every available reviewer)
 - Deferred to follow-ups: <finding — why it is not fix-now; one line each>
 
 ## Decisions made
@@ -199,7 +195,8 @@ done | blocked | plan ready for approval
 Cheap checks first, and only spot-check code where a claim is load-bearing:
 
 1. PR exists, is mergeable, CI green on all five jobs (`gh pr checks <n>`),
-   and **both** reviewers reviewed the head SHA.
+   and **the review gate** passed on the head SHA (CLAUDE.md, "Two reviewers,
+   one loop").
 2. Every review thread has a reply (`gh api .../pulls/<n>/comments`).
 3. Each guard-removal row names a test that exists in the diff.
 4. The real-run evidence names concrete requests and results, not "tested".
