@@ -64,14 +64,19 @@ Per the approved plan. Deviations go in the report under "Decisions made".
   stopped.
 
 ## Phase 4 — Re-review (after revalidation)
-- Phase 3 finishes **before the first push of code**. Codex reviewing work you
-  have not checked yourself turns your own defects into review rounds at six
-  minutes each. Push a PR you would merge.
+- Phase 3 finishes **before the first push of code**. The reviewers reviewing
+  work you have not checked yourself turns your own defects into review rounds.
+  Push a PR you would merge.
+- Every push is reviewed by **Codex and Copilot**, both automatically. A round
+  is one push: read both reviews, decide on every finding from either, fix all
+  of them, and push once. Neither reviewer outranks the other; when they
+  disagree, the one with evidence wins.
 - Review the whole PR diff yourself, line by line, as a hostile reviewer
   against AGENTS.md: security, concurrency, error paths, naming, dead code,
   stale comments, docs/http/openapi drift. Fix or justify each finding.
-- After the last push, wait for Codex on the head SHA (a review whose
-  commit_id is that SHA). Verify each finding against the code before acting:
+- After the last push, wait for **both** reviewers on the head SHA: a Copilot
+  review whose commit_id is that SHA, and a Codex review with that commit_id or
+  its no-findings comment posted after the push. Verify each finding against the code before acting:
   check the premise, and push back with evidence on a finding whose facts are
   wrong rather than implementing it.
 - **Two rounds, then stop.** From round three, fix only a security hole, data
@@ -158,7 +163,9 @@ done | blocked | plan ready for approval
 - Self-review findings: <fixed n, justified n — one line each>
 - Rounds: <n>. Threads: <resolved>/<total>, <open> left open and why.
 - Regressions caught by the post-fix gate: <what broke while fixing, or none>
-- Codex: reviewed SHA <sha>, <review | 👍> at <time>, <n> rounds
+- Codex: reviewed SHA <sha>, <review | no-findings comment> at <time>
+- Copilot: reviewed SHA <sha> at <time>
+- Rounds: <n> (a round is one push, reviewed by both)
 - Deferred to follow-ups: <finding — why it is not fix-now; one line each>
 
 ## Decisions made
@@ -187,7 +194,8 @@ done | blocked | plan ready for approval
 
 Cheap checks first, and only spot-check code where a claim is load-bearing:
 
-1. PR exists, is mergeable, CI green on all five jobs (`gh pr checks <n>`).
+1. PR exists, is mergeable, CI green on all five jobs (`gh pr checks <n>`),
+   and **both** reviewers reviewed the head SHA.
 2. Every review thread has a reply (`gh api .../pulls/<n>/comments`).
 3. Each guard-removal row names a test that exists in the diff.
 4. The real-run evidence names concrete requests and results, not "tested".

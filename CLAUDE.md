@@ -10,6 +10,26 @@ and validates; **worker** chats implement one milestone or one plan step from a
 handoff prompt (`docs/handoff-template.md`). `docs/tracker.md` is the status of
 record — read it first. Levon approves plans and merges; no chat merges.
 
+### Two reviewers, one loop
+
+Every pull request is reviewed by **Codex** and **Copilot**, both automatic:
+Codex through its GitHub app, and Copilot through the `copilot-review` ruleset,
+which re-reviews every push. Both review against the same contract: `AGENTS.md`
+for Codex and `.github/copilot-instructions.md` for Copilot. When that contract
+changes, change both files.
+
+- **A round is a push, not a reviewer.** Both review the same push in
+  parallel. Read both reviews, decide on every finding from either, and fix all
+  of them in one push. That is one round, and the wait is the slower of the
+  two, not their sum.
+- **A push is reviewed only when both have reviewed its head SHA.** Merging
+  after one reviewer finishes is merging half-reviewed.
+- **Neither reviewer outranks the other.** Judge each finding on its merits
+  against the severity contract. When they contradict each other, the one with
+  evidence wins. A finding both raise is one finding, answered once.
+- **Two different models catch different things.** A finding only one reviewer
+  raised is not weaker for it.
+
 ### Cost discipline — the loop must stay cheap
 
 Added 2026-09-19, after one regex plus a maintenance script cost twelve
@@ -22,8 +42,9 @@ defects; the loop around it is not.
   build. Everything else gets a one-line reply saying it is deferred, and a
   follow-up row. Answer every thread either way.
 - **The cap limits what is fixed, not whether the head is reviewed.** The last
-  fix push still gets one confirmation round on the head SHA, asked for
-  explicitly and scoped to the commits since the previous round. Only the
+  fix push still gets one confirmation round on the head SHA from **both**
+  reviewers. Copilot re-reviews every push on its own; ask Codex explicitly with
+  an `@codex review` comment scoped to the commits since the previous round. Only the
   fix-now categories are acted on; anything else is a follow-up row, so the
   round cannot restart the loop. Without it a PR merges with its most recent —
   and often its subtlest — commits seen by nobody but their author: #23's open
@@ -198,14 +219,17 @@ Applies to every chat, with or without a handoff prompt. The report
 3. CI green on all five jobs, and `gh pr view <n> --json mergeable` says
    `MERGEABLE` — green checks do not mean no conflicts, `gh pr checks` doesn't
    report that field.
-4. Codex reviews every push. Read findings with
+4. **Codex and Copilot review every push.** Read findings from both with
    `gh api repos/Levon0Asatryan/probeboard-api/pulls/<n>/comments --paginate`
    (a PR with more comments than one page reads as "everything answered" with
    an older thread still open if you drop `--paginate`). Verify each against
    the code before acting: fix what is real, push back with evidence on what
    is not, and **reply on every thread**. Re-check after each push.
-   Codex is done with a push only when `pulls/<n>/reviews` has an entry whose
-   `commit_id` is the head SHA. The 👍 (`+1`) reaction on `issues/<n>/reactions`
+   A push is reviewed only when **both** are done with it. Copilot is done
+   when `pulls/<n>/reviews` has an entry from `copilot-pull-request-reviewer`
+   whose `commit_id` is the head SHA. Codex is done when it has a review with
+   that `commit_id`, or when its "Didn't find any major issues" comment is
+   timestamped after the head was pushed. The 👍 (`+1`) reaction on `issues/<n>/reactions`
    is not proof by itself — the reaction has no `commit_id`, so a reaction from
    reviewing an older push can look like it postdates a new one. 👀 means still
    reviewing.
