@@ -29,6 +29,12 @@ changes, change both files.
   evidence wins. A finding both raise is one finding, answered once.
 - **Two different models catch different things.** A finding only one reviewer
   raised is not weaker for it.
+- **Never write `@codex` in a PR body or comment, except as the exact request
+  `@codex review`.** Codex treats any other mention as a request to _do_ work,
+  which runs as a cloud task, needs a configured environment, and on #82 was
+  answered with "To use Codex here, create an environment for this repo" —
+  because the PR description quoted the policy. Reviews need no environment.
+  In prose, write "a Codex review request".
 - **A review that says it could not review is not a review.** Copilot posts a
   `COMMENTED` review on the head SHA even when it reviewed nothing — "unable to
   review this pull request because the user who requested the review has
