@@ -273,7 +273,7 @@ recorded verdict (the same rule as M5 D7's `interval_s`):
 | Column                 | Rule                                                                                                                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `outcome = 'degraded'` | `success` **and** `latency_warn_ms IS NOT NULL` **and** `total_ms > latency_warn_ms` (D7). Otherwise §3.3 of M5 unchanged.                                                                                                                       |
-| `failure_detail`       | `{ index, assertion, reason }` for `ASSERTION_FAILED` (D11); `NULL` otherwise.                                                                                                                                                                   |
+| `failure_detail`       | `{ index, code, assertion }` for `ASSERTION_FAILED` (D11); `NULL` otherwise.                                                                                                                                                                     |
 | `in_maintenance`       | `EXISTS` a window on the endpoint or on its service with `starts_at <= started_at < ends_at` — evaluated **in the insert statement itself** (`INSERT … SELECT …, EXISTS (…)`), so no extra round trip and no lock on `endpoints` (a plain read). |
 
 `latency_warn_ms` reaches the writer from `MonitorLoaderService`, which already
