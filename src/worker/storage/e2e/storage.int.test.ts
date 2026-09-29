@@ -400,3 +400,164 @@ describe('ResultRecorderService (real transaction)', () => {
     ]);
   });
 });
+
+describe('what a result says about itself (0011, docs/m6-plan.md §3.2)', () => {
+  const repo = new ProbeResultRepository(dbLike);
+  const AT = Date.parse('2026-09-29T10:00:00.000Z');
+
+  async function serviceOf(endpointId: string): Promise<string> {
+    const { rows } = await pool.query<{ service_id: string; user_id: string }>(
+      `SELECT service_id FROM endpoints WHERE id = $1`,
+      [endpointId],
+    );
+    return rows[0].service_id;
+  }
+
+  async function userOf(endpointId: string): Promise<string> {
+    const { rows } = await pool.query<{ user_id: string }>(
+      `SELECT user_id FROM endpoints WHERE id = $1`,
+      [endpointId],
+    );
+    return rows[0].user_id;
+  }
+
+  async function window(
+    target: { endpointId: string } | { serviceId: string },
+    owner: string,
+    startsAt: string,
+    endsAt: string,
+  ): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO maintenance_windows (user_id, service_id, endpoint_id, starts_at, ends_at)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [
+        owner,
+        'serviceId' in target ? target.serviceId : null,
+        'endpointId' in target ? target.endpointId : null,
+        startsAt,
+        endsAt,
+      ],
+    );
+    return rows[0].id;
+  }
+
+  let n = 0;
+  async function write(
+    endpointId: string,
+    over: Partial<ProbeOutcome> = {},
+    latencyWarnMs: number | null = null,
+  ) {
+    n += 1;
+    const attemptId = `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    await repo.insert(
+      toResultRow(outcome({ startedAt: AT, ...over }), {
+        endpointId,
+        slot: SLOT,
+        intervalS: 60,
+        workerId: 'w1',
+        attemptId,
+        latencyWarnMs,
+      }),
+    );
+    const { rows } = await pool.query<{
+      in_maintenance: boolean;
+      outcome: string;
+      failure_detail: unknown;
+    }>(`SELECT in_maintenance, outcome, failure_detail FROM probe_results WHERE attempt_id = $1`, [
+      attemptId,
+    ]);
+    return rows[0];
+  }
+
+  it('is not in maintenance with no window', async () => {
+    const id = await leasedEndpoint();
+    expect((await write(id)).in_maintenance).toBe(false);
+  });
+
+  it('is in maintenance under a window on the endpoint, and under one on its service (Gatus #1815)', async () => {
+    // Two separate paths, each tested: a suppression that silently does not
+    // apply on one of them is the defect shape Gatus shipped.
+    const a = await leasedEndpoint();
+    await window({ endpointId: a }, await userOf(a), '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    expect((await write(a)).in_maintenance).toBe(true);
+
+    await truncateAll(pool);
+    const b = await leasedEndpoint();
+    await window(
+      { serviceId: await serviceOf(b) },
+      await userOf(b),
+      '2026-09-29T09:00Z',
+      '2026-09-29T11:00Z',
+    );
+    expect((await write(b)).in_maintenance).toBe(true);
+  });
+
+  it('is [starts_at, ends_at): in at the start, out at the end', async () => {
+    const id = await leasedEndpoint();
+    const owner = await userOf(id);
+    const w = await window({ endpointId: id }, owner, '2026-09-29T10:00Z', '2026-09-29T11:00Z');
+    expect((await write(id)).in_maintenance).toBe(true);
+    await pool.query(`DELETE FROM maintenance_windows WHERE id = $1`, [w]);
+    await window({ endpointId: id }, owner, '2026-09-29T09:00Z', '2026-09-29T10:00Z');
+    expect((await write(id)).in_maintenance).toBe(false);
+  });
+
+  it("ignores another endpoint's window and another service's window", async () => {
+    const id = await leasedEndpoint();
+    const owner = await userOf(id);
+    const other = await pool.query<{ id: string; service_id: string }>(
+      `INSERT INTO services (user_id, name, base_url) VALUES ($1, 'other', 'http://other.test')
+       RETURNING id, id AS service_id`,
+      [owner],
+    );
+    const sibling = await pool.query<{ id: string }>(
+      `INSERT INTO endpoints (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
+       SELECT service_id, user_id, 'GET', '/sibling', 60, 5000, 5 FROM endpoints WHERE id = $1
+       RETURNING id`,
+      [id],
+    );
+    await window(
+      { endpointId: sibling.rows[0].id },
+      owner,
+      '2026-09-29T09:00Z',
+      '2026-09-29T11:00Z',
+    );
+    await window({ serviceId: other.rows[0].id }, owner, '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    expect((await write(id)).in_maintenance).toBe(false);
+  });
+
+  it('is decided once, at write: removing the window later does not rewrite the row', async () => {
+    const id = await leasedEndpoint();
+    await window({ endpointId: id }, await userOf(id), '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    await write(id);
+    await pool.query(`DELETE FROM maintenance_windows`);
+    const { rows } = await pool.query<{ in_maintenance: boolean }>(
+      `SELECT in_maintenance FROM probe_results WHERE endpoint_id = $1`,
+      [id],
+    );
+    expect(rows.map((r) => r.in_maintenance)).toEqual([true]);
+  });
+
+  it('stores which assertion failed as jsonb, read back as written (M3-14)', async () => {
+    const id = await leasedEndpoint();
+    const detail = {
+      index: 2,
+      code: 'path_not_found' as const,
+      assertion: { type: 'json_path' as const, path: '$.a.b', equals: { deep: [1, 2] } },
+    };
+    const row = await write(id, {
+      success: false,
+      failureClass: 'ASSERTION_FAILED',
+      assertionFailure: detail,
+    });
+    expect(row.failure_detail).toEqual(detail);
+  });
+
+  it('stores degraded for a success over the threshold (docs/m6-plan.md D7)', async () => {
+    const id = await leasedEndpoint();
+    expect((await write(id, { timings: { totalMs: 900, ttfbMs: 850 } }, 500)).outcome).toBe(
+      'degraded',
+    );
+    expect((await write(id, { timings: { totalMs: 400, ttfbMs: 350 } }, 500)).outcome).toBe('up');
+  });
+});
