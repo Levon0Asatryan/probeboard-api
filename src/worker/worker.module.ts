@@ -4,6 +4,7 @@ import { APP_CONFIG, ConfigModule } from '../core/config/config.module.js';
 import type { AppConfig } from '../core/config/schema.js';
 import { DbModule } from '../core/db/db.module.js';
 import { loggerOptions } from '../core/logging/index.js';
+import { IncidentsModule } from './incidents/incidents.module.js';
 import { RollupModule } from './rollup/rollup.module.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
 
@@ -23,6 +24,7 @@ import { SchedulerModule } from './scheduler/scheduler.module.js';
     DbModule,
     SchedulerModule,
     RollupModule,
+    IncidentsModule,
   ],
 })
 export class WorkerModule {}

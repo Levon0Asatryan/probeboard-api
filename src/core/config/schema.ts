@@ -486,6 +486,26 @@ const storage = {
   MAINTENANCE_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(2000),
 };
 
+/**
+ * Incidents (M6): the evaluator loop and the UNKNOWN sweep (docs/m6-plan.md §5).
+ * Only the worker reads these.
+ */
+const incidents = {
+  // How often the evaluator turns stored results into incident state (07's
+  // table). Bounded above for the same reason as ROLLUP_TICK_MS.
+  EVALUATOR_TICK_MS: z.coerce.number().int().min(100).max(600_000).default(10_000),
+  // Distinct inserting transactions evaluated per batch inside one pass; whole
+  // transactions, as the rollup's batches are.
+  EVALUATOR_BATCH_XIDS: z.coerce.number().int().min(1).max(100_000).default(5000),
+  // Ticks without the watermark advancing before a pass says so: a diagnostic,
+  // not a limit -- an evaluator that is behind is late, not wrong.
+  EVALUATOR_STALE_TICKS: z.coerce.number().int().min(1).max(1000).default(10),
+  // Slack beyond two intervals before an enabled endpoint with no stored result
+  // reads UNKNOWN (plan §3.6). Floor by refine below, so a new endpoint's
+  // first, jittered slot cannot be flagged before it is due.
+  UNKNOWN_GRACE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(90_000),
+};
+
 const baseSchema = z.object({
   ...runtime,
   ...api,
@@ -496,6 +516,7 @@ const baseSchema = z.object({
   ...registration,
   ...scheduler,
   ...storage,
+  ...incidents,
 });
 
 /**
@@ -617,6 +638,21 @@ export const configSchema = baseSchema
       path: ['RETENTION_RAW_DAYS'],
       message:
         'must exceed SCHEDULER_LEASE_MS + SCHEDULER_SHUTDOWN_GRACE_MS, or a drop can race a late result write',
+    },
+  )
+  // A new endpoint's first slot may be jittered by up to the adoption maximum,
+  // then waits a tick and a load: the sweep's anchor (its updated_at) plus
+  // 2 x interval + grace must not pass before that probe can land, or every
+  // endpoint reads UNKNOWN once on creation (docs/m6-plan.md §3.6).
+  .refine(
+    (c) =>
+      c.UNKNOWN_GRACE_MS >=
+      c.SCHEDULER_ADOPT_JITTER_MAX_S * 1000 + c.SCHEDULER_TICK_MS + c.SCHEDULER_LOAD_BUDGET_MS,
+    {
+      path: ['UNKNOWN_GRACE_MS'],
+      message:
+        'must be at least SCHEDULER_ADOPT_JITTER_MAX_S + SCHEDULER_TICK_MS + SCHEDULER_LOAD_BUDGET_MS, ' +
+        'or a new endpoint reads UNKNOWN before its first slot is due',
     },
   )
   // The aggregates must outlive the raw rows they summarise: otherwise a raw row

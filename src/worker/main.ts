@@ -4,6 +4,7 @@ import { Logger } from 'nestjs-pino';
 import { loadConfig } from '../core/config/index.js';
 import { describeError } from '../core/errors/describe.js';
 import { untilShutdown } from './lifecycle/shutdown.js';
+import { EvaluatorService } from './incidents/services/evaluator.service.js';
 import { RollupService } from './rollup/services/rollup.service.js';
 import { SchedulerService } from './scheduler/scheduler.service.js';
 import { WorkerModule } from './worker.module.js';
@@ -27,6 +28,7 @@ async function bootstrap(): Promise<void> {
   await app.get(SchedulerService).stop();
   // Same reason: a pass in flight must finish before the pool is destroyed.
   await app.get(RollupService).stop();
+  await app.get(EvaluatorService).stop();
 
   // Closes the module tree, which releases the database pool (DbService).
   await app.close();

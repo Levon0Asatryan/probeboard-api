@@ -829,6 +829,40 @@ describe('scheduler cross-field rules', () => {
   });
 });
 
+describe('incident bounds reject invalid values at boot', () => {
+  it.each([
+    ['EVALUATOR_TICK_MS', '99', 'Too small: expected number to be >=100'],
+    ['EVALUATOR_TICK_MS', '600001', 'Too big: expected number to be <=600000'],
+    ['EVALUATOR_BATCH_XIDS', '0', 'Too small: expected number to be >=1'],
+    ['EVALUATOR_BATCH_XIDS', '100001', 'Too big: expected number to be <=100000'],
+    ['EVALUATOR_STALE_TICKS', '0', 'Too small: expected number to be >=1'],
+    ['EVALUATOR_STALE_TICKS', '1001', 'Too big: expected number to be <=1000'],
+    ['UNKNOWN_GRACE_MS', '999', 'Too small: expected number to be >=1000'],
+    ['UNKNOWN_GRACE_MS', '3600001', 'Too big: expected number to be <=3600000'],
+  ])('rejects %s=%s', (key, value, message) => {
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(`${key}: ${message}`));
+  });
+
+  it("rejects a grace a new endpoint's jittered first slot could outrun (docs/m6-plan.md §3.6)", () => {
+    // Defaults: 60 s jitter + 1 s tick + 1.5 s load = 62.5 s.
+    expect(() => loadConfig({ ...valid, UNKNOWN_GRACE_MS: '62499' })).toThrow(
+      /UNKNOWN_GRACE_MS: must be at least SCHEDULER_ADOPT_JITTER_MAX_S/,
+    );
+    expect(loadConfig({ ...valid, UNKNOWN_GRACE_MS: '62500' }).UNKNOWN_GRACE_MS).toBe(62_500);
+    expect(
+      loadConfig({ ...valid, SCHEDULER_ADOPT_JITTER_MAX_S: '0', UNKNOWN_GRACE_MS: '3000' }),
+    ).toBeDefined();
+  });
+
+  it('accepts the defaults', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.EVALUATOR_TICK_MS).toBe(10_000);
+    expect(cfg.EVALUATOR_BATCH_XIDS).toBe(5000);
+    expect(cfg.EVALUATOR_STALE_TICKS).toBe(10);
+    expect(cfg.UNKNOWN_GRACE_MS).toBe(90_000);
+  });
+});
+
 describe('storage bounds reject invalid values at boot', () => {
   it.each([
     ['PARTITION_AHEAD_DAYS', '0', 'Too small: expected number to be >=1'],

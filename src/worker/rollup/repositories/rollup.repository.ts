@@ -97,6 +97,32 @@ export class RollupRepository {
   }
 
   /**
+   * Removes the aggregates of endpoints that no longer exist (docs/m6-plan.md
+   * §3.12). `probe_stats` has no foreign key (docs/m5-plan.md D12), so nothing
+   * else ever does -- d1 rows would stay for ever.
+   *
+   * Under the rollup's own state row lock, taken **blocking**: the rollup is
+   * the only writer of these rows, so holding it means no fold can be
+   * upserting a row this is deleting. The orphans are found through d1 --
+   * every folded endpoint has a d1 row, since all grains come from one batch
+   * -- and each is deleted by the primary key's leading column in every
+   * grain. Returns the rows removed.
+   */
+  async removeOrphans(): Promise<number> {
+    return this.db.kysely.transaction().execute(async (trx) => {
+      await sql`SELECT 1 FROM rollup_state WHERE name = 'probe_results' FOR UPDATE`.execute(trx);
+      const result = await sql`
+        DELETE FROM probe_stats
+         WHERE endpoint_id IN (SELECT d.endpoint_id
+                                 FROM probe_stats_d1 d
+                                WHERE NOT EXISTS (SELECT 1 FROM endpoints e WHERE e.id = d.endpoint_id)
+                                GROUP BY d.endpoint_id)
+      `.execute(trx);
+      return Number(result.numAffectedRows ?? 0n);
+    });
+  }
+
+  /**
    * Folds every row with `lower <= insert_xid < upper` into m1, h1 and d1 in one
    * statement. All three grains are derived from the **same batch**, never from
    * each other, so no grain can drift from another.
