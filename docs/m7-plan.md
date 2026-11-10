@@ -735,9 +735,14 @@ when the alert was raised — and a webhook signs the same bytes each time.
 - `POST /v1/auth/verify-email { token }` — no session needed (the link may
   open in another browser). Admission per address on scope `verify`
   (`AUTH_MAX_VERIFY_PER_IP`). `looksLikeToken`-style shape check, then in one
-  transaction: consume by hash (single use, unexpired), lock the user row,
-  check `users.email = tokens.email`, set `email_verified_at = now()` where
-  null, insert the email channel `ON CONFLICT DO NOTHING`. Unknown, used,
+  transaction, in the **same lock order as the request — user, then token**:
+  read the token by hash without a lock to learn its `user_id`; lock that user
+  row `FOR UPDATE`; then consume the token with
+  `UPDATE … WHERE token_hash = $1 AND user_id = $2 AND consumed_at IS NULL AND expires_at > now()`
+  — the conditions re-checked under the locks, so a request that superseded
+  it while this waited wins; check `users.email = tokens.email`, set
+  `email_verified_at = now()` where null, insert the email channel
+  `ON CONFLICT DO NOTHING`. Unknown, used,
   expired and superseded tokens all answer the same
   `400 VERIFICATION_TOKEN_INVALID`. So does an address mismatch — the token
   stays consumed and nothing is verified (no route changes an address today;
@@ -971,6 +976,7 @@ Every row: the test, and the removal that must make it fail.
 | No secret in a log line                                         | redaction, `logger: false`                | sentinels as SMTP password, webhook secret, webhook URL path and verification token; full worker and api runs; 0 occurrences in captured logs (as M2/M5)                                                                                                                                                                               |
 | No secret in a response or a delivery row                       | response mapping, snapshot                | channel list/get carry no `secret`, no URL path; `payload` and `last_error` hold no sentinel                                                                                                                                                                                                                                           |
 | Verification token single-use, expiring, superseded (D19)       | consume `UPDATE … RETURNING`              | used twice → second `400`; expired → `400`; older of two → `400`; concurrent double confirm (barrier) → one `204`. Removal of `consumed_at IS NULL` → both `204`                                                                                                                                                                       |
+| Confirm racing a new request cannot deadlock                    | user-then-token on both routes            | barrier: a request holds the user row lock (connection B, open transaction); confirm starts and is observed waiting on `pg_stat_activity` `wait_event_type = 'Lock'`; B supersedes the token and commits → confirm `400`, 0 `40P01`, over 20 rounds. Removal: confirm consumes the token before locking the user → `40P01`             |
 | Verification confirm and request are rate-limited               | `verify` scope; per-user count under lock | burst of `AUTH_MAX_VERIFY_PER_IP + 1` → last `429`; parallel requests (20) against max 3 → exactly 3 tokens. Removal of the lock → more than 3                                                                                                                                                                                         |
 | Webhook URL and secret encrypted at rest                        | cipher                                    | `url_ciphertext` ≠ plaintext bytes; sentinel absent from `pg_dump` of the row                                                                                                                                                                                                                                                          |
 | Channel delete cannot deadlock the dispatcher                   | §3.1 table                                | 20 rounds: delete a webhook channel racing claim/record on its deliveries → 0 `40P01`                                                                                                                                                                                                                                                  |
