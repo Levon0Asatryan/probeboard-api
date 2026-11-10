@@ -188,6 +188,25 @@ const limitParam = {
   schema: { type: 'integer' as const, minimum: 1, maximum: 1000, default: 50 },
 };
 
+const incidentStatusParam = {
+  name: 'status',
+  in: 'query' as const,
+  required: false,
+  description: 'open: not yet closed. closed: recovered. Omitted: both.',
+  schema: { type: 'string' as const, enum: ['open', 'closed'] },
+};
+
+const incidentListResponses = {
+  '200': {
+    description: 'One page, newest first (openedAt DESC, id DESC).',
+    content: {
+      'application/json': {
+        schema: { type: 'array', items: { $ref: '#/components/schemas/Incident' } },
+      },
+    },
+  },
+};
+
 const tagParam = {
   name: 'tag',
   in: 'query' as const,
@@ -294,6 +313,7 @@ export function buildOpenApiDocument(
       { name: 'oauth', description: 'Sign in with Google or GitHub, and linked identities.' },
       { name: 'services', description: 'Monitored services: their origin, headers and tags.' },
       { name: 'endpoints', description: 'Monitored endpoints under a service.' },
+      { name: 'incidents', description: 'Incident history: when an endpoint was down, and why.' },
     ],
     components: {
       schemas: {
@@ -509,6 +529,105 @@ export function buildOpenApiDocument(
             tags: { type: 'array', items: { $ref: '#/components/schemas/Tag' } },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        Incident: {
+          type: 'object',
+          description:
+            'Every time is a probe started_at, never the evaluator clock (docs/m6-plan.md §3.5).',
+          required: [
+            'id',
+            'endpointId',
+            'serviceId',
+            'status',
+            'openedAt',
+            'confirmedAt',
+            'closedAt',
+            'closeConfirmedAt',
+            'durationMs',
+            'detectionLatencyMs',
+            'failuresToOpen',
+            'cause',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            endpointId: { type: 'string', format: 'uuid' },
+            serviceId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['open', 'closed'] },
+            openedAt: {
+              type: 'string',
+              format: 'date-time',
+              description:
+                'The first failed probe of the run (D-2), not the one that confirmed it.',
+            },
+            confirmedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'The probe that reached the failure threshold.',
+            },
+            closedAt: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description: 'The first success of the recovery (D-3). Null while open.',
+            },
+            closeConfirmedAt: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description: 'The success that reached the success threshold. Null while open.',
+            },
+            durationMs: {
+              type: 'integer',
+              nullable: true,
+              description: 'closedAt - openedAt. Null while open.',
+            },
+            detectionLatencyMs: {
+              type: 'integer',
+              description: 'confirmedAt - openedAt: what the failure threshold cost.',
+            },
+            failuresToOpen: {
+              type: 'integer',
+              description: 'The failure threshold in force when it opened.',
+            },
+            cause: {
+              type: 'object',
+              description:
+                'The first failed probe, copied when the incident opened: the raw result ages out.',
+              required: ['class', 'code', 'statusCode', 'assertion'],
+              properties: {
+                class: {
+                  type: 'string',
+                  description: 'The failure class, lowercase, as stored (e.g. dns_failure).',
+                },
+                code: { type: 'string', nullable: true },
+                statusCode: { type: 'integer', nullable: true },
+                assertion: {
+                  type: 'object',
+                  nullable: true,
+                  description:
+                    'When class is assertion_failed: which one (index), why (a closed-list code) ' +
+                    'and the assertion as configured then. Never response text.',
+                  required: ['index', 'code', 'assertion'],
+                  properties: {
+                    index: { type: 'integer' },
+                    code: {
+                      type: 'string',
+                      enum: [
+                        'substring_absent',
+                        'forbidden_substring_present',
+                        'truncated_absence_unprovable',
+                        'truncated_not_parsed',
+                        'not_json',
+                        'path_not_found',
+                        'value_mismatch',
+                      ],
+                    },
+                    assertion: { type: 'object' },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -1142,6 +1261,72 @@ export function buildOpenApiDocument(
             },
             '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listIncidents',
+          summary: "Every incident on the signed-in account's endpoints",
+          parameters: [incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed status, cursor or limit.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/incidents/{id}`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'getIncident',
+          summary: 'Fetch an incident',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'The incident.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Incident' } },
+              },
+            },
+            '400': badIdResponse,
+            '404': errorResponse(
+              "Not found, another user's, or its endpoint was deleted -- indistinguishable.",
+            ),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/services/{id}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listServiceIncidents',
+          summary: "Incidents on a service's endpoints (D-5)",
+          parameters: [idParam, incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse(
+              '`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
+            '404': errorResponse('Service not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints/{id}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listEndpointIncidents',
+          summary: "An endpoint's incident history (D-5, FR-27)",
+          parameters: [idParam, incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse(
+              '`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
+            '404': errorResponse('Endpoint not found, or owned by someone else.'),
             ...authErrors,
           },
         },

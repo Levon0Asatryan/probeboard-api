@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module.js';
 import { loggerOptions } from '../core/logging/index.js';
 import { ErrorFilter } from './common/filters/error.filter.js';
 import { HealthModule } from './health/health.module.js';
+import { IncidentsModule } from './incidents/incidents.module.js';
 import { RegistrationModule } from './registration/registration.module.js';
 
 /** HTTP API. Never probes — that is the worker's job (docs §7.1). */
@@ -21,6 +22,7 @@ import { RegistrationModule } from './registration/registration.module.js';
     AuthModule,
     HealthModule,
     RegistrationModule,
+    IncidentsModule,
   ],
   providers: [ErrorFilter],
 })
