@@ -506,6 +506,19 @@ const incidents = {
   UNKNOWN_GRACE_MS: z.coerce.number().int().min(1000).max(3_600_000).default(90_000),
 };
 
+/**
+ * Maintenance windows (M6): the API's bounds on declaring one
+ * (docs/m6-plan.md §3.7, §5). Only the api reads these.
+ */
+const maintenance = {
+  // Longest window a user may declare. A month covers any planned migration;
+  // a longer one is a monitor that should be paused instead.
+  MAINTENANCE_MAX_DURATION_DAYS: z.coerce.number().int().min(1).max(366).default(31),
+  // Every stored window counts, ended ones included: counting only unexpired
+  // ones would let a user create, wait out and repeat without bound.
+  MAINTENANCE_WINDOW_QUOTA_PER_USER: z.coerce.number().int().min(1).max(100_000).default(100),
+};
+
 const baseSchema = z.object({
   ...runtime,
   ...api,
@@ -517,6 +530,7 @@ const baseSchema = z.object({
   ...scheduler,
   ...storage,
   ...incidents,
+  ...maintenance,
 });
 
 /**
