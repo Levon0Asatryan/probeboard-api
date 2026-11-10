@@ -74,6 +74,14 @@ beforeAll(async () => {
   while ((await rollup.runOnce(5000)).folded > 0) {
     /* to a fixed point */
   }
+  // Retention also waits for the incident evaluator (docs/m6-plan.md D14),
+  // which this storage acceptance test does not run: stand it at the rollup's
+  // watermark so step 4 measures what M5's exit test is about.
+  await pool.query(
+    `UPDATE rollup_state
+        SET last_xid = (SELECT last_xid FROM rollup_state WHERE name = 'probe_results')
+      WHERE name = 'incident_evaluator'`,
+  );
 
   // A role that may read the aggregates and the endpoints table and NOTHING else:
   // if the read path touched a raw partition it would fail, not merely be slow.

@@ -8,6 +8,7 @@ const ctx: ResultContext = {
   intervalS: 60,
   workerId: 'w1',
   attemptId: '11111111-1111-4111-8111-111111111111',
+  latencyWarnMs: null,
 };
 
 function outcome(over: Partial<ProbeOutcome> = {}): ProbeOutcome {
@@ -53,6 +54,26 @@ describe('outcomeLabel', () => {
 
   it('never manufactures an outage from a failure it cannot classify', () => {
     expect(outcomeLabel({ success: false })).toBe('unknown');
+  });
+  it('is degraded only for a success strictly over the threshold (PRD §6.5, docs/m6-plan.md D7)', () => {
+    expect(outcomeLabel({ success: true }, 501, 500)).toBe('degraded');
+    expect(outcomeLabel({ success: true }, 500, 500)).toBe('up');
+    // No threshold configured: never degraded, however slow.
+    expect(outcomeLabel({ success: true }, 60_000, null)).toBe('up');
+    // A slow failure is still a failure: degraded is a kind of success.
+    expect(outcomeLabel({ success: false, failureClass: 'STATUS_MISMATCH' }, 9000, 500)).toBe(
+      'down',
+    );
+  });
+});
+
+describe('toResultRow, latency threshold', () => {
+  it('judges the stored millisecond value, so the verdict and total_ms agree', () => {
+    // 500.4 rounds to the 500 the row stores, which is not over 500.
+    const at = (totalMs: number) =>
+      toResultRow(outcome({ timings: { totalMs } }), { ...ctx, latencyWarnMs: 500 }).outcome;
+    expect(at(500.4)).toBe('up');
+    expect(at(500.6)).toBe('degraded');
   });
 });
 
@@ -126,6 +147,23 @@ describe('toResultRow', () => {
     expect((row.started_at as Date).toISOString()).toBe('2026-09-21T08:45:12.200Z');
   });
 
+  it('stores which assertion failed as JSON, and nothing for any other outcome (M3-14)', () => {
+    const detail = {
+      index: 1,
+      code: 'value_mismatch' as const,
+      assertion: { type: 'json_path' as const, path: '$.status', equals: 'ok' },
+    };
+    const row = toResultRow(
+      outcome({ success: false, failureClass: 'ASSERTION_FAILED', assertionFailure: detail }),
+      ctx,
+    );
+    expect(JSON.parse(row.failure_detail!)).toEqual(detail);
+    expect(toResultRow(outcome(), ctx).failure_detail).toBeNull();
+    expect(
+      toResultRow(outcome({ success: false, failureClass: 'STATUS_MISMATCH' }), ctx).failure_detail,
+    ).toBeNull();
+  });
+
   it('writes only the allow-listed columns -- no header, body or response text can reach a row', () => {
     expect(Object.keys(toResultRow(outcome(), ctx)).sort()).toEqual(
       [
@@ -148,6 +186,7 @@ describe('toResultRow', () => {
         'cert_expires_at',
         'worker_id',
         'attempt_id',
+        'failure_detail',
       ].sort(),
     );
   });

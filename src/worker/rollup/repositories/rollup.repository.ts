@@ -115,17 +115,23 @@ export class RollupRepository {
         (_, i) => sql`(count(*) FILTER (WHERE responded AND b = ${i + 1}))::int`,
       ),
     );
+    // A row written inside a maintenance window counts **only** in
+    // count_maintenance and adds no observed seconds (docs/m6-plan.md D6, C4):
+    // a declared deploy must not lower uptime by side effect (03 §3.5.1 case 3).
+    // The categories are disjoint, so the five counts sum to the rows. Latency
+    // is not filtered: one population rule, M5's D6 (plan open question 4).
     const agg = (g: Grain) => sql`
       SELECT endpoint_id,
              ${sql.lit(g.grain)}::stat_grain                       AS granularity,
              date_trunc(${sql.lit(g.unit)}, started_at, 'UTC')     AS bucket_start,
-             (count(*) FILTER (WHERE outcome = 'up'))::int         AS count_up,
-             (count(*) FILTER (WHERE outcome = 'down'))::int       AS count_down,
-             (count(*) FILTER (WHERE outcome = 'degraded'))::int   AS count_degraded,
-             (count(*) FILTER (WHERE outcome = 'unknown'))::int    AS count_unknown,
-             coalesce(sum(interval_s) FILTER (WHERE outcome IN ('up','down','degraded')), 0)::int AS covered_seconds,
-             coalesce(sum(interval_s) FILTER (WHERE outcome = 'up'), 0)::int        AS up_seconds,
-             coalesce(sum(interval_s) FILTER (WHERE outcome = 'degraded'), 0)::int  AS degraded_seconds,
+             (count(*) FILTER (WHERE counted AND outcome = 'up'))::int       AS count_up,
+             (count(*) FILTER (WHERE counted AND outcome = 'down'))::int     AS count_down,
+             (count(*) FILTER (WHERE counted AND outcome = 'degraded'))::int AS count_degraded,
+             (count(*) FILTER (WHERE counted AND outcome = 'unknown'))::int  AS count_unknown,
+             (count(*) FILTER (WHERE NOT counted))::int                      AS count_maintenance,
+             coalesce(sum(interval_s) FILTER (WHERE counted AND outcome IN ('up','down','degraded')), 0)::int AS covered_seconds,
+             coalesce(sum(interval_s) FILTER (WHERE counted AND outcome = 'up'), 0)::int        AS up_seconds,
+             coalesce(sum(interval_s) FILTER (WHERE counted AND outcome = 'degraded'), 0)::int  AS degraded_seconds,
              coalesce(sum(total_ms) FILTER (WHERE responded), 0)::bigint AS sum_total_ms,
              min(total_ms) FILTER (WHERE responded)                AS min_total_ms,
              max(total_ms) FILTER (WHERE responded)                AS max_total_ms,
@@ -138,7 +144,7 @@ export class RollupRepository {
     const upsert = (g: Grain) => sql`
       INSERT INTO probe_stats AS s (
         endpoint_id, granularity, bucket_start, count_up, count_down, count_degraded,
-        count_unknown, covered_seconds, up_seconds, degraded_seconds, sum_total_ms,
+        count_unknown, count_maintenance, covered_seconds, up_seconds, degraded_seconds, sum_total_ms,
         min_total_ms, max_total_ms, sum_ttfb_ms, hist_total)
       SELECT * FROM (${agg(g)}) a
       ON CONFLICT (endpoint_id, granularity, bucket_start) DO UPDATE SET
@@ -146,6 +152,7 @@ export class RollupRepository {
         count_down       = s.count_down       + EXCLUDED.count_down,
         count_degraded   = s.count_degraded   + EXCLUDED.count_degraded,
         count_unknown    = s.count_unknown    + EXCLUDED.count_unknown,
+        count_maintenance = s.count_maintenance + EXCLUDED.count_maintenance,
         covered_seconds  = s.covered_seconds  + EXCLUDED.covered_seconds,
         up_seconds       = s.up_seconds       + EXCLUDED.up_seconds,
         degraded_seconds = s.degraded_seconds + EXCLUDED.degraded_seconds,
@@ -162,13 +169,14 @@ export class RollupRepository {
     // reports how many rows were folded.
     return sql`
       WITH batch AS MATERIALIZED (
-        SELECT endpoint_id, started_at, outcome, interval_s, total_ms, ttfb_ms
+        SELECT endpoint_id, started_at, outcome, interval_s, total_ms, ttfb_ms, in_maintenance
         FROM   probe_results
         WHERE  insert_xid >= ${lower}::xid8 AND insert_xid < ${upper}::xid8
       ),
       folded_rows AS MATERIALIZED (
         SELECT *,
                (ttfb_ms IS NOT NULL) AS responded,
+               (NOT in_maintenance)  AS counted,
                width_bucket(total_ms - 1, ${edges}) + 1 AS b
         FROM   batch
       ),

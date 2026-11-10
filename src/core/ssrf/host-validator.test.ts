@@ -66,6 +66,30 @@ describe('scheme, credentials, port -- checked before any DNS lookup', () => {
     ).resolves.toBeDefined();
   });
 
+  it('rejects a port the HTTP client refuses, though no config lists it (docs/m6-plan.md §3.11)', async () => {
+    publicOnly();
+    for (const port of [1, 6000, 10080]) {
+      await rejects(`http://public-host.example.com:${port}/`, 'PORT_NOT_ALLOWED', {
+        ...cfg,
+        blockedPorts: [],
+      });
+    }
+  });
+
+  it("names the client's refusal for a port both lists hold, as the default denylist does for 25/111/135/139", async () => {
+    publicOnly();
+    for (const port of [25, 111, 135, 139]) {
+      const rejection = assertSaveableUrl(`http://public-host.example.com:${port}/`, {
+        ...cfg,
+        blockedPorts: [port],
+      });
+      await expect(rejection).rejects.toMatchObject({
+        code: 'PORT_NOT_ALLOWED',
+        message: `port ${port} cannot be probed: HTTP clients refuse it`,
+      });
+    }
+  });
+
   it('rejects a blocked default port even with no explicit port in the URL', async () => {
     // URL normalizes `http://host` and `http://host:80` identically -- both
     // leave url.port empty -- so the denylist has to be checked against the
@@ -317,6 +341,11 @@ describe('SSRF_GUARD_ENABLED=false', () => {
     await expect(assertSaveableUrl('http://127.0.0.1:6379/', disabled)).rejects.toMatchObject({
       code: 'PORT_NOT_ALLOWED',
     });
+    // The client refuses these whatever the guard does, so disabling the
+    // guard must not let one be stored.
+    await expect(
+      assertSaveableUrl('http://127.0.0.1:10080/', { ...disabled, blockedPorts: [] }),
+    ).rejects.toMatchObject({ code: 'PORT_NOT_ALLOWED' });
   });
 });
 

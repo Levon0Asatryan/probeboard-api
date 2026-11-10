@@ -267,6 +267,37 @@ export interface ProbeResultsTable {
   attempt_id: string;
   /** `xid8`: node-postgres registers no parser for it, so it is text. */
   insert_xid: Generated<string>;
+  /** A declared window covered `started_at` when the row was written (0011). */
+  in_maintenance: Generated<boolean>;
+  /** Set only for `assertion_failed` (docs/m6-plan.md D11). */
+  failure_detail: JSONColumnType<FailureDetail | null, string | null | undefined, string | null>;
+}
+
+/**
+ * Why an assertion failed, as a closed list (docs/m6-plan.md §3.9). A code,
+ * never response text: every value names what was checked, not what came back.
+ */
+export const ASSERTION_FAILURE_CODES = [
+  'substring_absent',
+  'forbidden_substring_present',
+  'truncated_absence_unprovable',
+  'truncated_not_parsed',
+  'not_json',
+  'path_not_found',
+  'value_mismatch',
+] as const;
+export type AssertionFailureCode = (typeof ASSERTION_FAILURE_CODES)[number];
+
+/**
+ * Which assertion failed, and why. `assertion` is a snapshot of the
+ * configuration at that index when the probe ran: the endpoint can be edited
+ * later, and an incident must say what was checked then. Written by the worker,
+ * read by the API -- one definition for both.
+ */
+export interface FailureDetail {
+  index: number;
+  code: AssertionFailureCode;
+  assertion: EndpointAssertion;
 }
 
 export type StatGrain = 'm1' | 'h1' | 'd1';
@@ -296,6 +327,86 @@ export interface RollupStateTable {
   name: string;
   last_xid: string;
   advanced_at: Generated<Date>;
+}
+
+/** One-off window on a service or one endpoint, `[starts_at, ends_at)` (0011). */
+export interface MaintenanceWindowsTable {
+  id: Generated<string>;
+  user_id: string;
+  /** Exactly one of service_id/endpoint_id is set, enforced by a CHECK. */
+  service_id: string | null;
+  endpoint_id: string | null;
+  starts_at: Timestamp;
+  ends_at: Timestamp;
+  reason: string | null;
+  created_at: CreatedAt;
+  updated_at: CreatedAt;
+}
+
+/** The states the evaluator writes. `paused` and `maintenance` are derived on read. */
+export type ObservedState = 'up' | 'degraded' | 'pending' | 'down' | 'unknown';
+
+/**
+ * The evaluator's per-endpoint state (docs/m6-plan.md §3.4). Written only by
+ * the evaluator. No foreign key to `endpoints`: see 0011.
+ */
+export interface EndpointHealthTable {
+  endpoint_id: string;
+  state: ObservedState;
+  state_since: Timestamp;
+  consecutive_failures: Generated<number>;
+  consecutive_successes: Generated<number>;
+  /** The first failed probe of the current run and its evidence. */
+  run_started_at: Timestamp | null;
+  run_failure_class: FailureClassLabel | null;
+  run_failure_code: string | null;
+  run_status_code: number | null;
+  run_failure_detail: JSONColumnType<
+    FailureDetail | null,
+    string | null | undefined,
+    string | null
+  >;
+  /** The first success of the current recovery run. */
+  recovery_started_at: Timestamp | null;
+  open_incident_id: string | null;
+  last_success_at: Timestamp | null;
+  /** The newest observation applied (ordering fence, plan D3). */
+  applied_started_at: Timestamp | null;
+  applied_attempt_id: string | null;
+  updated_at: CreatedAt;
+}
+
+/** Times are probe `started_at` values, never the evaluator's clock. */
+export interface IncidentsTable {
+  id: Generated<string>;
+  endpoint_id: string;
+  service_id: string;
+  user_id: string;
+  opened_at: Timestamp;
+  confirmed_at: Timestamp;
+  failures_to_open: number;
+  cause_class: FailureClassLabel;
+  cause_code: string | null;
+  cause_status_code: number | null;
+  cause_detail: JSONColumnType<FailureDetail | null, string | null | undefined, string | null>;
+  closed_at: Timestamp | null;
+  close_confirmed_at: Timestamp | null;
+}
+
+export type NotificationKind = 'incident_open' | 'incident_close';
+
+/** Written with the transition (ADR-0008); drained by M7. */
+export interface NotificationOutboxTable {
+  id: Generated<string>;
+  incident_id: string;
+  kind: NotificationKind;
+  user_id: string;
+  service_id: string;
+  created_at: CreatedAt;
+  not_before: CreatedAt;
+  attempts: Generated<number>;
+  delivered_at: Timestamp | null;
+  last_error: string | null;
 }
 
 export interface HeadersTable {
@@ -338,6 +449,10 @@ export interface Database {
   probe_results: ProbeResultsTable;
   probe_stats: ProbeStatsTable;
   rollup_state: RollupStateTable;
+  maintenance_windows: MaintenanceWindowsTable;
+  endpoint_health: EndpointHealthTable;
+  incidents: IncidentsTable;
+  notification_outbox: NotificationOutboxTable;
   headers: HeadersTable;
   tags: TagsTable;
 }
@@ -383,6 +498,13 @@ export type EndpointRuntime = Selectable<EndpointRuntimeTable>;
 export type NewEndpointRuntime = Insertable<EndpointRuntimeTable>;
 
 export type ClaimLogEntry = Selectable<ClaimLogTable>;
+
+export type MaintenanceWindow = Selectable<MaintenanceWindowsTable>;
+export type NewMaintenanceWindow = Insertable<MaintenanceWindowsTable>;
+
+export type EndpointHealth = Selectable<EndpointHealthTable>;
+
+export type Incident = Selectable<IncidentsTable>;
 
 export type Header = Selectable<HeadersTable>;
 export type NewHeader = Insertable<HeadersTable>;

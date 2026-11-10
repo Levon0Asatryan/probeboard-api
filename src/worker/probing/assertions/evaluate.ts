@@ -7,7 +7,7 @@
  * two of the three become unsound on a partial read, and both fail closed
  * rather than guessing.
  */
-import type { EndpointAssertion } from '../../../core/db/types.js';
+import type { AssertionFailureCode, EndpointAssertion } from '../../../core/db/types.js';
 import { readJsonPath, structurallyEqual } from './json-path.js';
 
 export interface ResponseBody {
@@ -19,10 +19,22 @@ export interface ResponseBody {
 
 export type AssertionResult =
   | { passed: true }
-  /** `reason` is diagnostic only; the caller reports `ASSERTION_FAILED`. */
-  | { passed: false; reason: string };
+  /**
+   * `code` is the stable answer to "why", persisted with the result
+   * (docs/m6-plan.md §3.9); `reason` is its prose, for logs and tests. Neither
+   * carries response text -- only what was checked.
+   */
+  | { passed: false; code: AssertionFailureCode; reason: string };
 
-const PASSED: AssertionResult = { passed: true };
+/** A failure among several, and which one: what `probe()` persists. */
+export type AssertionsResult =
+  { passed: true } | { passed: false; index: number; code: AssertionFailureCode; reason: string };
+
+const PASSED = { passed: true } as const;
+
+function failed(code: AssertionFailureCode, reason: string): AssertionResult {
+  return { passed: false, code, reason };
+}
 
 export function evaluateAssertion(
   assertion: EndpointAssertion,
@@ -35,7 +47,7 @@ export function evaluateAssertion(
       // been in the unread tail, and failing is the conservative answer.
       return body.text.includes(assertion.value)
         ? PASSED
-        : { passed: false, reason: 'body does not contain the expected substring' };
+        : failed('substring_absent', 'body does not contain the expected substring');
 
     case 'body_not_contains':
       // D23: the same check is unsound in the negative direction. A truncated
@@ -44,13 +56,13 @@ export function evaluateAssertion(
       // response -- the string could be sitting in the tail. Absence cannot be
       // proven from an incomplete read, so it is never asserted.
       if (body.truncated) {
-        return {
-          passed: false,
-          reason: 'body was truncated, so absence of the substring cannot be proven',
-        };
+        return failed(
+          'truncated_absence_unprovable',
+          'body was truncated, so absence of the substring cannot be proven',
+        );
       }
       return body.text.includes(assertion.value)
-        ? { passed: false, reason: 'body contains the forbidden substring' }
+        ? failed('forbidden_substring_present', 'body contains the forbidden substring')
         : PASSED;
 
     case 'json_path':
@@ -69,7 +81,7 @@ function evaluateJsonPath(
   // real response. A coincidental parse success is exactly what a truncation
   // check exists to prevent.
   if (body.truncated) {
-    return { passed: false, reason: 'body was truncated, so it was not parsed as JSON' };
+    return failed('truncated_not_parsed', 'body was truncated, so it was not parsed as JSON');
   }
 
   let parsed: unknown;
@@ -79,38 +91,37 @@ function evaluateJsonPath(
     // A genuine syntax error on the *full* body is an assertion failure, not
     // a crash: the endpoint answered with something that is not JSON, which
     // is a finding about the endpoint.
-    return { passed: false, reason: 'body is not valid JSON' };
+    return failed('not_json', 'body is not valid JSON');
   }
 
   const lookup = readJsonPath(parsed, assertion.path);
   if (!lookup.found) {
     // Also the answer for a path outside the supported grammar: nothing was
     // verified, so nothing may be claimed.
-    return { passed: false, reason: `no value at path ${assertion.path}` };
+    return failed('path_not_found', `no value at path ${assertion.path}`);
   }
 
   return structurallyEqual(lookup.value, assertion.equals)
     ? PASSED
-    : {
-        passed: false,
-        reason: `value at path ${assertion.path} does not equal the expected value`,
-      };
+    : failed('value_mismatch', `value at path ${assertion.path} does not equal the expected value`);
 }
 
 /**
- * Evaluates every assertion, stopping at the first failure.
+ * Evaluates every assertion, stopping at the first failure, and says which.
  *
  * Short-circuiting is safe because the outcome is the same either way — one
  * failure means `ASSERTION_FAILED` — and it avoids parsing the body again for
- * assertions whose verdict cannot change the result.
+ * assertions whose verdict cannot change the result. The index is what lets a
+ * stored result say which assertion failed (M3-14): before it, a body check and
+ * a `json_path` check failing stored identical rows.
  */
 export function evaluateAssertions(
   assertions: readonly EndpointAssertion[],
   body: ResponseBody,
-): AssertionResult {
-  for (const assertion of assertions) {
+): AssertionsResult {
+  for (const [index, assertion] of assertions.entries()) {
     const result = evaluateAssertion(assertion, body);
-    if (!result.passed) return result;
+    if (!result.passed) return { ...result, index };
   }
   return PASSED;
 }

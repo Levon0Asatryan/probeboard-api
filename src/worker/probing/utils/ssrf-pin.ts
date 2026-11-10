@@ -14,7 +14,7 @@
  * outage as `UNKNOWN` rather than `DOWN`: probeboard reporting "we declined
  * to check" when the truth was "their name server is broken".
  */
-import { SsrfValidationError } from '../../../core/ssrf/host-validator.js';
+import { FetchBlockedPortError, SsrfValidationError } from '../../../core/ssrf/host-validator.js';
 import { classifyResolverCode, type Classification } from './failure-classes.js';
 
 /**
@@ -63,6 +63,12 @@ function causeOf(error: SsrfValidationError): Cause {
  *   was stored as `unknown` and excluded from uptime (#72, defect 1).
  */
 export function classifyGuardRejection(error: SsrfValidationError): Classification {
+  // Before the code: it shares PORT_NOT_ALLOWED with a configured port, but it
+  // is the HTTP client's own refusal, and the stored code says which
+  // (docs/m6-plan.md §3.11).
+  if (error instanceof FetchBlockedPortError) {
+    return { failureClass: 'BLOCKED_BY_POLICY', code: 'BAD_PORT' };
+  }
   switch (error.code) {
     case 'SCHEME_NOT_ALLOWED':
     case 'CREDENTIALS_IN_URL':

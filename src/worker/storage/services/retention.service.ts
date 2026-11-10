@@ -79,10 +79,13 @@ interface Expired {
  * insert into an unrelated partition queues behind it -- measured 2.04 s behind
  * a held transaction, against 0.07 s for the concurrent detach (plan §2.4.4).
  *
- * The guard is what makes dropping safe: a raw partition holding a row the
- * rollup has not folded is never dropped, and neither is a stats partition an
- * unfolded raw row still targets. It **fails closed**: a missing watermark row
- * counts as "nothing folded".
+ * The guard is what makes dropping safe: a raw partition holding a row that
+ * either consumer -- the rollup or the incident evaluator -- has not yet read
+ * is never dropped, and neither is a stats partition an unfolded raw row still
+ * targets. It **fails closed**: a missing watermark row counts as "nothing
+ * read". The evaluator is the second consumer since M6 (docs/m6-plan.md D14):
+ * dropping a partition it has not passed would lose an outage's evidence for
+ * ever. Stats partitions answer only to the rollup, which alone writes them.
  */
 @Injectable()
 export class RetentionService {
@@ -298,7 +301,10 @@ export class RetentionService {
 
   /**
    * `undefined` when the partition may go; otherwise why not. Fails closed: a
-   * missing `rollup_state` row is `0`, so every row counts as unfolded.
+   * missing `rollup_state` row is `0`, so every row counts as unconsumed.
+   *
+   * Raw waits for the **slower** of the two consumers (`least`); a stats
+   * partition waits only for the rollup.
    */
   private async blockedBy(guard: Guard, parent: string, p: Expired): Promise<string | undefined> {
     if (guard === 'none') return undefined;
@@ -306,8 +312,11 @@ export class RetentionService {
       guard === 'raw'
         ? await sql<{ n: number }>`
             SELECT 1 AS n FROM ${sql.id(p.name)}
-             WHERE insert_xid >= coalesce(
-                     (SELECT last_xid FROM rollup_state WHERE name = 'probe_results'), '0'::xid8)
+             WHERE insert_xid >= least(
+                     coalesce((SELECT last_xid FROM rollup_state WHERE name = 'probe_results'),
+                              '0'::xid8),
+                     coalesce((SELECT last_xid FROM rollup_state WHERE name = 'incident_evaluator'),
+                              '0'::xid8))
              LIMIT 1`.execute(this.db.kysely)
         : await sql<{ n: number }>`
             SELECT 1 AS n FROM probe_results
@@ -318,7 +327,7 @@ export class RetentionService {
              LIMIT 1`.execute(this.db.kysely);
     if (unfolded.rows.length === 0) return undefined;
     return guard === 'raw'
-      ? `unfolded rows in ${parent} partition past retention`
+      ? `unfolded or unevaluated rows in ${parent} partition past retention`
       : `unfolded raw rows still target this ${parent} partition`;
   }
 

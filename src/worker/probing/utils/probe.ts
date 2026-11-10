@@ -20,7 +20,7 @@ import {
   type DnsResolver,
   type SsrfGuardConfig,
 } from '../../../core/ssrf/host-validator.js';
-import type { EndpointAssertion, StatusRange } from '../../../core/db/types.js';
+import type { EndpointAssertion, FailureDetail, StatusRange } from '../../../core/db/types.js';
 import { evaluateAssertions } from '../assertions/evaluate.js';
 import { raceAbort } from './abort-race.js';
 import { readCappedBody } from './body-cap.js';
@@ -93,6 +93,12 @@ export interface ProbeOutcome {
   truncated: boolean;
   /** How many redirects were followed. */
   redirects: number;
+  /**
+   * Which assertion failed, why, and what it checked -- present exactly when
+   * `failureClass` is `ASSERTION_FAILED` (M3-14, docs/m6-plan.md §3.9). A
+   * snapshot of the configured assertion, never response text.
+   */
+  assertionFailure?: FailureDetail;
 }
 
 /** A terminal decision, before it is dressed up as a `ProbeOutcome`. */
@@ -102,6 +108,7 @@ interface Verdict {
   failureClass?: FailureClass;
   code?: string;
   truncated?: boolean;
+  assertionFailure?: FailureDetail;
 }
 
 /** FR-6: no configured ranges means "any 2xx". */
@@ -459,6 +466,11 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
           status: response.status,
           failureClass: 'ASSERTION_FAILED',
           truncated: body.truncated,
+          assertionFailure: {
+            index: assertion.index,
+            code: assertion.code,
+            assertion: config.assertions[assertion.index],
+          },
         };
       }
 
@@ -495,6 +507,7 @@ export async function probe(config: EndpointProbeConfig, deps: ProbeDeps): Promi
       certExpiresAt,
       truncated: verdict.truncated ?? false,
       redirects,
+      assertionFailure: verdict.assertionFailure,
     };
   }
 }

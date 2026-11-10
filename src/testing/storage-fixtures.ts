@@ -31,6 +31,8 @@ export interface RawRow {
   totalMs?: number;
   /** `null` = the endpoint never produced response headers. */
   ttfbMs?: number | null;
+  /** Written inside a declared window (0011). */
+  inMaintenance?: boolean;
 }
 
 /**
@@ -58,8 +60,10 @@ export async function insertRawOn(
 ): Promise<void> {
   await client.query(
     `INSERT INTO probe_results (endpoint_id, started_at, scheduled_at, interval_s, outcome,
-                                total_ms, ttfb_ms, redirects, truncated, worker_id, attempt_id)
-     VALUES ($1, $2::timestamptz, $2::timestamptz, $3, $4, $5, $6, 0, false, 'fixture', gen_random_uuid())`,
+                                total_ms, ttfb_ms, redirects, truncated, worker_id, attempt_id,
+                                in_maintenance)
+     VALUES ($1, $2::timestamptz, $2::timestamptz, $3, $4, $5, $6, 0, false, 'fixture', gen_random_uuid(),
+             $7)`,
     [
       r.endpointId,
       r.startedAt,
@@ -67,6 +71,7 @@ export async function insertRawOn(
       r.outcome,
       r.totalMs ?? 40,
       r.ttfbMs === undefined ? Math.floor((r.totalMs ?? 40) / 2) : r.ttfbMs,
+      r.inMaintenance ?? false,
     ],
   );
 }

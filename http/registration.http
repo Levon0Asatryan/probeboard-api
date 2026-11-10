@@ -37,6 +37,19 @@ Content-Type: application/json
 }
 
 ###
+# @name createOnFetchBlockedPort
+# 400 PORT_NOT_ALLOWED, though SSRF_BLOCKED_PORTS does not list 10080: HTTP
+# clients refuse the Fetch standard's bad ports, so such an endpoint could
+# never be probed and would read `unknown` for ever (docs/m6-plan.md §3.11).
+POST {{baseUrl}}/v1/services
+Content-Type: application/json
+
+{
+  "name": "Unprobeable",
+  "baseUrl": "http://93.184.216.36:10080"
+}
+
+###
 # @name createImplicitNewOrigin
 # 201, {service, endpointId}. B-3: a bare URL creates a service at its origin
 # plus one endpoint at its path, in one transaction.
