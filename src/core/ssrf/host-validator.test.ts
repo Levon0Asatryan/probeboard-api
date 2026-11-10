@@ -76,6 +76,20 @@ describe('scheme, credentials, port -- checked before any DNS lookup', () => {
     }
   });
 
+  it("names the client's refusal for a port both lists hold, as the default denylist does for 25/111/135/139", async () => {
+    publicOnly();
+    for (const port of [25, 111, 135, 139]) {
+      const rejection = assertSaveableUrl(`http://public-host.example.com:${port}/`, {
+        ...cfg,
+        blockedPorts: [port],
+      });
+      await expect(rejection).rejects.toMatchObject({
+        code: 'PORT_NOT_ALLOWED',
+        message: `port ${port} cannot be probed: HTTP clients refuse it`,
+      });
+    }
+  });
+
   it('rejects a blocked default port even with no explicit port in the URL', async () => {
     // URL normalizes `http://host` and `http://host:80` identically -- both
     // leave url.port empty -- so the denylist has to be checked against the

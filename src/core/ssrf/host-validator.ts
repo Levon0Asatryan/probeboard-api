@@ -297,14 +297,19 @@ export async function assertSaveableUrl(
   // or 443 to SSRF_BLOCKED_PORTS and have every default-port URL sail past
   // it silently.
   const effectivePort = port ?? (url.protocol === 'https:' ? 443 : 80);
-  if (cfg.blockedPorts.includes(effectivePort)) {
-    throw new SsrfValidationError('PORT_NOT_ALLOWED', `port ${effectivePort} is not allowed`);
-  }
   // The HTTP client's own refusal, checked here so it runs at save time (B-7:
   // an unmonitorable endpoint is refused, not stored) and again on every
   // redirect hop, which this function also validates. Before it, such an
   // endpoint recorded `unknown` for ever (docs/m6-plan.md §3.11).
+  //
+  // Before the configured denylist, not after: the defaults list 25, 111, 135
+  // and 139 in both, and the client's refusal is the more specific fact -- it
+  // is what makes the probe stored as BAD_PORT and the save-time message say
+  // why. Checked second, those four stored a plain PORT_NOT_ALLOWED.
   if (FETCH_BLOCKED_PORTS.has(effectivePort)) throw new FetchBlockedPortError(effectivePort);
+  if (cfg.blockedPorts.includes(effectivePort)) {
+    throw new SsrfValidationError('PORT_NOT_ALLOWED', `port ${effectivePort} is not allowed`);
+  }
 
   // `URL.hostname` keeps an IPv6 literal bracketed ("[::1]"); every other
   // check below -- the hostname denylist, net.isIP, dns.resolve, BlockList --

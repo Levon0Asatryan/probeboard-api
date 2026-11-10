@@ -339,6 +339,24 @@ describe('probe, redirects', () => {
     });
   });
 
+  it('stores BAD_PORT for a redirect onto a port the configured denylist also holds', async () => {
+    // SSRF_BLOCKED_PORTS's default lists 25; checked first, it stored a plain
+    // PORT_NOT_ALLOWED for a port the client would have refused anyway.
+    const server = await serve(redirect('http://127.0.0.1:25/final'));
+
+    const outcome = await probe(
+      config({ url: `${server.origin}/start` }),
+      deps({ ssrf: { ...GUARD_OFF, blockedPorts: [25] } }),
+    );
+
+    expect(outcome).toMatchObject({
+      success: false,
+      failureClass: 'BLOCKED_BY_POLICY',
+      code: 'BAD_PORT',
+      redirects: 1,
+    });
+  });
+
   it('keeps headers on a same-origin hop', async () => {
     const server = await serve((request, response) => {
       if (request.url === '/start') {
