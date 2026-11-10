@@ -403,7 +403,11 @@ describe('ResultRecorderService (real transaction)', () => {
 
 describe('what a result says about itself (0011, docs/m6-plan.md §3.2)', () => {
   const repo = new ProbeResultRepository(dbLike);
-  const AT = Date.parse('2026-09-29T10:00:00.000Z');
+  // Today, on the hour: a fixed calendar date runs out of partitions once the
+  // volume that held it is gone -- this block failed in CI on 2026-11-10 for
+  // exactly that. Windows are placed relative to it.
+  const AT = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  const at = (hours: number) => new Date(AT + hours * 3_600_000).toISOString();
 
   async function serviceOf(endpointId: string): Promise<string> {
     const { rows } = await pool.query<{ service_id: string; user_id: string }>(
@@ -478,27 +482,22 @@ describe('what a result says about itself (0011, docs/m6-plan.md §3.2)', () => 
     // Two separate paths, each tested: a suppression that silently does not
     // apply on one of them is the defect shape Gatus shipped.
     const a = await leasedEndpoint();
-    await window({ endpointId: a }, await userOf(a), '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    await window({ endpointId: a }, await userOf(a), at(-1), at(1));
     expect((await write(a)).in_maintenance).toBe(true);
 
     await truncateAll(pool);
     const b = await leasedEndpoint();
-    await window(
-      { serviceId: await serviceOf(b) },
-      await userOf(b),
-      '2026-09-29T09:00Z',
-      '2026-09-29T11:00Z',
-    );
+    await window({ serviceId: await serviceOf(b) }, await userOf(b), at(-1), at(1));
     expect((await write(b)).in_maintenance).toBe(true);
   });
 
   it('is [starts_at, ends_at): in at the start, out at the end', async () => {
     const id = await leasedEndpoint();
     const owner = await userOf(id);
-    const w = await window({ endpointId: id }, owner, '2026-09-29T10:00Z', '2026-09-29T11:00Z');
+    const w = await window({ endpointId: id }, owner, at(0), at(1));
     expect((await write(id)).in_maintenance).toBe(true);
     await pool.query(`DELETE FROM maintenance_windows WHERE id = $1`, [w]);
-    await window({ endpointId: id }, owner, '2026-09-29T09:00Z', '2026-09-29T10:00Z');
+    await window({ endpointId: id }, owner, at(-1), at(0));
     expect((await write(id)).in_maintenance).toBe(false);
   });
 
@@ -516,19 +515,14 @@ describe('what a result says about itself (0011, docs/m6-plan.md §3.2)', () => 
        RETURNING id`,
       [id],
     );
-    await window(
-      { endpointId: sibling.rows[0].id },
-      owner,
-      '2026-09-29T09:00Z',
-      '2026-09-29T11:00Z',
-    );
-    await window({ serviceId: other.rows[0].id }, owner, '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    await window({ endpointId: sibling.rows[0].id }, owner, at(-1), at(1));
+    await window({ serviceId: other.rows[0].id }, owner, at(-1), at(1));
     expect((await write(id)).in_maintenance).toBe(false);
   });
 
   it('is decided once, at write: removing the window later does not rewrite the row', async () => {
     const id = await leasedEndpoint();
-    await window({ endpointId: id }, await userOf(id), '2026-09-29T09:00Z', '2026-09-29T11:00Z');
+    await window({ endpointId: id }, await userOf(id), at(-1), at(1));
     await write(id);
     await pool.query(`DELETE FROM maintenance_windows`);
     const { rows } = await pool.query<{ in_maintenance: boolean }>(
