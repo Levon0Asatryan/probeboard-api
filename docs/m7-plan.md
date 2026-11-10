@@ -308,6 +308,7 @@ CREATE INDEX email_verification_tokens_user_idx ON email_verification_tokens (us
 -- Deliveries: one message to one target. Its id is the webhook-id and the Message-ID.
 CREATE TABLE notification_deliveries (
     id                     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    seq                    bigint      GENERATED ALWAYS AS IDENTITY,  -- FIFO order (§3.6), not created_at
     user_id                uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     service_id             uuid,                              -- NULL for verification and test
     channel_id             uuid        REFERENCES notification_channels (id) ON DELETE CASCADE,
@@ -333,7 +334,7 @@ CREATE TABLE notification_deliveries (
 );
 CREATE INDEX notification_deliveries_due_idx   ON notification_deliveries (not_before)  WHERE status = 'pending';
 CREATE INDEX notification_deliveries_lease_idx ON notification_deliveries (lease_until) WHERE status = 'sending';
-CREATE INDEX notification_deliveries_fifo_idx  ON notification_deliveries (channel_id, service_id, created_at)
+CREATE INDEX notification_deliveries_fifo_idx  ON notification_deliveries (channel_id, service_id, seq)
     WHERE status IN ('pending', 'sending');
 CREATE INDEX notification_deliveries_user_idx  ON notification_deliveries (user_id, created_at DESC, id DESC);
 
@@ -456,7 +457,8 @@ One transaction per tick, single-flight on `rollup_state` row
    history, never silent.
 
 Within one tick, open groups are written before close groups, so their
-deliveries are older (the FIFO rule in §3.6 then keeps the order on the wire).
+deliveries take lower `seq` values (the FIFO rule in §3.6 then keeps the order
+on the wire; `created_at` cannot, since it is equal within the transaction).
 
 **Bound.** A group waits at most `NOTIFY_GROUP_WINDOW_MS` past its first
 event plus one tick. A sibling confirmed later than that is its own group,
@@ -522,8 +524,8 @@ WHERE  d.id IN (
               OR (c.status = 'sending' AND c.lease_until < now()))          -- a dead worker's claim
            AND  NOT EXISTS (SELECT 1 FROM notification_deliveries p           -- FIFO per (channel, service)
                             WHERE p.channel_id = c.channel_id AND p.service_id = c.service_id
-                              AND p.created_at < c.created_at AND p.status IN ('pending', 'sending'))
-         ORDER  BY c.created_at
+                              AND p.seq < c.seq AND p.status IN ('pending', 'sending'))
+         ORDER  BY c.seq
          LIMIT  $batch
          FOR UPDATE SKIP LOCKED)
 RETURNING d.*;
@@ -534,6 +536,14 @@ RETURNING d.*;
 every time still reaches `NOTIFY_MAX_ATTEMPTS` and fails permanently — a
 poison message is bounded. The `(delivery_id, attempt)` key makes "two workers
 claimed attempt 3" unstorable.
+
+**Ordering key.** `seq bigint GENERATED ALWAYS AS IDENTITY`, not `created_at`:
+`now()` is fixed for a transaction (m4-plan §2.4.4), and one grouping pass
+inserts an open and a close for the same channel and service in one
+transaction, so their `created_at` are equal and a strict `<` orders neither.
+An identity value is drawn per row in insertion order; the grouper is
+single-flight, so the order it writes is the order it decided. `int8` arrives
+from node-postgres as a string, and `types.ts` says so.
 
 **Send** with no transaction open and no row lock held: a slow SMTP server or
 webhook receiver can block neither the evaluator, the grouper, nor a channel
@@ -937,7 +947,7 @@ Every row: the test, and the removal that must make it fail.
 | Poison message bounded                                          | `attempts` at claim                       | a send that throws every time → `failed` after `NOTIFY_MAX_ATTEMPTS`. Removal: increment at record → never fails                                                                                                                                                                        |
 | Retry with backoff, then permanent failure (E-8)                | §3.6                                      | real SMTP server answering `451` → `pending`, `not_before` per `backoff`; at max → `failed / SMTP_451`, readable at `GET /v1/notification-deliveries?status=failed`                                                                                                                     |
 | One row per failure class, through the real transport           | §3.6's table                              | smtp-server answering 250, 451, 550; refused port; a server that never greets (timeout). Webhook: 200, 500, 301, 410, timeout, private address. One case each, real sockets                                                                                                             |
-| Close never overtakes its open (D16)                            | FIFO predicate                            | open delivery retrying, close queued → close not claimable until open is terminal. Removal → close sent first                                                                                                                                                                           |
+| Close never overtakes its open (D16)                            | FIFO predicate on `seq`                   | open delivery retrying, close queued → close not claimable until open is terminal; and **open and close grouped in one pass** (same transaction, equal `created_at`) → one claim returns the open only. Removal: order by `created_at` → both claimed together                          |
 | Webhook signature valid, id constant across retries (E-9)       | D13                                       | receiver verifies with an independently written reference; 500 then 200 → two requests, same `webhook-id`, different timestamps, both valid                                                                                                                                             |
 | Webhook SSRF guard at save and per attempt (E-9)                | `assertSaveableUrl`, `probe()`            | save `http://10.0.0.1/` → `400 ADDRESS_NOT_ALLOWED`; saved name re-pointed to a private address → attempt `failed / WEBHOOK_ADDRESS_NOT_ALLOWED`, receiver hit 0 times. A **public** test address with the guard on, as M6's run did — not a loopback that the blocklist refuses anyway |
 | Redirect not followed                                           | `followRedirects: false`                  | receiver answers 307 to a second listener → second listener hit 0 times, `failed / HTTP_307`                                                                                                                                                                                            |
