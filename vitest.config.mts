@@ -110,6 +110,19 @@ export default defineConfig({
         'src/api/registration/endpoints.controller.ts',
         'src/api/registration/services/services.service.ts',
         'src/api/registration/services/endpoints.service.ts',
+        // M6, the same shape: HTTP wiring over owner-scoped queries, and for
+        // maintenance windows the user-row lock before counting the quota.
+        // Covered by e2e/incidents-http.int.test.ts and
+        // e2e/maintenance-http.int.test.ts against a real server and
+        // database -- including the quota race forced with a table-lock
+        // barrier, which fails every time with the user-row lock removed.
+        // The response mappings (dto/) and the effective-state rule
+        // (registration/utils/effective-state.ts) have no database behaviour,
+        // so they get unit tests instead.
+        'src/api/incidents/incidents.controller.ts',
+        'src/api/incidents/incidents.service.ts',
+        'src/api/maintenance/maintenance.controller.ts',
+        'src/api/maintenance/maintenance.service.ts',
       ],
       // Deliberately low for M0, when most of the tree is wiring. The
       // thresholds rise as the milestones that carry real logic land; docs
