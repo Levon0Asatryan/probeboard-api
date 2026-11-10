@@ -64,17 +64,17 @@ async function signUp(email: string): Promise<string> {
 }
 
 /** A service and one endpoint for `email`'s account, written directly. */
-async function endpointOf(email: string, path = '/p') {
+async function endpointOf(email: string, path = '/p', baseUrl = 'http://93.184.216.34') {
   const { rows } = await pool.query<{ endpoint_id: string; service_id: string; user_id: string }>(
     `WITH u AS (SELECT id FROM users WHERE email = $1),
           s AS (INSERT INTO services (user_id, name, base_url)
-                SELECT id, 's', 'http://93.184.216.34' FROM u
+                SELECT id, 's', $3 FROM u
                 ON CONFLICT (user_id, base_url) DO UPDATE SET name = excluded.name
                 RETURNING id, user_id)
      INSERT INTO endpoints (service_id, user_id, method, path, interval_s, timeout_ms, max_redirects)
      SELECT id, user_id, 'GET', $2, 60, 5000, 5 FROM s
      RETURNING id AS endpoint_id, service_id, user_id`,
-    [email, path],
+    [email, path, baseUrl],
   );
   return rows[0];
 }
@@ -231,7 +231,8 @@ describe('tenant scope: every read joins endpoints on id and user_id', () => {
 describe('listing', () => {
   async function three() {
     const ep = await endpointOf('alice@example.com');
-    const other = await endpointOf('alice@example.com', '/other');
+    // Another service of hers: the per-service list must leave it out.
+    const other = await endpointOf('alice@example.com', '/other', 'http://93.184.216.35');
     const oldest = await incident(ep, {
       opened: '2033-03-10T08:00:00Z',
       confirmed: '2033-03-10T08:02:00Z',
@@ -264,14 +265,18 @@ describe('listing', () => {
     expect(ids(await get('/incidents?status=open', alice))).toEqual([newest, middle]);
   });
 
-  it('scopes to one endpoint and to one service', async () => {
-    const { ep, oldest, middle, newest } = await three();
+  it('scopes to one endpoint and to one service, leaving out her other service', async () => {
+    const { ep, other, oldest, middle, newest } = await three();
+    expect(ep.service_id).not.toBe(other.service_id);
     expect(ids(await get(`/endpoints/${ep.endpoint_id}/incidents`, alice))).toEqual([
       newest,
       oldest,
     ]);
-    const service = await get(`/services/${ep.service_id}/incidents?status=open`, alice);
-    expect(ids(service)).toEqual([newest, middle]);
+    expect(ids(await get(`/services/${ep.service_id}/incidents`, alice))).toEqual([newest, oldest]);
+    expect(ids(await get(`/services/${ep.service_id}/incidents?status=open`, alice))).toEqual([
+      newest,
+    ]);
+    expect(ids(await get(`/services/${other.service_id}/incidents`, alice))).toEqual([middle]);
   });
 
   it('refuses a malformed status, cursor or limit, and an unauthenticated caller', async () => {

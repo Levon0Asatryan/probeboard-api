@@ -130,7 +130,13 @@ describe('create, read, update, delete', () => {
     const forService = await call(`/maintenance-windows?serviceId=${ep.service_id}`, {
       cookie: alice,
     });
-    expect(forService.body).toHaveLength(1);
+    expect((forService.body as { id: string }[]).map((w) => w.id)).toEqual([
+      (onService.body as { id: string }).id,
+    ]);
+    const forEndpoint = await call(`/maintenance-windows?endpointId=${ep.endpoint_id}`, {
+      cookie: alice,
+    });
+    expect((forEndpoint.body as { id: string }[]).map((w) => w.id)).toEqual([id]);
   });
 
   it('edits the times and clears the reason, and deletes', async () => {
