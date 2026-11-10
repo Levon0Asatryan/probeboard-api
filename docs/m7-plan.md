@@ -588,6 +588,13 @@ another worker sends again.
   second identical email, bounded to the crash-in-window case and visible as
   `attempts = 2` with an earlier attempt that never finished. Open question 2.
 
+**A delivery whose service or endpoint was deleted after it was grouped** is
+still sent. Its snapshot is a true statement about the moment the alert was
+raised, the user's history no longer shows it (every read joins `services`),
+and holding it for ever as `pending` would be a row nothing can finish. A
+channel deletion is different: the target is gone, so its deliveries go with
+it by cascade.
+
 **Lease** `DISPATCH_LEASE_MS` default 60 s, `refine`d
 `≥ max(SMTP_TIMEOUT_MS, WEBHOOK_TIMEOUT_MS) + 5000`, so a live send cannot
 outlast its own lease.
@@ -608,7 +615,8 @@ A caller of `probe()`, with:
 | `followRedirects`     | `false` — a `3xx` is `STATUS_MISMATCH` with its status, a permanent failure (Standard Webhooks; and following would re-POST a signed body to a host the user never saved) |
 
 `ProbeDeps` from the shared `createProbeDeps(cfg)` with
-`maxBodyBytes = 4096` (nothing reads the receiver's body). So the SSRF guard
+`maxBodyBytes = WEBHOOK_MAX_RESPONSE_BYTES` (nothing reads the receiver's
+body; a cap, not a literal — rule #1). So the SSRF guard
 runs **per attempt** — resolve, classify every address, pin — and at save
 (`assertSaveableUrl`); with no redirect followed, there is no second hop to
 validate. A DNS change after save that points the host at a private address is
@@ -703,10 +711,14 @@ when the alert was raised — and a webhook signs the same bytes each time.
 - `POST /v1/auth/verify-email { token }` — no session needed (the link may
   open in another browser). Admission per address on scope `verify`
   (`AUTH_MAX_VERIFY_PER_IP`). `looksLikeToken`-style shape check, then in one
-  transaction: consume by hash (single use, unexpired), check
-  `users.email = tokens.email`, set `email_verified_at = now()` where null,
-  insert the email channel `ON CONFLICT DO NOTHING`. Unknown, used, expired and
-  superseded tokens all answer the same `400 VERIFICATION_TOKEN_INVALID`.
+  transaction: consume by hash (single use, unexpired), lock the user row,
+  check `users.email = tokens.email`, set `email_verified_at = now()` where
+  null, insert the email channel `ON CONFLICT DO NOTHING`. Unknown, used,
+  expired and superseded tokens all answer the same
+  `400 VERIFICATION_TOKEN_INVALID`. So does an address mismatch — the token
+  stays consumed and nothing is verified (no route changes an address today;
+  the check makes a token prove the address it was sent to, not the account).
+  The consume's row count is read, never assumed (rule #21).
 - The sender nulls the token ciphertext when the delivery is `delivered` or
   `failed`; consumption nulls it too. The plaintext exists at rest only while
   the mail is in flight.
@@ -782,6 +794,9 @@ skipReason, deliveryIds }`. A skip is recorded only when an event produced
   user-triggered outbound request, bounded so it cannot be a request
   generator.
 - `WEBHOOK_CHANNEL_QUOTA_PER_USER` counted under the user row lock (M2 §5.3).
+  `assertSaveableUrl` — a DNS round trip — runs **before** that lock is taken,
+  never under it (rule #4; M2's measured defect). The pinned connect at every
+  attempt is what covers a name that changes between the check and the save.
 - `http/notifications.http` (channels, preferences, deliveries) and the
   verification requests in `http/auth.http`; `npm run openapi` in the same
   commit; the drift test covers the new routes.
@@ -844,6 +859,7 @@ rejection test.
 | `SMTP_USER` / `SMTP_PASSWORD`       | optional strings                     | —                                        | `refine`: both or neither; password redacted               |
 | `SMTP_TIMEOUT_MS`                   | `int().min(1000).max(120_000)`       | `15_000`                                 | connection, greeting and socket                            |
 | `WEBHOOK_TIMEOUT_MS`                | `int().min(1000).max(60_000)`        | `15_000`                                 | Standard Webhooks 15–30 s                                  |
+| `WEBHOOK_MAX_RESPONSE_BYTES`        | `int().min(0).max(65_536)`           | `4096`                                   | the receiver's body is read only to close the response     |
 | `WEBHOOK_CHANNEL_QUOTA_PER_USER`    | `int().min(1).max(100)`              | `5`                                      |                                                            |
 | `EMAIL_VERIFICATION_TTL_MS`         | `int().min(60_000).max(604_800_000)` | `86_400_000`                             |                                                            |
 | `EMAIL_VERIFICATION_WINDOW_MS`      | `int().min(60_000).max(86_400_000)`  | `3_600_000`                              |                                                            |
