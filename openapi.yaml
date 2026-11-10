@@ -37,6 +37,10 @@ tags:
     description: "Monitored services: their origin, headers and tags."
   - name: endpoints
     description: Monitored endpoints under a service.
+  - name: incidents
+    description: "Incident history: when an endpoint was down, and why."
+  - name: maintenance
+    description: "Declared maintenance windows: failures inside one open no incident."
 components:
   schemas:
     Error:
@@ -68,12 +72,15 @@ components:
             - HEADER_NOT_ALLOWED
             - HEADER_INVALID
             - QUOTA_EXCEEDED
+            - MAINTENANCE_WINDOW_IN_PAST
+            - MAINTENANCE_WINDOW_TOO_LONG
+            - MAINTENANCE_WINDOW_QUOTA_EXCEEDED
           description: Stable machine-readable code. Branch on this, never on `message`.
         message:
           type: string
           description: Human-readable prose. Safe to display; never contains internal detail.
         details:
-          description: "Shape depends on `code`: an array of field issues on VALIDATION_FAILED, `{limit, count}` on QUOTA_EXCEEDED, absent on every other code."
+          description: "Shape depends on `code`: an array of field issues on VALIDATION_FAILED, `{limit, count}` on QUOTA_EXCEEDED and MAINTENANCE_WINDOW_QUOTA_EXCEEDED, `{limit}` (days) on MAINTENANCE_WINDOW_TOO_LONG, absent on every other code."
           oneOf:
             - type: array
               description: "VALIDATION_FAILED: one entry per rejected field."
@@ -89,10 +96,9 @@ components:
                   message:
                     type: string
             - type: object
-              description: "QUOTA_EXCEEDED: the configured cap and the count that reached it (B-8)."
+              description: "QUOTA_EXCEEDED, MAINTENANCE_WINDOW_QUOTA_EXCEEDED: the configured cap and the count that reached it. MAINTENANCE_WINDOW_TOO_LONG: `limit` only, in days."
               required:
                 - limit
-                - count
               properties:
                 limit:
                   type: integer
@@ -837,6 +843,251 @@ components:
         updatedAt:
           type: string
           format: date-time
+    Incident:
+      type: object
+      description: Every time is a probe started_at, never the evaluator clock (docs/m6-plan.md §3.5).
+      required:
+        - id
+        - endpointId
+        - serviceId
+        - status
+        - openedAt
+        - confirmedAt
+        - closedAt
+        - closeConfirmedAt
+        - durationMs
+        - detectionLatencyMs
+        - failuresToOpen
+        - cause
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpointId:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - open
+            - closed
+        openedAt:
+          type: string
+          format: date-time
+          description: The first failed probe of the run (D-2), not the one that confirmed it.
+        confirmedAt:
+          type: string
+          format: date-time
+          description: The probe that reached the failure threshold.
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: The first success of the recovery (D-3). Null while open.
+        closeConfirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: The success that reached the success threshold. Null while open.
+        durationMs:
+          type: integer
+          nullable: true
+          description: closedAt - openedAt. Null while open.
+        detectionLatencyMs:
+          type: integer
+          description: "confirmedAt - openedAt: what the failure threshold cost."
+        failuresToOpen:
+          type: integer
+          description: The failure threshold in force when it opened.
+        cause:
+          type: object
+          description: "The first failed probe, copied when the incident opened: the raw result ages out."
+          required:
+            - class
+            - code
+            - statusCode
+            - assertion
+          properties:
+            class:
+              type: string
+              description: The failure class, lowercase, as stored (e.g. dns_failure).
+            code:
+              type: string
+              nullable: true
+            statusCode:
+              type: integer
+              nullable: true
+            assertion:
+              type: object
+              nullable: true
+              description: "When class is assertion_failed: which one (index), why (a closed-list code) and the assertion as configured then. Never response text."
+              required:
+                - index
+                - code
+                - assertion
+              properties:
+                index:
+                  type: integer
+                code:
+                  type: string
+                  enum:
+                    - substring_absent
+                    - forbidden_substring_present
+                    - truncated_absence_unprovable
+                    - truncated_not_parsed
+                    - not_json
+                    - path_not_found
+                    - value_mismatch
+                assertion:
+                  type: object
+    MaintenanceWindow:
+      type: object
+      required:
+        - id
+        - serviceId
+        - endpointId
+        - startsAt
+        - endsAt
+        - reason
+        - active
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set for a window on a whole service; exactly one of the two is set.
+        endpointId:
+          type: string
+          format: uuid
+          nullable: true
+        startsAt:
+          type: string
+          format: date-time
+          description: Inclusive.
+        endsAt:
+          type: string
+          format: date-time
+          description: Exclusive.
+        reason:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+          description: startsAt <= now < endsAt.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateMaintenanceWindowRequest:
+      type: object
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        endpointId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        startsAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+        endsAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+      required:
+        - startsAt
+        - endsAt
+      additionalProperties: false
+      description: Exactly one of serviceId and endpointId. endsAt must be after startsAt, in the future (MAINTENANCE_WINDOW_IN_PAST), and at most MAINTENANCE_MAX_DURATION_DAYS after it (MAINTENANCE_WINDOW_TOO_LONG). Times need an explicit offset.
+      oneOf:
+        - required:
+            - serviceId
+        - required:
+            - endpointId
+    UpdateMaintenanceWindowRequest:
+      type: object
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+        endsAt:
+          type: string
+          format: date-time
+          pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
+        reason:
+          nullable: true
+          type: string
+          minLength: 1
+          maxLength: 500
+      additionalProperties: false
+      description: "Every field optional; the target cannot change. The merged window is re-checked as on create. reason: null clears it."
+    EndpointDetail:
+      description: An endpoint, with its current state. Only GET /endpoints/{id} carries health.
+      allOf:
+        - $ref: "#/components/schemas/Endpoint"
+        - type: object
+          required:
+            - health
+          properties:
+            health:
+              $ref: "#/components/schemas/EndpointHealth"
+    EndpointHealth:
+      type: object
+      description: paused when disabled; else maintenance while a window covers now; else what the evaluator last observed; else unknown (docs/m6-plan.md §3.10).
+      required:
+        - state
+        - stateSince
+        - consecutiveFailures
+        - failureThreshold
+        - openIncidentId
+        - lastSuccessAt
+      properties:
+        state:
+          type: string
+          enum:
+            - up
+            - degraded
+            - pending
+            - down
+            - unknown
+            - paused
+            - maintenance
+        stateSince:
+          type: string
+          format: date-time
+          nullable: true
+          description: "When that state began: a probe started_at, the covering window start, or null (paused, or never evaluated)."
+        consecutiveFailures:
+          type: integer
+          description: 'With failureThreshold: "failing, 2 of 3" (03 §3.7).'
+        failureThreshold:
+          type: integer
+        openIncidentId:
+          type: string
+          format: uuid
+          nullable: true
+        lastSuccessAt:
+          type: string
+          format: date-time
+          nullable: true
   securitySchemes:
     sessionCookie:
       type: apiKey
@@ -1722,11 +1973,11 @@ paths:
         - *a5
       responses:
         "200":
-          description: The endpoint, with its own headers and the merged effective set.
+          description: The endpoint, with its own headers, the merged effective set, and its current state.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Endpoint"
+                $ref: "#/components/schemas/EndpointDetail"
         "400": *a6
         "401": *a3
         "404":
@@ -1864,6 +2115,348 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Endpoint"
+        "400": *a6
+        "401": *a3
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/incidents:
+    get:
+      tags:
+        - incidents
+      operationId: listIncidents
+      summary: Every incident on the signed-in account's endpoints
+      parameters:
+        - &a10
+          name: status
+          in: query
+          required: false
+          description: "open: not yet closed. closed: recovered. Omitted: both."
+          schema:
+            type: string
+            enum:
+              - open
+              - closed
+        - *a7
+        - *a8
+      responses:
+        "200": &a11
+          description: One page, newest first (openedAt DESC, id DESC).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Incident"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed status, cursor or limit."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/incidents/{id}:
+    get:
+      tags:
+        - incidents
+      operationId: getIncident
+      summary: Fetch an incident
+      parameters:
+        - *a5
+      responses:
+        "200":
+          description: The incident.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Incident"
+        "400": *a6
+        "401": *a3
+        "404":
+          description: Not found, another user's, or its endpoint was deleted -- indistinguishable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/services/{id}/incidents:
+    get:
+      tags:
+        - incidents
+      operationId: listServiceIncidents
+      summary: Incidents on a service's endpoints (D-5)
+      parameters:
+        - *a5
+        - *a10
+        - *a7
+        - *a8
+      responses:
+        "200": *a11
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "404":
+          description: Service not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/endpoints/{id}/incidents:
+    get:
+      tags:
+        - incidents
+      operationId: listEndpointIncidents
+      summary: An endpoint's incident history (D-5, FR-27)
+      parameters:
+        - *a5
+        - *a10
+        - *a7
+        - *a8
+      responses:
+        "200": *a11
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "404":
+          description: Endpoint not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/maintenance-windows:
+    post:
+      tags:
+        - maintenance
+      operationId: createMaintenanceWindow
+      summary: Declare a maintenance window on a service or one endpoint
+      description: Applies to results written while it is open; never rewrites a recorded result. Quota-checked under the user row lock (MAINTENANCE_WINDOW_QUOTA_PER_USER, every stored window counted, ended ones included).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMaintenanceWindowRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "400":
+          description: "`VALIDATION_FAILED`, `MAINTENANCE_WINDOW_IN_PAST` or `MAINTENANCE_WINDOW_TOO_LONG`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "404":
+          description: The service or endpoint is not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`MAINTENANCE_WINDOW_QUOTA_EXCEEDED`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags:
+        - maintenance
+      operationId: listMaintenanceWindows
+      summary: The signed-in account's maintenance windows
+      parameters:
+        - name: serviceId
+          in: query
+          required: false
+          description: Windows declared on this service itself.
+          schema:
+            type: string
+            format: uuid
+        - name: endpointId
+          in: query
+          required: false
+          description: Windows declared on this endpoint itself.
+          schema:
+            type: string
+            format: uuid
+        - name: active
+          in: query
+          required: false
+          description: "true: covering now. false: ended or not yet started."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+        - *a7
+        - *a8
+      responses:
+        "200":
+          description: One page, latest start first (startsAt DESC, id DESC).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MaintenanceWindow"
+        "400":
+          description: "`VALIDATION_FAILED`: a malformed filter, cursor or limit."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/maintenance-windows/{id}:
+    get:
+      tags:
+        - maintenance
+      operationId: getMaintenanceWindow
+      summary: Fetch a maintenance window
+      parameters:
+        - *a5
+      responses:
+        "200":
+          description: The window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "400": *a6
+        "401": *a3
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      tags:
+        - maintenance
+      operationId: updateMaintenanceWindow
+      summary: Change a window's times or reason
+      parameters:
+        - *a5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMaintenanceWindowRequest"
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "400":
+          description: "`VALIDATION_FAILED`, `MAINTENANCE_WINDOW_IN_PAST` or `MAINTENANCE_WINDOW_TOO_LONG`. Also `BAD_REQUEST` when the `id` in the path is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": *a3
+        "404":
+          description: Not found, or owned by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": *a2
+        "429": *a4
+        "503":
+          description: "The database is not reachable; retry later. Code: `DATABASE_UNAVAILABLE`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - maintenance
+      operationId: deleteMaintenanceWindow
+      summary: Delete a maintenance window
+      parameters:
+        - *a5
+      responses:
+        "204":
+          description: Deleted. Results written inside it keep their flag.
         "400": *a6
         "401": *a3
         "404":

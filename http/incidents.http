@@ -1,0 +1,58 @@
+### api/incidents — incident history (M6, docs/m6-plan.md §3.10)
+#
+# Read-only: the worker's evaluator opens and closes incidents. Run auth.http's
+# register + login first. An incident appears once an endpoint has failed
+# failureThreshold times in a row (default 3) -- point one at a port nothing
+# listens on, or see docs/m6-verification.md for a target that can be switched
+# down and up. Replace :id with real ids.
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name listIncidents
+# 200, newest first (openedAt DESC). openedAt is the FIRST failed probe of the
+# run, confirmedAt the one that reached the threshold: detectionLatencyMs is
+# the difference. durationMs is null while open.
+GET {{baseUrl}}/v1/incidents
+
+###
+# @name listOpenIncidents
+GET {{baseUrl}}/v1/incidents?status=open
+
+###
+# @name listClosedIncidentsPage
+# The cursor is the last incident's id from the previous page. limit is capped
+# by MAX_LIST_LIMIT, not rejected above it.
+GET {{baseUrl}}/v1/incidents?status=closed&limit=10&cursor=:lastId
+
+###
+# @name getIncident
+# 200. cause is the first failed probe's evidence, copied when the incident
+# opened: class, code, statusCode, and which assertion failed (assertion).
+GET {{baseUrl}}/v1/incidents/:id
+
+###
+# @name endpointIncidents
+# D-5 / FR-27: one endpoint's history.
+GET {{baseUrl}}/v1/endpoints/:id/incidents
+
+###
+# @name serviceIncidents
+# D-5: every endpoint of one service.
+GET {{baseUrl}}/v1/services/:id/incidents?status=open
+
+###
+# @name incidentNotFound
+# 404 NOT_FOUND -- byte-identical for an id that does not exist, one that is
+# another user's, and one whose endpoint was deleted.
+GET {{baseUrl}}/v1/incidents/00000000-0000-4000-8000-000000000000
+
+###
+# @name incidentBadStatus
+# 400 VALIDATION_FAILED: status is open or closed.
+GET {{baseUrl}}/v1/incidents?status=broken
+
+###
+# @name incidentBadId
+# 400 BAD_REQUEST: the id is not a UUID.
+GET {{baseUrl}}/v1/incidents/not-a-uuid

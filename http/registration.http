@@ -254,7 +254,10 @@ Content-Type: application/json
 
 ###
 # @name getEndpoint
-# Replace :id with create's response id.
+# Replace :id with create's response id. Carries `health` (M6): state is paused
+# when disabled, maintenance while a window covers now, else what the evaluator
+# last observed (up, degraded, pending, down, unknown); consecutiveFailures with
+# failureThreshold reads "failing, 2 of 3". Lists do not carry it.
 GET {{baseUrl}}/v1/endpoints/:id
 
 ###

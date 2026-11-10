@@ -12,6 +12,10 @@ import { updateEndpointSchema } from '../registration/dto/update-endpoint.dto.js
 import { jsonValueSchema } from '../registration/dto/endpoint-fields.js';
 import { headerListSchema } from '../registration/dto/header.dto.js';
 import { tagListSchema } from '../registration/dto/tag.dto.js';
+import {
+  createMaintenanceWindowSchema,
+  updateMaintenanceWindowSchema,
+} from '../maintenance/dto/maintenance-window.dto.js';
 
 /**
  * The OpenAPI description of what this service serves.
@@ -97,6 +101,10 @@ const ERROR_CODES = [
   'HEADER_NOT_ALLOWED',
   'HEADER_INVALID',
   'QUOTA_EXCEEDED',
+  // Maintenance windows (M6, docs/m6-plan.md §3.7).
+  'MAINTENANCE_WINDOW_IN_PAST',
+  'MAINTENANCE_WINDOW_TOO_LONG',
+  'MAINTENANCE_WINDOW_QUOTA_EXCEEDED',
 ] as const;
 
 const errorSchema = {
@@ -115,7 +123,8 @@ const errorSchema = {
     details: {
       description:
         'Shape depends on `code`: an array of field issues on VALIDATION_FAILED, ' +
-        '`{limit, count}` on QUOTA_EXCEEDED, absent on every other code.',
+        '`{limit, count}` on QUOTA_EXCEEDED and MAINTENANCE_WINDOW_QUOTA_EXCEEDED, `{limit}` (days) ' +
+        'on MAINTENANCE_WINDOW_TOO_LONG, absent on every other code.',
       oneOf: [
         {
           type: 'array',
@@ -135,8 +144,10 @@ const errorSchema = {
         },
         {
           type: 'object',
-          description: 'QUOTA_EXCEEDED: the configured cap and the count that reached it (B-8).',
-          required: ['limit', 'count'],
+          description:
+            'QUOTA_EXCEEDED, MAINTENANCE_WINDOW_QUOTA_EXCEEDED: the configured cap and the count ' +
+            'that reached it. MAINTENANCE_WINDOW_TOO_LONG: `limit` only, in days.',
+          required: ['limit'],
           properties: {
             limit: { type: 'integer' },
             count: { type: 'integer' },
@@ -186,6 +197,39 @@ const limitParam = {
     '(MAX_LIST_LIMIT), not the 1000 this schema structurally accepts -- a ' +
     'request over the configured cap returns that many rows, not an error.',
   schema: { type: 'integer' as const, minimum: 1, maximum: 1000, default: 50 },
+};
+
+const incidentStatusParam = {
+  name: 'status',
+  in: 'query' as const,
+  required: false,
+  description: 'open: not yet closed. closed: recovered. Omitted: both.',
+  schema: { type: 'string' as const, enum: ['open', 'closed'] },
+};
+
+const incidentListResponses = {
+  '200': {
+    description: 'One page, newest first (openedAt DESC, id DESC).',
+    content: {
+      'application/json': {
+        schema: { type: 'array', items: { $ref: '#/components/schemas/Incident' } },
+      },
+    },
+  },
+};
+
+/** The create body's field shapes, from zod; its cross-field rules are added by hand above. */
+const maintenanceCreateFields = schemaOf(createMaintenanceWindowSchema);
+
+const maintenanceListResponses = {
+  '200': {
+    description: 'One page, latest start first (startsAt DESC, id DESC).',
+    content: {
+      'application/json': {
+        schema: { type: 'array', items: { $ref: '#/components/schemas/MaintenanceWindow' } },
+      },
+    },
+  },
 };
 
 const tagParam = {
@@ -294,6 +338,11 @@ export function buildOpenApiDocument(
       { name: 'oauth', description: 'Sign in with Google or GitHub, and linked identities.' },
       { name: 'services', description: 'Monitored services: their origin, headers and tags.' },
       { name: 'endpoints', description: 'Monitored endpoints under a service.' },
+      { name: 'incidents', description: 'Incident history: when an endpoint was down, and why.' },
+      {
+        name: 'maintenance',
+        description: 'Declared maintenance windows: failures inside one open no incident.',
+      },
     ],
     components: {
       schemas: {
@@ -509,6 +558,199 @@ export function buildOpenApiDocument(
             tags: { type: 'array', items: { $ref: '#/components/schemas/Tag' } },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        Incident: {
+          type: 'object',
+          description:
+            'Every time is a probe started_at, never the evaluator clock (docs/m6-plan.md §3.5).',
+          required: [
+            'id',
+            'endpointId',
+            'serviceId',
+            'status',
+            'openedAt',
+            'confirmedAt',
+            'closedAt',
+            'closeConfirmedAt',
+            'durationMs',
+            'detectionLatencyMs',
+            'failuresToOpen',
+            'cause',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            endpointId: { type: 'string', format: 'uuid' },
+            serviceId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['open', 'closed'] },
+            openedAt: {
+              type: 'string',
+              format: 'date-time',
+              description:
+                'The first failed probe of the run (D-2), not the one that confirmed it.',
+            },
+            confirmedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'The probe that reached the failure threshold.',
+            },
+            closedAt: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description: 'The first success of the recovery (D-3). Null while open.',
+            },
+            closeConfirmedAt: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description: 'The success that reached the success threshold. Null while open.',
+            },
+            durationMs: {
+              type: 'integer',
+              nullable: true,
+              description: 'closedAt - openedAt. Null while open.',
+            },
+            detectionLatencyMs: {
+              type: 'integer',
+              description: 'confirmedAt - openedAt: what the failure threshold cost.',
+            },
+            failuresToOpen: {
+              type: 'integer',
+              description: 'The failure threshold in force when it opened.',
+            },
+            cause: {
+              type: 'object',
+              description:
+                'The first failed probe, copied when the incident opened: the raw result ages out.',
+              required: ['class', 'code', 'statusCode', 'assertion'],
+              properties: {
+                class: {
+                  type: 'string',
+                  description: 'The failure class, lowercase, as stored (e.g. dns_failure).',
+                },
+                code: { type: 'string', nullable: true },
+                statusCode: { type: 'integer', nullable: true },
+                assertion: {
+                  type: 'object',
+                  nullable: true,
+                  description:
+                    'When class is assertion_failed: which one (index), why (a closed-list code) ' +
+                    'and the assertion as configured then. Never response text.',
+                  required: ['index', 'code', 'assertion'],
+                  properties: {
+                    index: { type: 'integer' },
+                    code: {
+                      type: 'string',
+                      enum: [
+                        'substring_absent',
+                        'forbidden_substring_present',
+                        'truncated_absence_unprovable',
+                        'truncated_not_parsed',
+                        'not_json',
+                        'path_not_found',
+                        'value_mismatch',
+                      ],
+                    },
+                    assertion: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        MaintenanceWindow: {
+          type: 'object',
+          required: [
+            'id',
+            'serviceId',
+            'endpointId',
+            'startsAt',
+            'endsAt',
+            'reason',
+            'active',
+            'createdAt',
+            'updatedAt',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            serviceId: {
+              type: 'string',
+              format: 'uuid',
+              nullable: true,
+              description: 'Set for a window on a whole service; exactly one of the two is set.',
+            },
+            endpointId: { type: 'string', format: 'uuid', nullable: true },
+            startsAt: { type: 'string', format: 'date-time', description: 'Inclusive.' },
+            endsAt: { type: 'string', format: 'date-time', description: 'Exclusive.' },
+            reason: { type: 'string', nullable: true },
+            active: { type: 'boolean', description: 'startsAt <= now < endsAt.' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        // Hand-written: exactly one target and endsAt > startsAt are .refine()s,
+        // which z.toJSONSchema drops (AGENTS.md). The field shapes come from the
+        // zod schema below and are checked against it by document.test.ts.
+        CreateMaintenanceWindowRequest: {
+          ...maintenanceCreateFields,
+          description:
+            'Exactly one of serviceId and endpointId. endsAt must be after startsAt, in the ' +
+            'future (MAINTENANCE_WINDOW_IN_PAST), and at most MAINTENANCE_MAX_DURATION_DAYS ' +
+            'after it (MAINTENANCE_WINDOW_TOO_LONG). Times need an explicit offset.',
+          oneOf: [{ required: ['serviceId'] }, { required: ['endpointId'] }],
+        },
+        UpdateMaintenanceWindowRequest: {
+          ...schemaOf(updateMaintenanceWindowSchema),
+          description:
+            'Every field optional; the target cannot change. The merged window is re-checked ' +
+            'as on create. reason: null clears it.',
+        },
+        EndpointDetail: {
+          description:
+            'An endpoint, with its current state. Only GET /endpoints/{id} carries health.',
+          allOf: [
+            { $ref: '#/components/schemas/Endpoint' },
+            {
+              type: 'object',
+              required: ['health'],
+              properties: { health: { $ref: '#/components/schemas/EndpointHealth' } },
+            },
+          ],
+        },
+        EndpointHealth: {
+          type: 'object',
+          description:
+            'paused when disabled; else maintenance while a window covers now; else what the ' +
+            'evaluator last observed; else unknown (docs/m6-plan.md §3.10).',
+          required: [
+            'state',
+            'stateSince',
+            'consecutiveFailures',
+            'failureThreshold',
+            'openIncidentId',
+            'lastSuccessAt',
+          ],
+          properties: {
+            state: {
+              type: 'string',
+              enum: ['up', 'degraded', 'pending', 'down', 'unknown', 'paused', 'maintenance'],
+            },
+            stateSince: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description:
+                'When that state began: a probe started_at, the covering window start, or null ' +
+                '(paused, or never evaluated).',
+            },
+            consecutiveFailures: {
+              type: 'integer',
+              description: 'With failureThreshold: "failing, 2 of 3" (03 §3.7).',
+            },
+            failureThreshold: { type: 'integer' },
+            openIncidentId: { type: 'string', format: 'uuid', nullable: true },
+            lastSuccessAt: { type: 'string', format: 'date-time', nullable: true },
           },
         },
       },
@@ -1057,9 +1299,10 @@ export function buildOpenApiDocument(
           parameters: [idParam],
           responses: {
             '200': {
-              description: 'The endpoint, with its own headers and the merged effective set.',
+              description:
+                'The endpoint, with its own headers, the merged effective set, and its current state.',
               content: {
-                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+                'application/json': { schema: { $ref: '#/components/schemas/EndpointDetail' } },
               },
             },
             '400': badIdResponse,
@@ -1140,6 +1383,186 @@ export function buildOpenApiDocument(
                 'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
               },
             },
+            '400': badIdResponse,
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listIncidents',
+          summary: "Every incident on the signed-in account's endpoints",
+          parameters: [incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed status, cursor or limit.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/incidents/{id}`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'getIncident',
+          summary: 'Fetch an incident',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'The incident.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/Incident' } },
+              },
+            },
+            '400': badIdResponse,
+            '404': errorResponse(
+              "Not found, another user's, or its endpoint was deleted -- indistinguishable.",
+            ),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/services/{id}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listServiceIncidents',
+          summary: "Incidents on a service's endpoints (D-5)",
+          parameters: [idParam, incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse(
+              '`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
+            '404': errorResponse('Service not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/endpoints/{id}/incidents`]: {
+        get: {
+          tags: ['incidents'],
+          operationId: 'listEndpointIncidents',
+          summary: "An endpoint's incident history (D-5, FR-27)",
+          parameters: [idParam, incidentStatusParam, cursorParam, limitParam],
+          responses: {
+            ...incidentListResponses,
+            '400': errorResponse(
+              '`VALIDATION_FAILED`: a malformed status, cursor or limit. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
+            '404': errorResponse('Endpoint not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/maintenance-windows`]: {
+        post: {
+          tags: ['maintenance'],
+          operationId: 'createMaintenanceWindow',
+          summary: 'Declare a maintenance window on a service or one endpoint',
+          description:
+            'Applies to results written while it is open; never rewrites a recorded result. ' +
+            'Quota-checked under the user row lock (MAINTENANCE_WINDOW_QUOTA_PER_USER, every ' +
+            'stored window counted, ended ones included).',
+          requestBody: jsonBody('CreateMaintenanceWindowRequest'),
+          responses: {
+            '201': {
+              description: 'Created.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/MaintenanceWindow' } },
+              },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, `MAINTENANCE_WINDOW_IN_PAST` or `MAINTENANCE_WINDOW_TOO_LONG`.',
+            ),
+            '404': errorResponse('The service or endpoint is not found, or owned by someone else.'),
+            '409': errorResponse('`MAINTENANCE_WINDOW_QUOTA_EXCEEDED`.'),
+            '413': tooLargeResponse,
+            ...authErrors,
+          },
+        },
+        get: {
+          tags: ['maintenance'],
+          operationId: 'listMaintenanceWindows',
+          summary: "The signed-in account's maintenance windows",
+          parameters: [
+            {
+              name: 'serviceId',
+              in: 'query' as const,
+              required: false,
+              description: 'Windows declared on this service itself.',
+              schema: { type: 'string' as const, format: 'uuid' },
+            },
+            {
+              name: 'endpointId',
+              in: 'query' as const,
+              required: false,
+              description: 'Windows declared on this endpoint itself.',
+              schema: { type: 'string' as const, format: 'uuid' },
+            },
+            {
+              name: 'active',
+              in: 'query' as const,
+              required: false,
+              description: 'true: covering now. false: ended or not yet started.',
+              schema: { type: 'string' as const, enum: ['true', 'false'] },
+            },
+            cursorParam,
+            limitParam,
+          ],
+          responses: {
+            ...maintenanceListResponses,
+            '400': errorResponse('`VALIDATION_FAILED`: a malformed filter, cursor or limit.'),
+            ...authErrors,
+          },
+        },
+      },
+      [`/${API_VERSION_PREFIX}/maintenance-windows/{id}`]: {
+        get: {
+          tags: ['maintenance'],
+          operationId: 'getMaintenanceWindow',
+          summary: 'Fetch a maintenance window',
+          parameters: [idParam],
+          responses: {
+            '200': {
+              description: 'The window.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/MaintenanceWindow' } },
+              },
+            },
+            '400': badIdResponse,
+            '404': errorResponse('Not found, or owned by someone else.'),
+            ...authErrors,
+          },
+        },
+        patch: {
+          tags: ['maintenance'],
+          operationId: 'updateMaintenanceWindow',
+          summary: "Change a window's times or reason",
+          parameters: [idParam],
+          requestBody: jsonBody('UpdateMaintenanceWindowRequest'),
+          responses: {
+            '200': {
+              description: 'Updated.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/MaintenanceWindow' } },
+              },
+            },
+            '400': errorResponse(
+              '`VALIDATION_FAILED`, `MAINTENANCE_WINDOW_IN_PAST` or `MAINTENANCE_WINDOW_TOO_LONG`. Also `BAD_REQUEST` when the `id` in the path is not a UUID.',
+            ),
+            '404': errorResponse('Not found, or owned by someone else.'),
+            '413': tooLargeResponse,
+            ...authErrors,
+          },
+        },
+        delete: {
+          tags: ['maintenance'],
+          operationId: 'deleteMaintenanceWindow',
+          summary: 'Delete a maintenance window',
+          parameters: [idParam],
+          responses: {
+            '204': { description: 'Deleted. Results written inside it keep their flag.' },
             '400': badIdResponse,
             '404': errorResponse('Not found, or owned by someone else.'),
             ...authErrors,

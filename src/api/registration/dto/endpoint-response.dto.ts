@@ -1,4 +1,5 @@
-import type { Endpoint, Header, Tag } from '../../../core/db/types.js';
+import type { Endpoint, EndpointHealth, Header, Tag } from '../../../core/db/types.js';
+import { type EffectiveState, effectiveState } from '../utils/effective-state.js';
 import { type HeaderDto, mergeHeaders, toHeaderDto } from '../services/header-storage.service.js';
 import { toTagDto, type TagDto } from './tag.dto.js';
 
@@ -52,5 +53,42 @@ export function toEndpointDto(
     tags: tags.map(toTagDto),
     createdAt: endpoint.created_at.toISOString(),
     updatedAt: endpoint.updated_at.toISOString(),
+  };
+}
+
+/**
+ * The current state on `GET /v1/endpoints/:id` (docs/m6-plan.md §3.10), so a
+ * client can say "failing, 2 of 3" (03 §3.7). Lists stay without it: the
+ * list's current status is M8's (FR-10).
+ */
+export interface EndpointHealthDto {
+  state: EffectiveState;
+  /** When that state began; `null` for paused, and for an endpoint never evaluated. */
+  stateSince: string | null;
+  consecutiveFailures: number;
+  failureThreshold: number;
+  openIncidentId: string | null;
+  lastSuccessAt: string | null;
+}
+
+export type EndpointDetailDto = EndpointDto & { health: EndpointHealthDto };
+
+export function toEndpointHealthDto(
+  endpoint: Endpoint,
+  stored: EndpointHealth | undefined,
+  maintenanceSince: Date | null,
+): EndpointHealthDto {
+  const effective = effectiveState({
+    enabled: endpoint.enabled,
+    maintenanceSince,
+    stored: stored ? { state: stored.state, stateSince: stored.state_since } : null,
+  });
+  return {
+    state: effective.state,
+    stateSince: effective.since?.toISOString() ?? null,
+    consecutiveFailures: stored?.consecutive_failures ?? 0,
+    failureThreshold: endpoint.failure_threshold,
+    openIncidentId: stored?.open_incident_id ?? null,
+    lastSuccessAt: stored?.last_success_at?.toISOString() ?? null,
   };
 }

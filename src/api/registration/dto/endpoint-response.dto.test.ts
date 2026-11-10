@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { toEndpointDto } from './endpoint-response.dto.js';
-import type { Endpoint, Header } from '../../../core/db/types.js';
+import { toEndpointDto, toEndpointHealthDto } from './endpoint-response.dto.js';
+import type { Endpoint, EndpointHealth, Header } from '../../../core/db/types.js';
 
 const endpoint: Endpoint = {
   id: 'ep-1',
@@ -92,5 +92,55 @@ describe('toEndpointDto', () => {
       [{ id: 't1', service_id: null, endpoint_id: 'ep-1', key: 'env', value: 'prod' }],
     );
     expect(dto.tags).toEqual([{ key: 'env', value: 'prod' }]);
+  });
+});
+
+describe('toEndpointHealthDto (docs/m6-plan.md §3.10)', () => {
+  const stored: EndpointHealth = {
+    endpoint_id: endpoint.id,
+    state: 'pending',
+    state_since: new Date('2033-03-10T10:01:00Z'),
+    consecutive_failures: 2,
+    consecutive_successes: 0,
+    run_started_at: new Date('2033-03-10T10:01:00Z'),
+    run_failure_class: 'connection_refused',
+    run_failure_code: null,
+    run_status_code: null,
+    run_failure_detail: null,
+    recovery_started_at: null,
+    open_incident_id: null,
+    last_success_at: new Date('2033-03-10T10:00:00Z'),
+    applied_started_at: null,
+    applied_attempt_id: null,
+    updated_at: new Date('2033-03-10T10:01:05Z'),
+  };
+
+  it('reports the stored run against the threshold: failing, 2 of N', () => {
+    expect(toEndpointHealthDto(endpoint, stored, null)).toEqual({
+      state: 'pending',
+      stateSince: '2033-03-10T10:01:00.000Z',
+      consecutiveFailures: 2,
+      failureThreshold: endpoint.failure_threshold,
+      openIncidentId: null,
+      lastSuccessAt: '2033-03-10T10:00:00.000Z',
+    });
+  });
+
+  it('is unknown with zero failures for an endpoint never evaluated', () => {
+    expect(toEndpointHealthDto(endpoint, undefined, null)).toMatchObject({
+      state: 'unknown',
+      stateSince: null,
+      consecutiveFailures: 0,
+      lastSuccessAt: null,
+    });
+  });
+
+  it('lets a window covering now override the stored state, keeping the counters', () => {
+    const since = new Date('2033-03-10T09:00:00Z');
+    expect(toEndpointHealthDto(endpoint, stored, since)).toMatchObject({
+      state: 'maintenance',
+      stateSince: since.toISOString(),
+      consecutiveFailures: 2,
+    });
   });
 });

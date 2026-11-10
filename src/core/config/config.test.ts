@@ -829,6 +829,29 @@ describe('scheduler cross-field rules', () => {
   });
 });
 
+describe('maintenance bounds reject invalid values at boot', () => {
+  it.each([
+    ['MAINTENANCE_MAX_DURATION_DAYS', '0', 'Too small: expected number to be >=1'],
+    ['MAINTENANCE_MAX_DURATION_DAYS', '367', 'Too big: expected number to be <=366'],
+    ['MAINTENANCE_WINDOW_QUOTA_PER_USER', '0', 'Too small: expected number to be >=1'],
+    ['MAINTENANCE_WINDOW_QUOTA_PER_USER', '100001', 'Too big: expected number to be <=100000'],
+  ])('rejects %s=%s', (key, value, message) => {
+    expect(() => loadConfig({ ...valid, [key]: value })).toThrow(new RegExp(`${key}: ${message}`));
+  });
+
+  it('rejects a fractional duration', () => {
+    expect(() => loadConfig({ ...valid, MAINTENANCE_MAX_DURATION_DAYS: '1.5' })).toThrow(
+      /MAINTENANCE_MAX_DURATION_DAYS/,
+    );
+  });
+
+  it('accepts the defaults', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.MAINTENANCE_MAX_DURATION_DAYS).toBe(31);
+    expect(cfg.MAINTENANCE_WINDOW_QUOTA_PER_USER).toBe(100);
+  });
+});
+
 describe('incident bounds reject invalid values at boot', () => {
   it.each([
     ['EVALUATOR_TICK_MS', '99', 'Too small: expected number to be >=100'],
