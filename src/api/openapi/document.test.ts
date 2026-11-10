@@ -208,6 +208,20 @@ describe('shapes come from the schemas the server validates with', () => {
     for (const path of JSON_PATH_REJECTED) expect(published.test(path), path).toBe(false);
   });
 
+  it("states a maintenance window's one-target rule by hand, since z.toJSONSchema drops .refine()", () => {
+    const create = schemas.CreateMaintenanceWindowRequest as {
+      oneOf?: { required: string[] }[];
+      additionalProperties: boolean;
+      properties: Record<string, unknown>;
+    };
+    // Exactly one: a body with both matches both branches, which oneOf refuses.
+    expect(create.oneOf).toEqual([{ required: ['serviceId'] }, { required: ['endpointId'] }]);
+    expect(create.additionalProperties).toBe(false);
+    expect(Object.keys(create.properties).sort()).toEqual(
+      ['endpointId', 'endsAt', 'reason', 'serviceId', 'startsAt'].sort(),
+    );
+  });
+
   it('encodes the tag-key colon ban as a pattern, since z.toJSONSchema drops .refine()', () => {
     const create = schemas.CreateEndpointRequest as {
       properties: { tags: { items: { properties: { key: { pattern: string } } } } };

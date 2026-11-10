@@ -1,0 +1,123 @@
+### api/maintenance — maintenance windows (M6, docs/m6-plan.md §3.7)
+#
+# A window on a service (all its endpoints) or on one endpoint, [startsAt,
+# endsAt). Its effect is decided when each probe result is written: inside a
+# window a failure opens no incident and the result counts only in
+# count_maintenance. Creating, editing or deleting a window never rewrites a
+# recorded result. Run auth.http's register + login first; replace the ids.
+# Times need an explicit offset (Z or +04:00).
+
+@baseUrl = {{$dotenv baseUrl}}
+
+###
+# @name createOnService
+# 201. A startsAt in the past is accepted: the window applies from now.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "serviceId": ":serviceId",
+  "startsAt": "2026-11-10T10:00:00Z",
+  "endsAt": "2026-11-10T12:00:00Z",
+  "reason": "database migration"
+}
+
+###
+# @name createOnEndpoint
+# 201.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "endpointId": ":endpointId",
+  "startsAt": "2026-11-10T10:00:00Z",
+  "endsAt": "2026-11-10T11:00:00Z"
+}
+
+###
+# @name createInPast
+# 400 MAINTENANCE_WINDOW_IN_PAST: it would only pretend to have applied.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "endpointId": ":endpointId",
+  "startsAt": "2020-01-01T10:00:00Z",
+  "endsAt": "2020-01-01T11:00:00Z"
+}
+
+###
+# @name createTooLong
+# 400 MAINTENANCE_WINDOW_TOO_LONG: longer than MAINTENANCE_MAX_DURATION_DAYS
+# (default 31). details.limit is the configured maximum.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "endpointId": ":endpointId",
+  "startsAt": "2026-11-10T10:00:00Z",
+  "endsAt": "2027-11-10T10:00:00Z"
+}
+
+###
+# @name createBothTargets
+# 400 VALIDATION_FAILED: exactly one of serviceId and endpointId.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "serviceId": ":serviceId",
+  "endpointId": ":endpointId",
+  "startsAt": "2026-11-10T10:00:00Z",
+  "endsAt": "2026-11-10T11:00:00Z"
+}
+
+###
+# @name createOnSomeoneElsesEndpoint
+# 404 NOT_FOUND -- the same as for an endpoint that does not exist.
+POST {{baseUrl}}/v1/maintenance-windows
+Content-Type: application/json
+
+{
+  "endpointId": "00000000-0000-4000-8000-000000000000",
+  "startsAt": "2026-11-10T10:00:00Z",
+  "endsAt": "2026-11-10T11:00:00Z"
+}
+
+# Quota: MAINTENANCE_WINDOW_QUOTA_PER_USER (default 100) counts every stored
+# window, ended ones included -> 409 MAINTENANCE_WINDOW_QUOTA_EXCEEDED with
+# details {limit, count}. Repetition, so a shell loop rather than a request:
+#   for i in $(seq 1 101); do curl -s -b jar -H 'content-type: application/json' \
+#     -d '{"endpointId":"…","startsAt":"…Z","endsAt":"…Z"}' \
+#     $baseUrl/v1/maintenance-windows -o /dev/null -w '%{http_code}\n'; done
+
+###
+# @name listActive
+# 200, latest start first. active=true: covering now; false: ended or not yet started.
+GET {{baseUrl}}/v1/maintenance-windows?active=true
+
+###
+# @name listForService
+# Windows declared on the service itself, not those on its endpoints.
+GET {{baseUrl}}/v1/maintenance-windows?serviceId=:serviceId
+
+###
+# @name getWindow
+GET {{baseUrl}}/v1/maintenance-windows/:id
+
+###
+# @name extendWindow
+# 200. The merged window is re-checked: still must end in the future and fit
+# the maximum length. reason: null clears it. The target cannot be changed.
+PATCH {{baseUrl}}/v1/maintenance-windows/:id
+Content-Type: application/json
+
+{
+  "endsAt": "2026-11-10T13:00:00Z",
+  "reason": null
+}
+
+###
+# @name deleteWindow
+# 204. Results already written inside it keep their flag.
+DELETE {{baseUrl}}/v1/maintenance-windows/:id
