@@ -183,6 +183,34 @@ describe('the rules a window must keep (§3.7)', () => {
     expect(edit.body).toMatchObject({ code: 'MAINTENANCE_WINDOW_IN_PAST' });
   });
 
+  it('refuses an edit that inverts the window, either end, and leaves it as stored', async () => {
+    // The update body checks each time alone, so the merged-window check is
+    // the only thing ordering them on PATCH (Codex on #98).
+    const ep = await endpointOf('alice@example.com');
+    const created = await call('/maintenance-windows', {
+      method: 'POST',
+      cookie: alice,
+      body: { endpointId: ep.endpoint_id, startsAt: at(HOUR), endsAt: at(2 * HOUR) },
+    });
+    const stored = created.body as { id: string; startsAt: string; endsAt: string };
+
+    for (const body of [{ startsAt: at(3 * HOUR) }, { endsAt: at(HOUR / 2) }]) {
+      const res = await call(`/maintenance-windows/${stored.id}`, {
+        method: 'PATCH',
+        cookie: alice,
+        body,
+      });
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        details: [{ path: 'endsAt', message: 'must be after startsAt' }],
+      });
+    }
+    expect((await call(`/maintenance-windows/${stored.id}`, { cookie: alice })).body).toMatchObject(
+      { startsAt: stored.startsAt, endsAt: stored.endsAt },
+    );
+  });
+
   it('refuses one longer than MAINTENANCE_MAX_DURATION_DAYS, and accepts exactly that', async () => {
     const ep = await endpointOf('alice@example.com');
     const startsAt = new Date(Date.now() + HOUR);
