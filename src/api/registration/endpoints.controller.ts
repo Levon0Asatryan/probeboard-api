@@ -16,7 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { SessionGuard, type RequestUser } from '../auth/guards/session.guard.js';
 import { updateEndpointSchema, type UpdateEndpointRequest } from './dto/update-endpoint.dto.js';
 import { listQuerySchema, type ListQuery } from './dto/list-query.dto.js';
-import type { EndpointDto } from './dto/endpoint-response.dto.js';
+import type { EndpointDetailDto, EndpointDto } from './dto/endpoint-response.dto.js';
 import { EndpointsService } from './services/endpoints.service.js';
 
 @Controller('endpoints')
@@ -36,7 +36,7 @@ export class EndpointsController {
   async get(
     @CurrentUser() user: RequestUser,
     @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<EndpointDto> {
+  ): Promise<EndpointDetailDto> {
     return this.endpoints.get(user.id, id);
   }
 

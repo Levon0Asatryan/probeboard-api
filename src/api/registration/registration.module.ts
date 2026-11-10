@@ -5,6 +5,7 @@ import { EndpointRepository } from '../../core/registration/repositories/endpoin
 import { HeaderRepository } from '../../core/registration/repositories/header.repository.js';
 import { ServiceRepository } from '../../core/registration/repositories/service.repository.js';
 import { TagRepository } from '../../core/registration/repositories/tag.repository.js';
+import { EndpointHealthRepository } from './repositories/endpoint-health.repository.js';
 import { EndpointsController } from './endpoints.controller.js';
 import { ServicesController } from './services.controller.js';
 import { EndpointsService } from './services/endpoints.service.js';
@@ -28,6 +29,7 @@ import { ServicesService } from './services/services.service.js';
     EndpointRepository,
     HeaderRepository,
     TagRepository,
+    EndpointHealthRepository,
     HeaderValidationService,
     HeaderStorageService,
     ServicesService,

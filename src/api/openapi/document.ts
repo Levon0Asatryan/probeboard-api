@@ -706,6 +706,53 @@ export function buildOpenApiDocument(
             'Every field optional; the target cannot change. The merged window is re-checked ' +
             'as on create. reason: null clears it.',
         },
+        EndpointDetail: {
+          description:
+            'An endpoint, with its current state. Only GET /endpoints/{id} carries health.',
+          allOf: [
+            { $ref: '#/components/schemas/Endpoint' },
+            {
+              type: 'object',
+              required: ['health'],
+              properties: { health: { $ref: '#/components/schemas/EndpointHealth' } },
+            },
+          ],
+        },
+        EndpointHealth: {
+          type: 'object',
+          description:
+            'paused when disabled; else maintenance while a window covers now; else what the ' +
+            'evaluator last observed; else unknown (docs/m6-plan.md §3.10).',
+          required: [
+            'state',
+            'stateSince',
+            'consecutiveFailures',
+            'failureThreshold',
+            'openIncidentId',
+            'lastSuccessAt',
+          ],
+          properties: {
+            state: {
+              type: 'string',
+              enum: ['up', 'degraded', 'pending', 'down', 'unknown', 'paused', 'maintenance'],
+            },
+            stateSince: {
+              type: 'string',
+              format: 'date-time',
+              nullable: true,
+              description:
+                'When that state began: a probe started_at, the covering window start, or null ' +
+                '(paused, or never evaluated).',
+            },
+            consecutiveFailures: {
+              type: 'integer',
+              description: 'With failureThreshold: "failing, 2 of 3" (03 §3.7).',
+            },
+            failureThreshold: { type: 'integer' },
+            openIncidentId: { type: 'string', format: 'uuid', nullable: true },
+            lastSuccessAt: { type: 'string', format: 'date-time', nullable: true },
+          },
+        },
       },
       securitySchemes: {
         sessionCookie: {
@@ -1252,9 +1299,10 @@ export function buildOpenApiDocument(
           parameters: [idParam],
           responses: {
             '200': {
-              description: 'The endpoint, with its own headers and the merged effective set.',
+              description:
+                'The endpoint, with its own headers, the merged effective set, and its current state.',
               content: {
-                'application/json': { schema: { $ref: '#/components/schemas/Endpoint' } },
+                'application/json': { schema: { $ref: '#/components/schemas/EndpointDetail' } },
               },
             },
             '400': badIdResponse,

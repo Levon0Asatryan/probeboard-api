@@ -16,7 +16,13 @@ import { ServiceRepository } from '../../../core/registration/repositories/servi
 import { TagRepository } from '../../../core/registration/repositories/tag.repository.js';
 import { UserRepository } from '../../../core/users/repositories/user.repository.js';
 import type { CreateEndpointRequest } from '../dto/create-endpoint.dto.js';
-import { type EndpointDto, toEndpointDto } from '../dto/endpoint-response.dto.js';
+import {
+  type EndpointDetailDto,
+  type EndpointDto,
+  toEndpointDto,
+  toEndpointHealthDto,
+} from '../dto/endpoint-response.dto.js';
+import { EndpointHealthRepository } from '../repositories/endpoint-health.repository.js';
 import type { ListQuery } from '../dto/list-query.dto.js';
 import type { UpdateEndpointRequest } from '../dto/update-endpoint.dto.js';
 import { HeaderStorageService } from './header-storage.service.js';
@@ -35,6 +41,7 @@ export class EndpointsService {
     private readonly users: UserRepository,
     private readonly headerValidation: HeaderValidationService,
     private readonly headerStorage: HeaderStorageService,
+    private readonly health: EndpointHealthRepository,
   ) {}
 
   private get ssrfConfig() {
@@ -206,8 +213,19 @@ export class EndpointsService {
     return this.toDto(userId, endpointId);
   }
 
-  async get(userId: string, id: string): Promise<EndpointDto> {
-    return this.toDto(userId, id);
+  /**
+   * One endpoint with its current state (docs/m6-plan.md §3.10). The endpoint
+   * row is found under its owner first; nothing below runs for anyone else's.
+   */
+  async get(userId: string, id: string): Promise<EndpointDetailDto> {
+    const dto = await this.toDto(userId, id);
+    const endpoint = await this.endpoints.findById(id, userId);
+    if (!endpoint) throw new NotFoundError('endpoint');
+    const [stored, maintenanceSince] = await Promise.all([
+      this.health.stored(id, userId),
+      this.health.maintenanceSince(id, endpoint.service_id, userId),
+    ]);
+    return { ...dto, health: toEndpointHealthDto(endpoint, stored, maintenanceSince) };
   }
 
   async listForService(
