@@ -186,6 +186,44 @@ describe('exactly once (plan §3.3)', () => {
     expect(await health(endpointId)).toMatchObject({ consecutive_failures: 3 });
   });
 
+  it('commits the watermark with the incident: a failed advance applies nothing, and the retry applies once', async () => {
+    // The crash the plan names (§7, "exactly once across a crash"): the state
+    // is written, the watermark is not. Committed apart, the retry would read
+    // the same results again and open a second incident.
+    const { endpointId } = await createEndpoint(pool, 'watermark@example.com');
+    await results(endpointId, [
+      ['10:01', 'down'],
+      ['10:02', 'down'],
+      ['10:03', 'down'],
+    ]);
+    await pool.query(`
+      CREATE FUNCTION pg_temp_fail_advance() RETURNS trigger LANGUAGE plpgsql AS
+        $$ BEGIN
+             IF NEW.name = 'incident_evaluator' AND NEW.last_xid IS DISTINCT FROM OLD.last_xid THEN
+               RAISE EXCEPTION 'injected watermark failure';
+             END IF;
+             RETURN NEW;
+           END $$`);
+    await pool.query(`
+      CREATE TRIGGER watermark_fails BEFORE UPDATE ON rollup_state
+        FOR EACH ROW EXECUTE FUNCTION pg_temp_fail_advance()`);
+    try {
+      await expect(pass()).rejects.toThrow(/injected watermark failure/);
+    } finally {
+      await pool.query(`DROP TRIGGER watermark_fails ON rollup_state`);
+      await pool.query(`DROP FUNCTION pg_temp_fail_advance()`);
+    }
+    expect(await incidents(endpointId)).toEqual([]);
+    expect(await outbox()).toEqual([]);
+    expect(await health(endpointId)).toBeUndefined();
+
+    await pass();
+    await pass();
+    expect(await incidents(endpointId)).toHaveLength(1);
+    expect(await outbox()).toHaveLength(1);
+    expect(await health(endpointId)).toMatchObject({ consecutive_failures: 3 });
+  });
+
   it('refuses a close the incidents table disagrees with, rather than skipping it (rule #21)', async () => {
     const { endpointId } = await createEndpoint(pool, 'fence@example.com');
     await results(endpointId, [
@@ -208,33 +246,38 @@ describe('exactly once (plan §3.3)', () => {
 });
 
 describe('no result lost to commit order (M5 C3)', () => {
-  it('holds back later results while an earlier write is open, then applies all in order', async () => {
-    const { endpointId } = await createEndpoint(pool, 'order@example.com');
-    const open = new Client({ connectionString: testDatabaseUrl() });
-    await open.connect();
-    try {
-      // The first failure's write takes a lower xid and stays open -- the slow
-      // probe's commit arriving after its successors'.
-      await open.query('BEGIN');
-      await open.query('SELECT pg_current_xact_id()');
-      await insertRawOn(open, { endpointId, startedAt: t('10:01'), outcome: 'down' });
-      await results(endpointId, [
-        ['10:02', 'down'],
-        ['10:03', 'down'],
-      ]);
+  // Batch 1 as well: at 5000 the boundary query never finds a boundary, so a
+  // horizon missing from it would go unseen.
+  it.each([5000, 1])(
+    'holds back later results while an earlier write is open, then applies all in order (batch %i)',
+    async (batchXids) => {
+      const { endpointId } = await createEndpoint(pool, `order${batchXids}@example.com`);
+      const open = new Client({ connectionString: testDatabaseUrl() });
+      await open.connect();
+      try {
+        // The first failure's write takes a lower xid and stays open -- the slow
+        // probe's commit arriving after its successors'.
+        await open.query('BEGIN');
+        await open.query('SELECT pg_current_xact_id()');
+        await insertRawOn(open, { endpointId, startedAt: t('10:01'), outcome: 'down' });
+        await results(endpointId, [
+          ['10:02', 'down'],
+          ['10:03', 'down'],
+        ]);
 
-      const held = await pass();
-      expect(held.evaluated).toBe(0);
-      expect(await health(endpointId)).toBeUndefined();
+        const held = await repo.runOnce({ batchXids, unknownGraceMs: GRACE_MS });
+        expect(held.evaluated).toBe(0);
+        expect(await health(endpointId)).toBeUndefined();
 
-      await open.query('COMMIT');
-    } finally {
-      await open.end();
-    }
-    const done = await pass();
-    expect(done).toMatchObject({ evaluated: 3, late: 0 });
-    expect((await incidents(endpointId))[0]).toMatchObject({ opened_at: new Date(t('10:01')) });
-  });
+        await open.query('COMMIT');
+      } finally {
+        await open.end();
+      }
+      const done = await repo.runOnce({ batchXids, unknownGraceMs: GRACE_MS });
+      expect(done).toMatchObject({ evaluated: 3, late: 0 });
+      expect((await incidents(endpointId))[0]).toMatchObject({ opened_at: new Date(t('10:01')) });
+    },
+  );
 
   it('does not let a zombie result rewind the state (D3)', async () => {
     const { endpointId } = await createEndpoint(pool, 'zombie@example.com');
@@ -302,6 +345,20 @@ describe('maintenance (D-6)', () => {
     await pass();
     expect(await incidents(endpointId)).toHaveLength(1);
     expect(await outbox()).toHaveLength(1);
+  });
+
+  it('closes an incident opened before a window on successes inside it, and queues the close (C11)', async () => {
+    const { endpointId } = await createEndpoint(pool, 'recover@example.com');
+    await results(endpointId, [
+      ['10:01', 'down'],
+      ['10:02', 'down'],
+      ['10:03', 'down'],
+      ['10:04', 'up', { inMaintenance: true }],
+      ['10:05', 'up', { inMaintenance: true }],
+    ]);
+    await pass();
+    expect((await incidents(endpointId))[0]).toMatchObject({ closed_at: new Date(t('10:04')) });
+    expect((await outbox()).map((o) => o.kind)).toEqual(['incident_open', 'incident_close']);
   });
 });
 
@@ -404,9 +461,79 @@ describe('deletion (plan §3.12, D13)', () => {
     expect(await outbox()).toEqual([]);
   });
 
+  it('lets a service delete and a pass that opens an incident both commit, with no deadlock (plan §2.4.1)', async () => {
+    // The interleaving that deadlocked 20 of 20 rounds with the keys, forced
+    // rather than hoped for: the pass holds the health row (§3.3 step 4); the
+    // delete starts and either finishes or is seen waiting on a lock; only
+    // then does the pass insert its incident. With a key from endpoint_health
+    // the delete's cascade waits on the pass, and the pass's insert waits on
+    // the delete's endpoint row for its FK check: 40P01.
+    const { endpointId } = await createEndpoint(pool, 'race@example.com');
+    const { rows: ep } = await pool.query<{ service_id: string; user_id: string }>(
+      `SELECT service_id, user_id FROM endpoints WHERE id = $1`,
+      [endpointId],
+    );
+    await pool.query(
+      `INSERT INTO endpoint_health (endpoint_id, state, state_since) VALUES ($1, 'pending', now())`,
+      [endpointId],
+    );
+
+    const evaluator = new Client({ connectionString: testDatabaseUrl() });
+    const deleter = new Client({ connectionString: testDatabaseUrl() });
+    await evaluator.connect();
+    await deleter.connect();
+    try {
+      await evaluator.query('BEGIN');
+      await evaluator.query(`SELECT 1 FROM endpoint_health WHERE endpoint_id = $1 FOR UPDATE`, [
+        endpointId,
+      ]);
+
+      const deleterPid = (await deleter.query<{ pid: number }>(`SELECT pg_backend_pid() AS pid`))
+        .rows[0].pid;
+      let deleteSettled = false;
+      const deletion = deleter
+        .query(`DELETE FROM services WHERE id = $1`, [ep[0].service_id])
+        .finally(() => {
+          deleteSettled = true;
+        });
+      // Barrier on observable state, not a sleep (rule #12).
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        if (deleteSettled) break;
+        const { rows } = await pool.query(
+          `SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'`,
+          [deleterPid],
+        );
+        if (rows.length > 0) break;
+        if (Date.now() > deadline) throw new Error('the delete neither finished nor waited');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      await evaluator.query(
+        `INSERT INTO incidents (endpoint_id, service_id, user_id, opened_at, confirmed_at,
+                                failures_to_open, cause_class)
+         VALUES ($1, $2, $3, now() - interval '2 minutes', now(), 3, 'connection_refused')`,
+        [endpointId, ep[0].service_id, ep[0].user_id],
+      );
+      await evaluator.query('COMMIT');
+      await deletion;
+    } finally {
+      await evaluator.end();
+      await deleter.end();
+    }
+
+    // Both committed. What the pass wrote is an orphan, and the next pass's
+    // sweep is what removes it (§3.12).
+    expect(await pool.query(`SELECT 1 FROM endpoints WHERE id = $1`, [endpointId])).toMatchObject({
+      rowCount: 0,
+    });
+    expect(await incidents(endpointId)).toHaveLength(1);
+    expect((await pass()).orphansRemoved).toBe(2);
+  });
+
   it('has no foreign key from its tables to endpoints: one deadlocks a cascading delete (plan §2.4.1)', async () => {
-    // Measured 20/20 deadlocks with the key and 0/20 without. A structural
-    // check, because the race needs an interleaving no test can force here.
+    // The race above is the behaviour; this names the cause, so a key added
+    // back fails with a message that says which.
     const { rows } = await pool.query<{ conname: string }>(
       `SELECT conname FROM pg_constraint
         WHERE contype = 'f' AND confrelid = 'endpoints'::regclass
